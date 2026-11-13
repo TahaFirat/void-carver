@@ -1,0 +1,137 @@
+import { App } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
+import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
+import { SplashScreen } from '@capacitor/splash-screen';
+import { StatusBar } from '@capacitor/status-bar';
+import { OrientationType, ScreenOrientation } from '@capawesome/capacitor-screen-orientation';
+
+export interface NativeLifecycleHandlers {
+  onAppPause: () => void;
+  onAppResume: () => void;
+  onBackButton: () => void;
+}
+
+class NativeBridgeImpl {
+  private initialized = false;
+  private splashHidden = false;
+  private hapticsEnabled = true;
+
+  public isNative(): boolean {
+    return Capacitor.isNativePlatform();
+  }
+
+  public setHapticsEnabled(enabled: boolean): void {
+    this.hapticsEnabled = enabled;
+  }
+
+  public async initialize(handlers: NativeLifecycleHandlers): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+
+    // Web fallback visibility & blur listeners
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        handlers.onAppPause();
+      } else {
+        handlers.onAppResume();
+      }
+    });
+
+    window.addEventListener('blur', () => {
+      handlers.onAppPause();
+    });
+
+    if (!this.isNative()) {
+      return;
+    }
+
+    try {
+      await ScreenOrientation.lock({ type: OrientationType.PORTRAIT });
+    } catch {
+      // Orientation lock not supported on current device/window mode
+    }
+
+    try {
+      await StatusBar.hide();
+    } catch {
+      // System bars managed automatically on edge-to-edge Android 16+
+    }
+
+    try {
+      await App.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          handlers.onAppResume();
+        } else {
+          handlers.onAppPause();
+        }
+      });
+
+      await App.addListener('backButton', () => {
+        handlers.onBackButton();
+      });
+    } catch {
+      // Ignore listener errors on unsupported environments
+    }
+  }
+
+  public async hideSplashOnceReady(): Promise<void> {
+    if (this.splashHidden) return;
+    this.splashHidden = true;
+    if (!this.isNative()) return;
+
+    try {
+      await SplashScreen.hide({ fadeOutDuration: 250 });
+    } catch {
+      // Ignore if already hidden
+    }
+  }
+
+  public hapticCornerTurn(): void {
+    if (!this.hapticsEnabled) return;
+    if (this.isNative()) {
+      Haptics.impact({ style: ImpactStyle.Light }).catch(() => {});
+    }
+  }
+
+  public hapticPowerUp(): void {
+    if (!this.hapticsEnabled) return;
+    if (this.isNative()) {
+      Haptics.impact({ style: ImpactStyle.Medium }).catch(() => {});
+    } else if ('vibrate' in navigator) {
+      try {
+        navigator.vibrate(18);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  public hapticPolygonShatter(percentClaimed: number): void {
+    if (!this.hapticsEnabled) return;
+    if (this.isNative()) {
+      const style = percentClaimed >= 10 ? ImpactStyle.Heavy : ImpactStyle.Light;
+      Haptics.impact({ style }).catch(() => {});
+    } else if (percentClaimed >= 10 && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(28);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  public hapticDanger(): void {
+    if (!this.hapticsEnabled) return;
+    if (this.isNative()) {
+      Haptics.notification({ type: NotificationType.Error }).catch(() => {});
+    } else if ('vibrate' in navigator) {
+      try {
+        navigator.vibrate([45, 30, 65]);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+}
+
+export const NativeBridge = new NativeBridgeImpl();

@@ -1,0 +1,42 @@
+{
+  "name": "void-carver-sector-80",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Void Carver — Classic 16-Bit Sci-Fi Arcade Territory Liberation Game for Web, iOS, and Android",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "audit:design": "node scripts/visual-audit.mjs",
+    "assets:generate": "node scripts/generate-placeholder-assets.mjs",
+    "ios:prepare": "node scripts/ios-full-prepare.mjs",
+    "ios:screenshots": "node scripts/generate-appstore-screenshots.mjs",
+    "preflight": "node scripts/preflight-check.mjs",
+    "mobile:init": "npx cap add ios && npx cap add android",
+    "mobile:assets": "npx capacitor-assets generate --ios --android --iconBackgroundColor \"#04060E\" --iconBackgroundColorDark \"#04060E\" --splashBackgroundColor \"#04060E\" --splashBackgroundColorDark \"#04060E\"",
+    "mobile:sync": "npm run build && npx cap sync",
+    "mobile:ios": "npm run build && npx cap sync ios && npx cap open ios",
+    "mobile:android": "npm run build && npx cap sync android && npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/haptics": "^8.0.0",
+    "@capacitor/ios": "^8.0.0",
+    "@capacitor/preferences": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0",
+    "@capawesome/capacitor-screen-orientation": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.0.0",
+    "puppeteer-core": "^25.17.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.7"
+  }
+}
