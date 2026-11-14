@@ -429,7 +429,7 @@ export class MenuRenderer {
         this.renderSettingsScreen(ctx, save);
         break;
       case 'PAUSED':
-        this.renderPauseModal(ctx);
+        this.renderPauseModal(ctx, save);
         break;
       case 'SECOND_CHANCE':
         this.renderSecondChanceModal(ctx);
@@ -565,7 +565,7 @@ export class MenuRenderer {
   private renderMenuHero(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     const bestScore = Math.max(DEFAULT_ARCADE_HIGH_SCORE, save.highScoreCampaign, save.highScoreEndless);
     drawPixelText(ctx, `REKOR ${formatScoreDigits(bestScore, 7)}`, CANVAS_WIDTH * 0.5, 50, {
-      scale: 3.4,
+      scale: 4.0,
       tone: 'gold',
       align: 'center'
     });
@@ -575,10 +575,10 @@ export class MenuRenderer {
     const titleLogo = getVoidCarverLogoSprite();
     blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 294, PIXEL_SCALE);
 
-    const btnX = 76;
-    const btnY = 498;
-    const btnW = 748;
-    const btnH = 96;
+    const btnX = 66;
+    const btnY = 496;
+    const btnW = 768;
+    const btnH = 100;
     const isFrontier = this.selectedSector === save.unlockedSector;
     const verb = isFrontier ? 'DEVAM ET' : 'OYNA';
 
@@ -588,7 +588,7 @@ export class MenuRenderer {
       `${verb} • BÖLÜM ${formatStageNumber(this.selectedSector)}`,
       CANVAS_WIDTH * 0.5,
       btnY + btnH * 0.5,
-      { scale: 3.6, tone: 'gold', align: 'center' }
+      { scale: 4.0, tone: 'gold', align: 'center' }
     );
     this.addButton(`LAUNCH_SECTOR_${this.selectedSector}`, btnX, btnY, btnW, btnH);
   }
@@ -599,13 +599,13 @@ export class MenuRenderer {
    */
   private renderMenuSelector(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     // 1. Tier tab bar
-    const tabY = 618;
-    const tabH = 100;
+    const tabY = 616;
+    const tabH = 104;
     const tabGap = 12;
-    const tabW = (748 - tabGap * 3) / 4;
+    const tabW = (768 - tabGap * 3) / 4;
     for (let i = 0; i < 4; i++) {
       const tier = TIERS[i];
-      const tx = 76 + i * (tabW + tabGap);
+      const tx = 66 + i * (tabW + tabGap);
       const unlocked = isTierUnlocked(i, save.unlockedSector);
       const completed = save.sectors[tier.end]?.cleared === true;
       const active = i === this.selectedTier;
@@ -618,20 +618,20 @@ export class MenuRenderer {
       }
 
       const nameTone = !unlocked ? 'muted' : active ? 'gold' : tier.id === 'USTA' ? 'crimson' : completed ? 'green' : 'white';
-      drawPixelText(ctx, tier.nameTr, tx + tabW * 0.5, tabY + 34, {
-        scale: 2.8,
+      drawPixelText(ctx, tier.nameTr, tx + tabW * 0.5, tabY + 35, {
+        scale: 3.3,
         tone: nameTone,
         align: 'center'
       });
-      drawPixelText(ctx, `${tier.start}-${tier.end}`, tx + tabW * 0.5, tabY + 72, {
-        scale: 2.4,
+      drawPixelText(ctx, `${tier.start}-${tier.end}`, tx + tabW * 0.5, tabY + 75, {
+        scale: 2.7,
         tone: unlocked ? (active ? 'gold' : 'silver') : 'muted',
         align: 'center'
       });
       if (!unlocked) {
-        blitPixelSprite(ctx, getPadlockPixelSprite(), tx + tabW - 24, tabY + 26, 2);
+        blitPixelSprite(ctx, getPadlockPixelSprite(), tx + tabW - 22, tabY + 25, 2);
       } else if (completed) {
-        drawPixelText(ctx, '✔', tx + tabW - 22, tabY + 74, { scale: 2.2, tone: 'green', align: 'center' });
+        drawPixelText(ctx, '✔', tx + tabW - 20, tabY + 76, { scale: 2.4, tone: 'green', align: 'center' });
       }
       if (unlocked) {
         this.addButton(`SELECT_TIER_${i}`, tx, tabY, tabW, tabH);
@@ -647,9 +647,9 @@ export class MenuRenderer {
     const cols = 5;
     const gapX = 14;
     const gapY = 12;
-    const cellW = (748 - gapX * (cols - 1)) / cols;
+    const cellW = (768 - gapX * (cols - 1)) / cols;
     const cellH = 100;
-    const gridX = 76;
+    const gridX = 66;
     const gridY = 742;
     const padlock = getPadlockPixelSprite();
 
@@ -676,7 +676,7 @@ export class MenuRenderer {
       }
 
       drawPixelText(ctx, String(id).padStart(2, '0'), bx + cellW * 0.5, by + (unlocked && !cleared ? 50 : 40), {
-        scale: id >= 100 ? 3.0 : 3.6,
+        scale: id >= 100 ? 3.4 : 4.1,
         tone: !unlocked ? 'muted' : isSelected || isFrontier ? 'gold' : 'white',
         align: 'center'
       });
@@ -697,23 +697,23 @@ export class MenuRenderer {
 
     // 3. Bottom `GEMİLER` & `AYARLAR`
     const botY = 1326;
-    const botH = 98;
-    const botW = 362;
-    this.drawPixelPanel(ctx, 76, botY, botW, botH, 'navyBtn');
-    drawPixelText(ctx, 'GEMİLER', 76 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.4,
+    const botH = 100;
+    const botW = 374;
+    this.drawPixelPanel(ctx, 66, botY, botW, botH, 'navyBtn');
+    drawPixelText(ctx, 'GEMİLER', 66 + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.9,
       tone: 'silver',
       align: 'center'
     });
-    this.addButton('OPEN_SHIPS', 76, botY, botW, botH);
+    this.addButton('OPEN_SHIPS', 66, botY, botW, botH);
 
-    this.drawPixelPanel(ctx, 462, botY, botW, botH, 'navyBtn');
-    drawPixelText(ctx, 'AYARLAR', 462 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.4,
+    this.drawPixelPanel(ctx, 460, botY, botW, botH, 'navyBtn');
+    drawPixelText(ctx, 'AYARLAR', 460 + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.9,
       tone: 'silver',
       align: 'center'
     });
-    this.addButton('GOTO_SETTINGS', 462, botY, botW, botH);
+    this.addButton('GOTO_SETTINGS', 460, botY, botW, botH);
   }
 
   // ============================================================================
@@ -723,13 +723,13 @@ export class MenuRenderer {
     const totalStars = StorageService.getTotalStars();
 
     drawPixelText(ctx, 'GEMİLER', CANVAS_WIDTH * 0.5, 96, {
-      scale: 4.5,
+      scale: 4.9,
       tone: 'gold',
       align: 'center'
     });
 
     drawPixelText(ctx, `TOPLAM ★ ${totalStars}`, CANVAS_WIDTH * 0.5, 168, {
-      scale: 3.0,
+      scale: 3.5,
       tone: 'silver',
       align: 'center'
     });
@@ -766,7 +766,7 @@ export class MenuRenderer {
 
       // Single-word Ship Name (`GÜMÜŞ` / `KIZIL` / `ALTIN` / `GÖLGE`)
       drawPixelText(ctx, skin.nameTr, cx + cardW * 0.5, cy + 275, {
-        scale: 3.6,
+        scale: 4.1,
         tone: selected ? 'gold' : 'white',
         align: 'center'
       });
@@ -780,7 +780,7 @@ export class MenuRenderer {
       const statusTone = selected ? 'green' : unlocked ? 'gold' : 'muted';
 
       drawPixelText(ctx, statusText, cx + cardW * 0.5, cy + 350, {
-        scale: 3.2,
+        scale: 3.6,
         tone: statusTone,
         align: 'center'
       });
@@ -789,86 +789,86 @@ export class MenuRenderer {
     }
 
     // Bottom `GERİ` button
-    this.drawPixelPanel(ctx, 250, 1230, 400, 98, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1279, {
-      scale: 3.6,
+    this.drawPixelPanel(ctx, 250, 1230, 400, 100, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1280, {
+      scale: 4.0,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1230, 400, 98);
+    this.addButton('BACK_MAIN', 250, 1230, 400, 100);
   }
 
   // ============================================================================
-  // CLEAN `AYARLAR` SCREEN (4 CRISP ROWS + OPTIONAL `SONSUZ MOD`)
+  // CLEAN `AYARLAR` SCREEN (ERGONOMIC HAND SIDE + 3-WAY DIFFICULTY + AUDIO/HAPTICS)
   // ============================================================================
   private renderSettingsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 108, {
-      scale: 4.5,
+    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 102, {
+      scale: 4.9,
       tone: 'gold',
       align: 'center'
     });
 
-    const rowX = 76;
-    const rowW = 748;
-    const rowH = 112;
-    const startY = 196;
-    const gapY = 22;
-    const touchPrimary =
-      typeof window !== 'undefined' &&
-      ((window.matchMedia?.('(pointer: coarse)').matches ?? false) ||
-        (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+    const rowX = 66;
+    const rowW = 768;
+    const rowH = 110;
+    const startY = 186;
+    const gapY = 20;
 
-    // 1. ZORLUK: NORMAL / ZOR
-    const isHard = save.difficulty === 'LEGEND';
-    this.drawPixelPanel(ctx, rowX, startY, rowW, rowH, 'steel');
+    // 1. JOYSTICK YERİ: SAĞ EL / SOL EL (Prominently adjustable at top!)
+    const sideLabel = save.settings.joystickSide === 'LEFT' ? 'SOL EL' : 'SAĞ EL';
+    this.drawPixelPanel(ctx, rowX, startY, rowW, rowH, 'goldSelected');
     drawPixelText(
       ctx,
-      `ZORLUK: ${isHard ? 'ZOR' : 'NORMAL'}`,
+      `JOYSTICK YERİ: ${sideLabel} ⇄`,
       CANVAS_WIDTH * 0.5,
       startY + rowH * 0.5,
       {
-        scale: 3.4,
-        tone: isHard ? 'orange' : 'gold',
+        scale: 3.6,
+        tone: 'gold',
         align: 'center'
       }
     );
-    this.addButton('CYCLE_DIFFICULTY', rowX, startY, rowW, rowH);
+    this.addButton('TOGGLE_JOYSTICK_SIDE', rowX, startY, rowW, rowH);
 
-    // 2. KONTROL: JOYSTICK / KAYDIR / KLAVYE
-    const y2 = startY + (rowH + gapY);
-    const ctrlLabel = touchPrimary
-      ? 'JOYSTICK'
-      : save.settings.controlMode === 'SWIPE'
-        ? 'KAYDIR'
+    // 2. ZORLUK: KOLAY / NORMAL / ZOR
+    const y1 = startY + (rowH + gapY);
+    const diffName =
+      save.difficulty === 'EXPLORER'
+        ? 'KOLAY'
+        : save.difficulty === 'LEGEND'
+          ? 'ZOR'
+          : 'NORMAL';
+    const diffTone =
+      save.difficulty === 'EXPLORER'
+        ? 'green'
+        : save.difficulty === 'LEGEND'
+          ? 'orange'
+          : 'gold';
+    this.drawPixelPanel(ctx, rowX, y1, rowW, rowH, 'steel');
+    drawPixelText(ctx, `ZORLUK: ${diffName}`, CANVAS_WIDTH * 0.5, y1 + rowH * 0.5, {
+      scale: 3.8,
+      tone: diffTone,
+      align: 'center'
+    });
+    this.addButton('CYCLE_DIFFICULTY', rowX, y1, rowW, rowH);
+
+    // 3. KONTROL MODU: JOYSTICK / SÜRÜKLE / KLAVYE
+    const y2 = startY + (rowH + gapY) * 2;
+    const ctrlLabel =
+      save.settings.controlMode === 'SWIPE'
+        ? 'SERBEST SÜRÜKLE'
         : save.settings.controlMode === 'KEYBOARD'
           ? 'KLAVYE / GAMEPAD'
-          : 'JOYSTICK';
+          : 'JOYSTICK + KES';
     this.drawPixelPanel(ctx, rowX, y2, rowW, rowH, 'steel');
     drawPixelText(ctx, `KONTROL: ${ctrlLabel}`, CANVAS_WIDTH * 0.5, y2 + rowH * 0.5, {
-      scale: 3.4,
+      scale: 3.6,
       tone: 'cyan',
       align: 'center'
     });
-    if (!touchPrimary) this.addButton('CYCLE_CONTROL_MODE', rowX, y2, rowW, rowH);
+    this.addButton('CYCLE_CONTROL_MODE', rowX, y2, rowW, rowH);
 
-    // 2b. Mobile joystick carving is always automatic; desktop can toggle auto-cut.
-    const y2b = startY + (rowH + gapY) * 2;
-    const autoOn = touchPrimary || save.settings.autoCut;
-    this.drawPixelPanel(ctx, rowX, y2b, rowW, rowH, 'steel');
-    drawPixelText(
-      ctx,
-      touchPrimary ? 'MOBİL KESİM: OTOMATİK' : `OTOMATİK: ${autoOn ? 'AÇIK' : 'KAPALI'}`,
-      CANVAS_WIDTH * 0.5,
-      y2b + rowH * 0.5,
-      {
-        scale: 3.4,
-        tone: autoOn ? 'green' : 'muted',
-        align: 'center'
-      }
-    );
-    if (!touchPrimary) this.addButton('TOGGLE_AUTO_CUT', rowX, y2b, rowW, rowH);
-
-    // 3. SES: AÇIK / KAPALI
+    // 4. SES: AÇIK / KAPALI
     const y3 = startY + (rowH + gapY) * 3;
     const soundOn = !save.settings.muted;
     this.drawPixelPanel(ctx, rowX, y3, rowW, rowH, 'steel');
@@ -878,14 +878,14 @@ export class MenuRenderer {
       CANVAS_WIDTH * 0.5,
       y3 + rowH * 0.5,
       {
-        scale: 3.4,
+        scale: 3.8,
         tone: soundOn ? 'green' : 'muted',
         align: 'center'
       }
     );
     this.addButton('TOGGLE_MUTE', rowX, y3, rowW, rowH);
 
-    // 4. TİTREŞİM: AÇIK / KAPALI
+    // 5. TİTREŞİM: AÇIK / KAPALI
     const y4 = startY + (rowH + gapY) * 4;
     const hapOn = save.settings.hapticsEnabled;
     this.drawPixelPanel(ctx, rowX, y4, rowW, rowH, 'steel');
@@ -895,62 +895,70 @@ export class MenuRenderer {
       CANVAS_WIDTH * 0.5,
       y4 + rowH * 0.5,
       {
-        scale: 3.4,
+        scale: 3.8,
         tone: hapOn ? 'green' : 'muted',
         align: 'center'
       }
     );
     this.addButton('TOGGLE_HAPTICS', rowX, y4, rowW, rowH);
 
-    // 5. Optional `SONSUZ MOD` once the final stage (100) is cleared!
+    // 6. Optional `SONSUZ MOD` once the final stage (100) is cleared!
     if (save.sectors[TOTAL_STAGES]?.cleared) {
       const y5 = startY + (rowH + gapY) * 5;
-      this.drawPixelPanel(ctx, rowX, y5, rowW, 114, 'goldRed');
-      drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, y5 + 57, {
-        scale: 3.6,
+      this.drawPixelPanel(ctx, rowX, y5, rowW, 112, 'goldRed');
+      drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, y5 + 56, {
+        scale: 3.9,
         tone: 'gold',
         align: 'center'
       });
-      this.addButton('START_ENDLESS', rowX, y5, rowW, 114);
+      this.addButton('START_ENDLESS', rowX, y5, rowW, 112);
     }
 
     // Bottom `GERİ` Button
-    this.drawPixelPanel(ctx, 250, 1240, 400, 98, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1289, {
-      scale: 3.6,
+    this.drawPixelPanel(ctx, 250, 1246, 400, 100, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1296, {
+      scale: 4.0,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1240, 400, 98);
+    this.addButton('BACK_MAIN', 250, 1246, 400, 100);
   }
 
   // ============================================================================
   // IN-GAME PIXEL MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`, `VICTORY`)
   // ============================================================================
-  private renderPauseModal(ctx: CanvasRenderingContext2D): void {
-    this.drawPixelPanel(ctx, 110, 410, 680, 620, 'steel');
+  private renderPauseModal(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
+    this.drawPixelPanel(ctx, 84, 340, 732, 690, 'steel');
 
-    drawPixelText(ctx, 'DURAKLATILDI', CANVAS_WIDTH * 0.5, 495, {
-      scale: 4.0,
+    drawPixelText(ctx, 'DURAKLATILDI', CANVAS_WIDTH * 0.5, 420, {
+      scale: 4.4,
       tone: 'gold',
       align: 'center'
     });
 
-    this.drawModalActionBtn(ctx, 'DEVAM ET', 595, 'goldRed', 'RESUME_GAME');
-    this.drawModalActionBtn(ctx, 'TEKRAR BAŞLA', 725, 'navyBtn', 'RESTART_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 855, 'navyBtn', 'QUIT_TO_MENU');
+    const sideLabel = save.settings.joystickSide === 'LEFT' ? 'SOL EL' : 'SAĞ EL';
+    this.drawModalActionBtn(ctx, 'DEVAM ET', 500, 'goldRed', 'RESUME_GAME');
+    this.drawModalActionBtn(
+      ctx,
+      `JOYSTICK: ${sideLabel} ⇄`,
+      622,
+      'navyBtn',
+      'TOGGLE_JOYSTICK_SIDE'
+    );
+    this.drawModalActionBtn(ctx, 'TEKRAR BAŞLA', 744, 'navyBtn', 'RESTART_SECTOR');
+    this.drawModalActionBtn(ctx, 'ANA MENÜ', 866, 'navyBtn', 'QUIT_TO_MENU');
   }
 
   private renderSecondChanceModal(ctx: CanvasRenderingContext2D): void {
-    this.drawPixelPanel(ctx, 100, 460, 700, 520, 'steel');
+    this.drawPixelPanel(ctx, 84, 450, 732, 540, 'steel');
 
-    drawPixelText(ctx, 'SON ŞANS', CANVAS_WIDTH * 0.5, 545, {
-      scale: 4.2,
+    drawPixelText(ctx, 'SON ŞANS', CANVAS_WIDTH * 0.5, 538, {
+      scale: 4.5,
       tone: 'gold',
       align: 'center'
     });
-    drawPixelText(ctx, 'EKSTRA GEMİ İLE DEVAM?', CANVAS_WIDTH * 0.5, 625, {
-      scale: 2.8,
+    drawPixelText(ctx, 'EKSTRA GEMİ İLE DEVAM?', CANVAS_WIDTH * 0.5, 622, {
+      scale: 3.2,
       tone: 'white',
       align: 'center'
     });
@@ -960,14 +968,14 @@ export class MenuRenderer {
   }
 
   private renderRewardedSimModal(ctx: CanvasRenderingContext2D, countdown: number): void {
-    this.drawPixelPanel(ctx, 130, 560, 640, 320, 'steel');
-    drawPixelText(ctx, 'GEMİ HAZIRLANIYOR', CANVAS_WIDTH * 0.5, 675, {
-      scale: 3.2,
+    this.drawPixelPanel(ctx, 110, 550, 680, 340, 'steel');
+    drawPixelText(ctx, 'GEMİ HAZIRLANIYOR', CANVAS_WIDTH * 0.5, 670, {
+      scale: 3.6,
       tone: 'gold',
       align: 'center'
     });
-    drawPixelText(ctx, `${Math.ceil(Math.max(1, countdown))}`, CANVAS_WIDTH * 0.5, 765, {
-      scale: 5.0,
+    drawPixelText(ctx, `${Math.ceil(Math.max(1, countdown))}`, CANVAS_WIDTH * 0.5, 768, {
+      scale: 5.4,
       tone: 'cyan',
       align: 'center'
     });
@@ -980,14 +988,14 @@ export class MenuRenderer {
     sectorId: number,
     isEndless: boolean
   ): void {
-    this.drawPixelPanel(ctx, 84, 320, 732, 860, 'steel');
+    this.drawPixelPanel(ctx, 72, 310, 756, 880, 'steel');
 
     const title = isEndless
       ? `DALGA ${String(sectorId).padStart(3, '0')} TAMAM`
       : `BÖLÜM ${formatStageNumber(sectorId)} TAMAM`;
 
-    drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 405, {
-      scale: 3.8,
+    drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 398, {
+      scale: 4.1,
       tone: 'gold',
       align: 'center'
     });
@@ -995,17 +1003,17 @@ export class MenuRenderer {
     // 3 Large Earned Pixel Stars!
     for (let i = 0; i < 3; i++) {
       const star = getPixelStarSprite(i < bd.stars);
-      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 86, 488, 5);
+      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 484, 5);
     }
 
-    const rowLeft = 148;
-    const rowRight = 752;
-    let ry = 580;
+    const rowLeft = 128;
+    const rowRight = 772;
+    let ry = 576;
 
     const drawBonusLine = (label: string, val: string, tone: 'white' | 'gold' | 'green' | 'cyan'): void => {
-      drawPixelText(ctx, label, rowLeft, ry, { scale: 2.7, tone: 'silver', align: 'left' });
-      drawPixelText(ctx, val, rowRight, ry, { scale: 2.8, tone, align: 'right' });
-      ry += 56;
+      drawPixelText(ctx, label, rowLeft, ry, { scale: 3.1, tone: 'silver', align: 'left' });
+      drawPixelText(ctx, val, rowRight, ry, { scale: 3.2, tone, align: 'right' });
+      ry += 58;
     };
 
     const shownPct =
@@ -1026,14 +1034,14 @@ export class MenuRenderer {
       drawBonusLine('TEK ÇİZGİ', `+${bd.firstCutMillionBonus}`, 'gold');
     }
 
-    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 922, {
-      scale: 3.4,
+    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 926, {
+      scale: 3.9,
       tone: 'gold',
       align: 'center'
     });
 
-    this.drawModalActionBtn(ctx, 'SONRAKİ BÖLÜM', 990, 'goldRed', 'NEXT_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 1104, 'navyBtn', 'QUIT_TO_MENU', 88);
+    this.drawModalActionBtn(ctx, 'SONRAKİ BÖLÜM', 994, 'goldRed', 'NEXT_SECTOR');
+    this.drawModalActionBtn(ctx, 'ANA MENÜ', 1108, 'navyBtn', 'QUIT_TO_MENU', 90);
   }
 
   private renderGameOverModal(
@@ -1041,10 +1049,10 @@ export class MenuRenderer {
     currentScore: number,
     sectorId: number
   ): void {
-    this.drawPixelPanel(ctx, 100, 420, 700, 620, 'steel');
+    this.drawPixelPanel(ctx, 84, 410, 732, 640, 'steel');
 
-    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 510, {
-      scale: 4.4,
+    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 504, {
+      scale: 4.8,
       tone: 'red',
       align: 'center'
     });
@@ -1053,9 +1061,9 @@ export class MenuRenderer {
       ctx,
       `BÖLÜM ${formatStageNumber(sectorId)}`,
       CANVAS_WIDTH * 0.5,
-      595,
+      594,
       {
-        scale: 3.2,
+        scale: 3.6,
         tone: 'silver',
         align: 'center'
       }
@@ -1065,9 +1073,9 @@ export class MenuRenderer {
       ctx,
       `SKOR ${formatScoreDigits(currentScore, 7)}`,
       CANVAS_WIDTH * 0.5,
-      668,
+      670,
       {
-        scale: 3.5,
+        scale: 3.9,
         tone: 'gold',
         align: 'center'
       }
@@ -1078,21 +1086,21 @@ export class MenuRenderer {
   }
 
   private renderCampaignVictoryModal(ctx: CanvasRenderingContext2D, currentScore: number): void {
-    this.drawPixelPanel(ctx, 84, 380, 732, 680, 'goldSelected');
+    this.drawPixelPanel(ctx, 72, 370, 756, 700, 'goldSelected');
 
-    drawPixelText(ctx, 'GEZEGEN KURTARILDI', CANVAS_WIDTH * 0.5, 475, {
-      scale: 3.6,
+    drawPixelText(ctx, 'GEZEGEN KURTARILDI', CANVAS_WIDTH * 0.5, 468, {
+      scale: 3.9,
       tone: 'gold',
       align: 'center'
     });
 
     for (let i = 0; i < 3; i++) {
       const star = getPixelStarSprite(true);
-      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 565, 5);
+      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 560, 5);
     }
 
-    drawPixelText(ctx, '100 BÖLÜM TAMAMLANDI', CANVAS_WIDTH * 0.5, 655, {
-      scale: 3.0,
+    drawPixelText(ctx, '100 BÖLÜM TAMAMLANDI', CANVAS_WIDTH * 0.5, 654, {
+      scale: 3.4,
       tone: 'green',
       align: 'center'
     });
@@ -1101,9 +1109,9 @@ export class MenuRenderer {
       ctx,
       `SKOR ${formatScoreDigits(currentScore, 7)}`,
       CANVAS_WIDTH * 0.5,
-      735,
+      736,
       {
-        scale: 3.6,
+        scale: 3.9,
         tone: 'gold',
         align: 'center'
       }
@@ -1121,11 +1129,11 @@ export class MenuRenderer {
     id: string,
     h = 98
   ): void {
-    const w = 540;
+    const w = 584;
     const x = Math.round((CANVAS_WIDTH - w) * 0.5);
     this.drawPixelPanel(ctx, x, y, w, h, style);
     drawPixelText(ctx, label, CANVAS_WIDTH * 0.5, y + h * 0.5, {
-      scale: 3.3,
+      scale: 3.6,
       tone: style === 'goldRed' ? 'gold' : 'white',
       align: 'center'
     });
@@ -1133,9 +1141,9 @@ export class MenuRenderer {
   }
 
   private drawPixelToast(ctx: CanvasRenderingContext2D, text: string): void {
-    this.drawPixelPanel(ctx, 120, 108, 660, 64, 'navyBtn');
+    this.drawPixelPanel(ctx, 90, 104, 720, 72, 'navyBtn');
     drawPixelText(ctx, text, CANVAS_WIDTH * 0.5, 140, {
-      scale: 2.5,
+      scale: 3.0,
       tone: 'gold',
       align: 'center'
     });

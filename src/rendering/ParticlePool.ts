@@ -261,7 +261,7 @@ export class ParticlePool {
         t.maxLife = 1.05;
         t.text = text;
         t.tone = mapHexToTone(color);
-        t.scale = fontSize >= 28 ? ARENA_PIXEL_SCALE * 1.15 : ARENA_PIXEL_SCALE * 0.92;
+        t.scale = fontSize >= 28 ? ARENA_PIXEL_SCALE * 1.38 : ARENA_PIXEL_SCALE * 1.15;
         return;
       }
     }

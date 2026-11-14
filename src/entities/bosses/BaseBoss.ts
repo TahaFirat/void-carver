@@ -214,7 +214,7 @@ export abstract class BaseBoss {
       }
     }
 
-    const effectiveSpeedScale = bctx.speedScale * (this.enraged ? 1.2 : 1.0);
+    const effectiveSpeedScale = bctx.speedScale * (this.enraged ? 1.12 : 1.0);
     this.updateBehavior(bctx, effectiveSpeedScale);
     this.enforceWallBounce(bctx.activePolygon);
 

@@ -1,4 +1,4 @@
-import { CANVAS_HEIGHT, CANVAS_WIDTH } from './Config';
+import { CANVAS_HEIGHT, CANVAS_WIDTH, THUMB_ZONE_Y } from './Config';
 
 /**
  * V5 Universal Responsive Engine.
@@ -10,14 +10,12 @@ import { CANVAS_HEIGHT, CANVAS_WIDTH } from './Config';
  * - `PHONE_PORTRAIT`  (vw/vh < 0.72): legacy 900-wide column, extra height absorbed by
  *   safe areas and a taller control deck (zero letterboxing on tall/notched phones).
  * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; circular joystick docked to the
- *   bottom-left with automatic inward carving for natural thumb play.
- * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet (left wing: stage + lives + joystick,
- *   center: full-height arena, right wing: score/target/shield/pause + automatic-cut hint).
- *
- * All values are expressed in *virtual canvas units*; the canvas backing store is sized to
- * `virtualWidth x virtualHeight` times the device pixel ratio.
+ *   player's chosen side (`SAĞ` or `SOL`) with optional `KES` + 1-tap hand swap on the other side.
+ * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet (side wings adapt cleanly to `SAĞ` or `SOL`
+ *   joystick preference).
  */
 export type LayoutMode = 'PHONE_PORTRAIT' | 'TABLET_PORTRAIT' | 'LANDSCAPE_SPLIT';
+export type JoystickSide = 'RIGHT' | 'LEFT';
 
 export interface SafeInsets {
   top: number;
@@ -42,6 +40,7 @@ export interface ColumnTransform {
 
 export interface GameLayout {
   mode: LayoutMode;
+  joystickSide: JoystickSide;
   /** Virtual canvas size. */
   width: number;
   height: number;
@@ -58,7 +57,7 @@ export interface GameLayout {
 
   /** Portrait only: translation for the legacy top score bar (`y 0..86`). */
   topBarOffset: { x: number; y: number } | null;
-  /** Portrait only: translation for the legacy single-line status strip (`y 1230..1288`). */
+  /** Portrait only: translation for the legacy two-line status strip (`y 1224..1316`). */
   statusOffset: { x: number; y: number } | null;
   /** Portrait only: control deck background rect. */
   deckRect: Rect | null;
@@ -67,6 +66,12 @@ export interface GameLayout {
   rightWing: Rect | null;
 
   joystick: { cx: number; cy: number; radius: number };
+  /** Generous touch capture region for thumb steering on the chosen side. */
+  joystickZone: Rect;
+  /** Optional instant-carve button on the opposite side for two-thumb arcade play. */
+  cutButton: { cx: number; cy: number; radius: number };
+  /** Quick 1-tap `SOL EL <-> SAĞ EL` swap pill on the opposite side of the deck. */
+  swapSideButton: Rect;
   pauseButton: Rect;
 
   /** Single-column transform for menus & modals. */
@@ -82,7 +87,12 @@ const FRAME_TOP = 92;
 const FRAME_BOTTOM = 1220;
 const FRAME_LEFT = 21;
 const FRAME_RIGHT = 879;
-const STATUS_BOTTOM = 1308;
+const STATUS_BOTTOM = THUMB_ZONE_Y; // 1320
+
+let preferredJoystickSide: JoystickSide = 'RIGHT';
+let lastCssW = LEGACY_W / 2;
+let lastCssH = LEGACY_H / 2;
+let lastInsetsCss: SafeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 
 export function classifyLayoutMode(cssW: number, cssH: number): LayoutMode {
   const aspect = cssW / Math.max(1, cssH);
@@ -91,10 +101,6 @@ export function classifyLayoutMode(cssW: number, cssH: number): LayoutMode {
   return 'PHONE_PORTRAIT';
 }
 
-/**
- * Picks the virtual canvas size so that `requiredW x requiredH` content (+ safe insets)
- * always fits while exactly matching the device aspect ratio (no letterboxing).
- */
 function fitVirtualCanvas(
   cssW: number,
   cssH: number,
@@ -107,7 +113,6 @@ function fitVirtualCanvas(
   let cssScale = 1;
   let safe: SafeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 
-  // Two refinement passes: insets are in CSS px and depend on the resulting scale
   for (let pass = 0; pass < 3; pass++) {
     const innerCssW = Math.max(60, cssW - insetsCss.left - insetsCss.right);
     const innerCssH = Math.max(60, cssH - insetsCss.top - insetsCss.bottom);
@@ -124,7 +129,17 @@ function fitVirtualCanvas(
   return { width, height, cssScale, safe };
 }
 
-export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets): GameLayout {
+export function computeLayout(
+  cssW: number,
+  cssH: number,
+  insetsCss: SafeInsets,
+  joystickSide: JoystickSide = preferredJoystickSide
+): GameLayout {
+  lastCssW = cssW;
+  lastCssH = cssH;
+  lastInsetsCss = insetsCss;
+  preferredJoystickSide = joystickSide;
+
   const mode = classifyLayoutMode(cssW, cssH);
 
   if (mode === 'LANDSCAPE_SPLIT') {
@@ -156,13 +171,40 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
       h: innerH - wingPad * 2
     };
 
-    const joystickRadius = Math.round(Math.max(82, Math.min(116, leftWing.w * 0.34)));
+    const stickWing = joystickSide === 'RIGHT' ? rightWing : leftWing;
+    const auxWing = joystickSide === 'RIGHT' ? leftWing : rightWing;
+
+    const joystickRadius = Math.round(Math.max(82, Math.min(114, stickWing.w * 0.34)));
     const joystick = {
-      cx: leftWing.x + leftWing.w * 0.5,
-      cy: leftWing.y + leftWing.h - joystickRadius - 48,
+      cx: stickWing.x + stickWing.w * 0.5,
+      cy: stickWing.y + stickWing.h - joystickRadius - 54,
       radius: joystickRadius
     };
-    const pauseSize = Math.round(Math.max(56, Math.min(84, Math.min(leftWing.w, rightWing.w) * 0.24)));
+    const joystickZone: Rect = {
+      x: stickWing.x,
+      y: stickWing.y + stickWing.h * 0.44,
+      w: stickWing.w,
+      h: stickWing.h * 0.56
+    };
+
+    const cutRadius = Math.round(Math.max(62, Math.min(84, auxWing.w * 0.26)));
+    const swapW = Math.min(auxWing.w - 28, 236);
+    const swapH = 54;
+    const swapSideButton: Rect = {
+      x: Math.round(auxWing.x + (auxWing.w - swapW) * 0.5),
+      y: Math.round(auxWing.y + auxWing.h - swapH - 18),
+      w: Math.round(swapW),
+      h: swapH
+    };
+    const cutButton = {
+      cx: auxWing.x + auxWing.w * 0.5,
+      cy: swapSideButton.y - cutRadius - 24,
+      radius: cutRadius
+    };
+
+    const pauseSize = Math.round(
+      Math.max(58, Math.min(86, Math.min(leftWing.w, rightWing.w) * 0.25))
+    );
     const pauseButton: Rect = {
       x: rightWing.x + rightWing.w - pauseSize,
       y: rightWing.y,
@@ -177,7 +219,6 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
       s: colS
     };
 
-    // Landscape main menu: hero (legacy y 0..610) left, selector (legacy y 610..1440) right
     const halfW = (width - safe.left - safe.right) * 0.5;
     const availH = height - safe.top - safe.bottom;
     const heroS = Math.min(halfW / LEGACY_W, (availH * 0.92) / 610);
@@ -195,6 +236,7 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
 
     return {
       mode,
+      joystickSide,
       width,
       height,
       cssScale: fit.cssScale,
@@ -208,6 +250,9 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
       leftWing,
       rightWing,
       joystick,
+      joystickZone,
+      cutButton,
+      swapSideButton,
       pauseButton,
       menuColumn,
       menuHero,
@@ -221,27 +266,55 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
   const innerH = height - safe.top - safe.bottom;
   const extraH = Math.max(0, innerH - LEGACY_H);
   const columnX = (width - LEGACY_W) * 0.5;
-  // Push the arena slightly down on very tall phones; the rest goes to a taller control deck
   const topShift = safe.top + Math.min(extraH * 0.25, 60);
   const deckTop = topShift + STATUS_BOTTOM;
   const deckBottom = height - safe.bottom;
-  const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckBottom - deckTop };
+  const deckH = Math.max(240, deckBottom - deckTop);
+  const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckH };
 
   const isTablet = mode === 'TABLET_PORTRAIT' || width > LEGACY_W + 120;
-  const deckH = deckBottom - deckTop;
   const joystickRadius = Math.round(
-    Math.max(82, Math.min(124, deckH * 0.34, deckH * 0.5 - 38))
+    Math.max(82, Math.min(118, deckH * 0.34, deckH * 0.5 - 40))
   );
-  const joystickCx = isTablet
-    ? safe.left + joystickRadius + 32
-    : columnX + Math.max(joystickRadius + 28, 170);
+
+  const leftCx = isTablet
+    ? safe.left + joystickRadius + 38
+    : columnX + Math.max(joystickRadius + 34, 212);
+  const rightCx = isTablet
+    ? width - safe.right - joystickRadius - 38
+    : columnX + LEGACY_W - Math.max(joystickRadius + 34, 212);
+
+  const stickCx = joystickSide === 'RIGHT' ? rightCx : leftCx;
+  const auxCx = joystickSide === 'RIGHT' ? leftCx : rightCx;
+
   const joystick = {
-    cx: joystickCx,
-    cy: deckTop + deckH * 0.5,
+    cx: stickCx,
+    cy: deckTop + Math.min(deckH * 0.46, deckH - joystickRadius - 42),
     radius: joystickRadius
   };
 
-  const pauseButton: Rect = { x: columnX + LEGACY_W - 120, y: topShift, w: 120, h: 86 };
+  const joystickZone: Rect =
+    joystickSide === 'RIGHT'
+      ? { x: width * 0.45, y: deckTop, w: width * 0.55, h: deckH }
+      : { x: 0, y: deckTop, w: width * 0.55, h: deckH };
+
+  const swapW = 248;
+  const swapH = 54;
+  const cutRadius = Math.round(Math.max(62, Math.min(82, (deckH - swapH - 54) * 0.42)));
+  const cutCy = Math.round(deckTop + Math.max(cutRadius + 28, (deckH - swapH - 26) * 0.48));
+  const cutButton = {
+    cx: auxCx,
+    cy: cutCy,
+    radius: cutRadius
+  };
+  const swapSideButton: Rect = {
+    x: Math.round(auxCx - swapW * 0.5),
+    y: Math.round(Math.min(deckBottom - swapH - 10, cutCy + cutRadius + 16)),
+    w: swapW,
+    h: swapH
+  };
+
+  const pauseButton: Rect = { x: columnX + LEGACY_W - 124, y: topShift, w: 124, h: 88 };
 
   const menuColumn: ColumnTransform = {
     tx: columnX,
@@ -251,6 +324,7 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
 
   return {
     mode,
+    joystickSide,
     width,
     height,
     cssScale: fit.cssScale,
@@ -269,6 +343,9 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
     leftWing: null,
     rightWing: null,
     joystick,
+    joystickZone,
+    cutButton,
+    swapSideButton,
     pauseButton,
     menuColumn,
     menuHero: null,
@@ -299,12 +376,12 @@ export function readSafeAreaInsets(): SafeInsets {
   };
 }
 
-let currentLayout: GameLayout = computeLayout(LEGACY_W / 2, LEGACY_H / 2, {
-  top: 0,
-  right: 0,
-  bottom: 0,
-  left: 0
-});
+let currentLayout: GameLayout = computeLayout(
+  LEGACY_W / 2,
+  LEGACY_H / 2,
+  { top: 0, right: 0, bottom: 0, left: 0 },
+  'RIGHT'
+);
 
 export function getLayout(): GameLayout {
   return currentLayout;
@@ -312,4 +389,14 @@ export function getLayout(): GameLayout {
 
 export function setLayout(layout: GameLayout): void {
   currentLayout = layout;
+}
+
+export function setPreferredJoystickSide(side: JoystickSide): GameLayout {
+  preferredJoystickSide = side;
+  currentLayout = computeLayout(lastCssW, lastCssH, lastInsetsCss, side);
+  return currentLayout;
+}
+
+export function getPreferredJoystickSide(): JoystickSide {
+  return preferredJoystickSide;
 }

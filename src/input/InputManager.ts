@@ -1,5 +1,5 @@
 import { Direction } from '../geometry/Types';
-import { CarveButtonMode, ControlMode } from '../services/StorageService';
+import { CarveButtonMode, ControlMode, JoystickSide } from '../services/StorageService';
 import { TouchControls } from './TouchControls';
 
 export interface InputState {
@@ -23,8 +23,13 @@ export class InputManager {
     this.bindKeyboard();
   }
 
-  public configure(mode: ControlMode, _carveMode: CarveButtonMode, _autoCut = false): void {
-    this.touch.configure(mode);
+  public configure(
+    mode: ControlMode,
+    _carveMode: CarveButtonMode,
+    _autoCut = false,
+    joystickSide: JoystickSide = 'RIGHT'
+  ): void {
+    this.touch.configure(mode, joystickSide);
   }
 
   public resetActiveInputs(): void {

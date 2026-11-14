@@ -111,6 +111,7 @@ export class GameEngine {
   private minions: InteriorMinion[] = [];
   private crawlers: BorderCrawler[] = [];
   private powerBoxes: PowerUpBox[] = [];
+  private activeSolidBoxes: PowerUpBox[] = [];
   private capsules: PowerUpCapsule[] = [];
   private fuses: TrailFuse[] = [];
 
@@ -154,6 +155,9 @@ export class GameEngine {
       (dt) => this.update(dt),
       (alpha, frameDt) => this.render(alpha, frameDt)
     );
+    this.input.touch.setOnSwapSide(() => {
+      void this.toggleJoystickSide();
+    });
   }
 
   public async boot(ctx: CanvasRenderingContext2D): Promise<void> {
@@ -299,9 +303,26 @@ export class GameEngine {
 
   private applySavedSettings(): void {
     const s = StorageService.getCurrent().settings;
-    this.input.configure(s.controlMode, s.carveButtonMode, s.autoCut);
+    this.input.configure(s.controlMode, s.carveButtonMode, s.autoCut, s.joystickSide);
     SoundEngine.setVolumes(s.sfxVolume, s.ambientVolume, s.muted);
     NativeBridge.setHapticsEnabled(s.hapticsEnabled);
+  }
+
+  public resetPointerInputs(): void {
+    this.autoCutArmDir = null;
+    this.autoCutArmTimer = 0;
+    this.input.resetActiveInputs();
+  }
+
+  private async toggleJoystickSide(): Promise<void> {
+    await StorageService.save((d) => {
+      d.settings.joystickSide = d.settings.joystickSide === 'LEFT' ? 'RIGHT' : 'LEFT';
+    });
+    this.applySavedSettings();
+    SoundEngine.playUiClick();
+    NativeBridge.hapticPowerUp();
+    const side = StorageService.getCurrent().settings.joystickSide;
+    this.showToast(side === 'RIGHT' ? 'JOYSTICK: SAĞ EL' : 'JOYSTICK: SOL EL');
   }
 
   private showToast(msgTr: string): void {
@@ -340,10 +361,20 @@ export class GameEngine {
     }
 
     if (actionId === 'CYCLE_DIFFICULTY') {
-      const nextDiff: DifficultyId = save.difficulty === 'LEGEND' ? 'COMMANDER' : 'LEGEND';
+      const nextDiff: DifficultyId =
+        save.difficulty === 'EXPLORER'
+          ? 'COMMANDER'
+          : save.difficulty === 'COMMANDER'
+            ? 'LEGEND'
+            : 'EXPLORER';
       await StorageService.save((d) => {
         d.difficulty = nextDiff;
       });
+      return;
+    }
+
+    if (actionId === 'TOGGLE_JOYSTICK_SIDE') {
+      await this.toggleJoystickSide();
       return;
     }
 
@@ -622,11 +653,12 @@ export class GameEngine {
 
   /** Pushes the live (uncollected) wall blocks to the ship's collision list. */
   private syncSolidBoxes(): void {
-    this.ship.solidBoxes = this.powerBoxes.filter((b) => !b.collected);
+    this.activeSolidBoxes = this.powerBoxes.filter((b) => !b.collected);
+    this.ship.solidBoxes = this.activeSolidBoxes;
   }
 
-  private getActiveSolidBoxes(): PowerUpBox[] {
-    return this.powerBoxes.filter((b) => !b.collected);
+  private getActiveSolidBoxes(): readonly PowerUpBox[] {
+    return this.activeSolidBoxes;
   }
 
   /** Bosses that decide the stage (escorts are optional extra threats). */
@@ -723,31 +755,52 @@ export class GameEngine {
       this.dirHoldTime = 0;
     }
 
-    // Require a deliberate inward hold before touch steering starts carving.
-    // The joystick can be touched anywhere in the left dock, so its first drag
-    // direction must never launch a cut immediately.
+    // Smart Auto-Cut:
+    // - Never freezes border walking or 26px corner turns (`canMoveOrApproachOnBorder`).
+    // - Respects post-exit cooldown (`isAutoCutSuppressedAfterExit`) so exiting a cut never bounces back in.
+    // - Supports all valid inward directions (including concave corners with 2 inward axes).
+    this.syncSolidBoxes();
     const touchAutoCutRequested = input.autoCarveSwipe;
     input.autoCarveSwipe = false;
+
+    const inwardDirs =
+      this.ship.state === 'ON_BORDER'
+        ? this.ship.getInwardBorderDirections(this.activePolygon, this.activeBarriers)
+        : [];
+    const canMoveOnBorder =
+      this.ship.state === 'ON_BORDER' &&
+      input.direction !== null &&
+      this.ship.canMoveOrApproachOnBorder(input.direction, this.activePolygon);
+    const postExitSuppressed =
+      this.ship.state === 'ON_BORDER' &&
+      this.ship.isAutoCutSuppressedAfterExit(input.direction);
+
+    const autoCutHoldSeconds = 0.17;
     if (
       touchAutoCutRequested &&
       this.ship.state === 'ON_BORDER' &&
       input.direction !== null &&
-      input.direction === this.ship.getInwardBorderDirection(this.activePolygon)
+      !canMoveOnBorder &&
+      inwardDirs.includes(input.direction)
     ) {
-      if (this.autoCutArmDir === input.direction) {
-        this.autoCutArmTimer += dt;
-      } else {
-        this.autoCutArmDir = input.direction;
-        this.autoCutArmTimer = dt;
-      }
-      this.input.touch.setCutArmProgress(this.autoCutArmTimer / 0.26);
-      if (this.autoCutArmTimer < 0.26) {
-        input.direction = null;
-      } else {
-        input.carveHeld = true;
+      if (postExitSuppressed) {
         this.autoCutArmDir = null;
         this.autoCutArmTimer = 0;
         this.input.touch.setCutArmProgress(0);
+      } else {
+        if (this.autoCutArmDir === input.direction) {
+          this.autoCutArmTimer += dt;
+        } else {
+          this.autoCutArmDir = input.direction;
+          this.autoCutArmTimer = dt;
+        }
+        this.input.touch.setCutArmProgress(this.autoCutArmTimer / autoCutHoldSeconds);
+        if (this.autoCutArmTimer >= autoCutHoldSeconds) {
+          input.carveHeld = true;
+          this.autoCutArmDir = null;
+          this.autoCutArmTimer = 0;
+          this.input.touch.setCutArmProgress(0);
+        }
       }
     } else {
       this.autoCutArmDir = null;
@@ -760,14 +813,15 @@ export class GameEngine {
       !input.carveHeld &&
       this.ship.state === 'ON_BORDER' &&
       input.direction !== null &&
-      this.dirHoldTime >= 0.1 &&
-      input.direction === this.ship.getInwardBorderDirection(this.activePolygon)
+      !canMoveOnBorder &&
+      !postExitSuppressed &&
+      this.dirHoldTime >= 0.12 &&
+      inwardDirs.includes(input.direction)
     ) {
       input.carveHeld = true;
     }
 
     // 1. Update Twin-Prong Fighter & Check Cut Completion
-    this.syncSolidBoxes();
     const prevX = this.ship.x;
     const prevY = this.ship.y;
     const completedCut = this.ship.update(dt, input, this.activePolygon, this.activeBarriers);
@@ -907,8 +961,16 @@ export class GameEngine {
           currentMinionCount: this.minions.length + spawnedMinions.length
         });
 
-        // V5: bosses bounce elastically off solid wall blocks
-        bounceCircleOffSolidBoxes(boss, boss.boundingRadius * 0.8, this.getActiveSolidBoxes());
+        // V5: bosses bounce elastically off solid wall blocks (re-clamp inside activePolygon if pushed)
+        if (bounceCircleOffSolidBoxes(boss, boss.boundingRadius * 0.8, this.getActiveSolidBoxes())) {
+          const clamped = resolvePolygonPenetration(
+            { x: boss.x, y: boss.y },
+            boss.boundingRadius * 0.75,
+            this.activePolygon
+          );
+          boss.x = clamped.position.x;
+          boss.y = clamped.position.y;
+        }
 
         if (!boss.alive && boss.crushedInPocket) {
           pocketCrushTriggered = true;
@@ -939,7 +1001,9 @@ export class GameEngine {
           spawnChildMinion: (child) => spawnedMinions.push(child),
           currentMinionCount: this.minions.length + spawnedMinions.length
         });
-        bounceCircleOffSolidBoxes(m, m.radius, this.getActiveSolidBoxes());
+        if (bounceCircleOffSolidBoxes(m, m.radius, this.getActiveSolidBoxes())) {
+          m.enforcePolygonBounds(this.activePolygon);
+        }
       }
 
       if (spawnedMinions.length > 0) {
@@ -1062,7 +1126,10 @@ export class GameEngine {
     this.hesitationFuseLit = false;
 
     const split = PolygonSplitter.split(this.activePolygon, trail);
-    if (!split) return;
+    if (!split) {
+      this.ship.snapOntoUpdatedPolygon(this.activePolygon);
+      return;
+    }
 
     this.cutsThisLevel += 1;
 
@@ -1339,7 +1406,7 @@ export class GameEngine {
     if (this.ship.state === 'CUTTING' && activeTrail.length >= 2 && this.timeFreezeTimer <= 0) {
       const checkTrailIgnite = (ex: number, ey: number, er: number): void => {
         const proj = projectPointToPolyline({ x: ex, y: ey }, activeTrail);
-        if (proj.distance <= er + 4) {
+        if (proj.distance <= er + 1) {
           const alreadyLit = this.fuses.some((f) => f.arcDistance >= proj.arcLength - 36);
           if (!alreadyLit) {
             this.fuses.push(new TrailFuse(proj.arcLength, activeTrail));
@@ -1374,7 +1441,7 @@ export class GameEngine {
     // 3. Direct Hazards vs Player Ship
     if (this.ship.invulnerableTimer > 0) return;
 
-    const shipRadius = 12;
+    const shipRadius = 9;
 
     // 3a. Spike Mines (`BorderCrawler`): deflected while Circular Shield is active, lethal when shield hits 0!
     for (const c of this.crawlers) {
@@ -1456,6 +1523,10 @@ export class GameEngine {
     this.fuses = [];
     this.cutStallTimer = 0;
     this.hesitationFuseLit = false;
+    this.autoCutArmDir = null;
+    this.autoCutArmTimer = 0;
+    this.input.touch.setCutArmProgress(0);
+    this.projectiles.clearEnemyBullets();
     this.deathsThisLevel += 1;
     this.lives -= 1;
 
@@ -1875,13 +1946,13 @@ export class GameEngine {
     if (this.roundIntroTimer > 0 && this.screen === 'PLAYING') {
       const stageLabel = this.getStageLabel();
       ctx.save();
-      ctx.fillStyle = 'rgba(6, 8, 16, 0.88)';
-      ctx.fillRect(250, 535, 400, 96);
+      ctx.fillStyle = 'rgba(6, 8, 16, 0.90)';
+      ctx.fillRect(210, 526, 480, 112);
       ctx.strokeStyle = PALETTE.GOLD_LIGHT;
       ctx.lineWidth = 4;
-      ctx.strokeRect(250, 535, 400, 96);
-      drawPixelText(ctx, stageLabel, 450, 583, {
-        scale: ARENA_PIXEL_SCALE * 1.55,
+      ctx.strokeRect(210, 526, 480, 112);
+      drawPixelText(ctx, stageLabel, 450, 582, {
+        scale: ARENA_PIXEL_SCALE * 1.8,
         tone: 'gold',
         align: 'center'
       });
@@ -1902,18 +1973,18 @@ export class GameEngine {
     ctx.fillStyle = '#03050A';
     ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
 
-    drawPixelText(ctx, 'SKOR', 38, 24, { scale: 3, tone: 'silver', align: 'left' });
-    drawPixelText(ctx, String(this.score).padStart(7, '0'), 38, 60, {
-      scale: 3.8,
+    drawPixelText(ctx, 'SKOR', 34, 23, { scale: 3.4, tone: 'silver', align: 'left' });
+    drawPixelText(ctx, String(this.score).padStart(7, '0'), 34, 62, {
+      scale: 4.3,
       tone: 'white',
       align: 'left'
     });
 
     const rawBest = this.isEndlessMode ? save.highScoreEndless : save.highScoreCampaign;
     const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rawBest, this.score);
-    drawPixelText(ctx, 'REKOR', CANVAS_WIDTH * 0.5, 24, { scale: 3, tone: 'gold', align: 'center' });
-    drawPixelText(ctx, String(displayHi).padStart(7, '0'), CANVAS_WIDTH * 0.5, 60, {
-      scale: 3.8,
+    drawPixelText(ctx, 'REKOR', 475, 23, { scale: 3.4, tone: 'gold', align: 'center' });
+    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 475, 62, {
+      scale: 4.3,
       tone: 'gold',
       align: 'center'
     });
@@ -1936,31 +2007,37 @@ export class GameEngine {
     const stage = this.isEndlessMode
       ? this.getStageLabel()
       : `${this.currentLevel.tier} • ${this.getStageLabel()}`;
-    const stageY = HUD_BOTTOM_Y + 21;
-    const statsY = HUD_BOTTOM_Y + 58;
-    drawPixelText(ctx, stage, 32, stageY, { scale: 2.5, tone: 'white', align: 'left' });
+    const stageY = HUD_BOTTOM_Y + 26;
+    const statsY = HUD_BOTTOM_Y + 68;
+    drawPixelText(ctx, stage, 34, stageY, { scale: 3.1, tone: 'white', align: 'left' });
 
     const miniShip = getMiniShipHudSprite();
-    const shownLives = Math.max(0, Math.min(this.lives, 5));
+    const shownLives = Math.max(0, Math.min(this.lives, 6));
     for (let i = 0; i < shownLives; i++) {
-      blitPixelSprite(ctx, miniShip, 408 + i * 29, stageY, PIXEL_SCALE);
+      blitPixelSprite(
+        ctx,
+        miniShip,
+        CANVAS_WIDTH - 48 - i * 33,
+        stageY,
+        PIXEL_SCALE * 1.1
+      );
     }
 
     const target = this.currentLevel.targetPercent;
-    drawPixelText(ctx, 'ALAN', 32, statsY, {
-      scale: 2.6,
+    drawPixelText(ctx, 'ALAN', 34, statsY, {
+      scale: 3.1,
       tone: 'silver',
       align: 'left'
     });
-    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}% / ${target}%`, 128, statsY, {
-      scale: 2.8,
+    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}% / ${target}%`, 148, statsY, {
+      scale: 3.3,
       tone: this.claimedPercent >= target ? 'green' : 'gold',
       align: 'left'
     });
 
     const shieldStr = String(this.ship.getShieldUnits()).padStart(3, '0');
-    drawPixelText(ctx, `KALKAN ${shieldStr}`, CANVAS_WIDTH - 30, statsY, {
-      scale: 2.6,
+    drawPixelText(ctx, `KALKAN ${shieldStr}`, CANVAS_WIDTH - 34, statsY, {
+      scale: 3.1,
       tone: this.getShieldTone(),
       align: 'right'
     });

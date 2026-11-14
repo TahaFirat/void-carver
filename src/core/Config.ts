@@ -34,9 +34,9 @@ export const MIDDLE_ZONE_Y = ARENA_VIEW_Y - FRAME_BEZEL_PX; // 92
 export const MIDDLE_ZONE_HEIGHT = ARENA_VIEW_HEIGHT + FRAME_BEZEL_PX * 2; // 1128
 export const ARENA_PADDING = ARENA_VIEW_X;
 export const HUD_BOTTOM_Y = 1224;
-export const HUD_BOTTOM_HEIGHT = 78;
-export const THUMB_ZONE_Y = 1308;
-export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 292
+export const HUD_BOTTOM_HEIGHT = 92;
+export const THUMB_ZONE_Y = 1320;
+export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 280
 
 // Geometry & fixed-timestep physics invariants
 export const GRID_STEP = 2;
@@ -46,25 +46,23 @@ export const MAX_ACCUMULATOR = 0.05;
 
 // Authentic 1989 Arcade Gameplay & Mobile Ergonomic Tuning
 export const TARGET_CLAIM_PERCENT = 80.0;
-export const ENRAGE_CLAIM_PERCENT = 65.0;
-export const CORNER_BUFFER_DIST = 18; // 18px corner magnet
-export const CORNER_BUFFER_TIME = 0.14; // 140ms early turn memory
+export const ENRAGE_CLAIM_PERCENT = 72.0;
+export const CORNER_BUFFER_DIST = 26; // 26px generous mobile corner magnet
+export const CORNER_BUFFER_TIME = 0.18; // 180ms early turn memory
 
-// Exact V4 Speed Rules:
-// - Normal cut speed: 300 px/s
-// - Trail Spark (Fuse) speed: 380 px/s
-// - Speed-Up (`S`) cut speed: 430 px/s (outruns the 380 px/s spark!)
-// - 180-degree Line Backtrack speed: 1.15x current cut speed
-export const BASE_BORDER_SPEED = 324;
-export const BASE_CUT_SPEED = 300;
-export const BASE_FUSE_SPEED = 380;
-export const BASE_FUSE_MULTIPLIER = BASE_FUSE_SPEED / BASE_CUT_SPEED; // 1.2667
-export const SPEED_BOOSTED_CUT_SPEED = 430;
-export const SPEED_UP_STEP = (SPEED_BOOSTED_CUT_SPEED - BASE_CUT_SPEED) / BASE_CUT_SPEED; // +0.4334
-export const MAX_SPEED_MULTIPLIER = 1.65;
-export const BACKTRACK_SPEED_MULTIPLIER = 1.15;
-export const SHIELD_ZERO_GRACE_SECONDS = 3.0;
-export const IDLE_FUSE_DELAY_SECONDS = 3.5;
+// Tuned Mobile-Friendly Speed Rules:
+// - Fast & responsive player border/cut speeds
+// - 180-degree Line Backtrack speed: 1.32x current cut speed for quick safe retreats
+export const BASE_BORDER_SPEED = 360;
+export const BASE_CUT_SPEED = 330;
+export const BASE_FUSE_SPEED = 360;
+export const BASE_FUSE_MULTIPLIER = BASE_FUSE_SPEED / BASE_CUT_SPEED;
+export const SPEED_BOOSTED_CUT_SPEED = 465;
+export const SPEED_UP_STEP = (SPEED_BOOSTED_CUT_SPEED - BASE_CUT_SPEED) / BASE_CUT_SPEED;
+export const MAX_SPEED_MULTIPLIER = 1.7;
+export const BACKTRACK_SPEED_MULTIPLIER = 1.32;
+export const SHIELD_ZERO_GRACE_SECONDS = 4.0;
+export const IDLE_FUSE_DELAY_SECONDS = 5.5;
 
 // Authentic 1989 Arcade Scoring
 export const DEFAULT_ARCADE_HIGH_SCORE = 800_390;
@@ -81,7 +79,7 @@ export const TWIN_SPLIT_BONUS = 100_000;
 export const BOSS_DESTROY_BONUS = 100_000;
 export const MASTER_CARVE_BONUS = 500_000;
 export const SHIELD_UNIT_BONUS = 20;
-export const EXTRA_LIFE_SCORE_STEP = 200_000;
+export const EXTRA_LIFE_SCORE_STEP = 150_000;
 
 export const UI_FONT_FAMILY = '"Courier New", Consolas, monospace';
 export const ARCADE_FONT_FAMILY = '"Courier New", Consolas, monospace';
@@ -271,10 +269,10 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
     shortTr: 'KOLAY',
     shortEn: 'EASY',
     startingLives: 5,
-    shieldMultiplier: 1.2,
-    enemySpeedMultiplier: 0.88,
-    fuseSpeedMultiplier: 1.15,
-    scoreMultiplier: 0.9,
+    shieldMultiplier: 1.35,
+    enemySpeedMultiplier: 0.78,
+    fuseSpeedMultiplier: 0.94,
+    scoreMultiplier: 1.0,
     unlockAllSectors: false,
     isHardMode: false
   },
@@ -284,10 +282,10 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
     nameEn: 'NORMAL',
     shortTr: 'NORMAL',
     shortEn: 'NORMAL',
-    startingLives: 3,
-    shieldMultiplier: 1.0,
-    enemySpeedMultiplier: 1.0,
-    fuseSpeedMultiplier: BASE_FUSE_MULTIPLIER,
+    startingLives: 4,
+    shieldMultiplier: 1.15,
+    enemySpeedMultiplier: 0.88,
+    fuseSpeedMultiplier: 1.04,
     scoreMultiplier: 1.0,
     unlockAllSectors: false,
     isHardMode: false
@@ -299,9 +297,9 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
     shortTr: 'ZOR',
     shortEn: 'HARD',
     startingLives: 3,
-    shieldMultiplier: 0.8,
-    enemySpeedMultiplier: 1.15,
-    fuseSpeedMultiplier: 1.38,
+    shieldMultiplier: 0.92,
+    enemySpeedMultiplier: 1.08,
+    fuseSpeedMultiplier: 1.24,
     scoreMultiplier: 1.35,
     unlockAllSectors: false,
     isHardMode: true

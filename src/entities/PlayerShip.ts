@@ -73,6 +73,8 @@ export class PlayerShip {
   private turnBufferDir: Direction | null = null;
   private turnBufferTimer = 0;
   private backtrackCornerLatchDir: Direction | null = null;
+  private postExitAutoCutCooldown = 0;
+  private postExitLatchDir: Direction | null = null;
   private fireCooldown = 0;
 
   public initForLevel(
@@ -99,13 +101,15 @@ export class PlayerShip {
     this.speedMultiplier = 1.0;
     this.laserTimer = 0;
     this.bossCannonTimer = 0;
-    this.invulnerableTimer = 1.5;
+    this.invulnerableTimer = 2.0;
     this.shieldHitFlash = 0;
     this.turnedCornerThisStep = false;
     this.moveRemainder = 0;
     this.turnBufferDir = null;
     this.turnBufferTimer = 0;
     this.backtrackCornerLatchDir = null;
+    this.postExitAutoCutCooldown = 0;
+    this.postExitLatchDir = null;
     this.fireCooldown = 0;
   }
 
@@ -124,7 +128,7 @@ export class PlayerShip {
     this.speedMultiplier = 1.0;
     this.laserTimer = 0;
     this.bossCannonTimer = 0;
-    this.invulnerableTimer = 2.2;
+    this.invulnerableTimer = 2.8;
     if (this.shieldTimer <= 0 && this.shieldGraceTimer <= 0) {
       this.shieldGraceTimer = SHIELD_ZERO_GRACE_SECONDS;
     }
@@ -132,6 +136,8 @@ export class PlayerShip {
     this.turnBufferDir = null;
     this.turnBufferTimer = 0;
     this.backtrackCornerLatchDir = null;
+    this.postExitAutoCutCooldown = 0.32;
+    this.postExitLatchDir = null;
   }
 
   public snapOntoUpdatedPolygon(activePolygon: readonly Point[]): void {
@@ -200,17 +206,75 @@ export class PlayerShip {
   }
 
   /**
-   * Computes inward firing / entry direction when ship is on safe perimeter.
+   * Computes all valid inward entry directions from the current border position
+   * (supports concave vertices where 2 directions point into `activePolygon`).
    */
-  public getInwardBorderDirection(activePolygon: readonly Point[]): Direction | null {
+  public getInwardBorderDirections(
+    activePolygon: readonly Point[],
+    activeBarriers?: readonly Barrier[]
+  ): Direction[] {
+    if (activeBarriers && isPointOnBarrier({ x: this.x, y: this.y }, activeBarriers, 0.5)) {
+      return [];
+    }
+    const validBorder = this.getValidBorderDirections({ x: this.x, y: this.y }, activePolygon);
+    const out: Direction[] = [];
     const dirs: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
     for (const d of dirs) {
+      if (validBorder.includes(d)) continue;
       const { dx, dy } = DIR_VECTORS[d];
-      if (pointInPolygonStrict({ x: this.x + dx * 2, y: this.y + dy * 2 }, activePolygon)) {
-        return d;
+      const probe1 = { x: this.x + dx * 1, y: this.y + dy * 1 };
+      const probe2 = { x: this.x + dx * GRID_STEP, y: this.y + dy * GRID_STEP };
+      if (
+        pointInPolygonStrict(probe1, activePolygon) &&
+        !isPointBlockedBySolidBoxes(probe2, this.solidBoxes)
+      ) {
+        out.push(d);
       }
     }
-    return null;
+    return out;
+  }
+
+  /**
+   * Computes primary inward firing / entry direction when ship is on safe perimeter.
+   */
+  public getInwardBorderDirection(activePolygon: readonly Point[]): Direction | null {
+    const dirs = this.getInwardBorderDirections(activePolygon);
+    if (dirs.length === 0) {
+      const allDirs: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+      for (const d of allDirs) {
+        const { dx, dy } = DIR_VECTORS[d];
+        if (pointInPolygonStrict({ x: this.x + dx * 2, y: this.y + dy * 2 }, activePolygon)) {
+          return d;
+        }
+      }
+      return null;
+    }
+    if (dirs.includes(this.facing)) return this.facing;
+    return dirs[0];
+  }
+
+  /**
+   * Returns true if `dir` walks directly along the safe border OR approaches an upcoming
+   * border corner within `CORNER_BUFFER_DIST` (prevents auto-cut from freezing corner turns!).
+   */
+  public canMoveOrApproachOnBorder(dir: Direction, activePolygon: readonly Point[]): boolean {
+    const pos = { x: this.x, y: this.y };
+    const validBorderDirs = this.getValidBorderDirections(pos, activePolygon);
+    if (validBorderDirs.includes(dir)) return true;
+    return (
+      this.findCornerApproachDirection(pos, dir, validBorderDirs, activePolygon) !== null
+    );
+  }
+
+  /**
+   * Prevents accidental bounce re-entry right after completing a cut or 180° backtrack.
+   */
+  public isAutoCutSuppressedAfterExit(heldDir: Direction | null): boolean {
+    if (this.postExitAutoCutCooldown > 0) return true;
+    if (heldDir !== null && this.postExitLatchDir !== null && heldDir === this.postExitLatchDir) {
+      return true;
+    }
+    return false;
   }
 
   public canFireWeapon(dt: number): 'LASER' | 'BOSS_CANNON' | null {
@@ -271,6 +335,12 @@ export class PlayerShip {
 
     if (this.backtrackCornerLatchDir && input.direction !== this.backtrackCornerLatchDir) {
       this.backtrackCornerLatchDir = null;
+    }
+    if (this.postExitAutoCutCooldown > 0) {
+      this.postExitAutoCutCooldown = Math.max(0, this.postExitAutoCutCooldown - dt);
+    }
+    if (this.postExitLatchDir && input.direction !== this.postExitLatchDir) {
+      this.postExitLatchDir = null;
     }
 
     // Buffer perpendicular direction inputs for crisp 90-degree cornering (`140ms`)
@@ -470,6 +540,8 @@ export class PlayerShip {
         this.isBacktracking = false;
         this.turnBufferDir = null;
         this.turnBufferTimer = 0;
+        this.postExitAutoCutCooldown = 0.28;
+        this.postExitLatchDir = heldDir;
         NativeBridge.hapticCornerTurn();
         return;
       }
@@ -517,30 +589,53 @@ export class PlayerShip {
       return null;
     }
 
-    // 3. 90-degree orthogonal turn during cut
+    // 3. 90-degree orthogonal turn during cut (with Border Exit Magnet & Anti-Deadlock!)
+    const canGoStraight = this.canAdvanceInCutDirection(
+      this.cutDirection,
+      activePolygon,
+      activeBarriers
+    );
+    const nearSafeExit =
+      canGoStraight &&
+      this.isSafeCutExitAhead(this.cutDirection, 14, activePolygon, activeBarriers);
+
     const requestedDir = input.direction ?? this.turnBufferDir;
     if (
       requestedDir &&
       requestedDir !== this.cutDirection &&
       requestedDir !== OPPOSITE_DIR[this.cutDirection]
     ) {
-      const lastCorner = this.trailCorners[this.trailCorners.length - 1];
-      const currentSegLen = manhattanDist(lastCorner, { x: this.x, y: this.y });
-      if (currentSegLen >= MIN_SEGMENT_LEN) {
-        if (this.canAdvanceInCutDirection(requestedDir, activePolygon, activeBarriers)) {
-          this.trailCorners.push({ x: this.x, y: this.y });
-          this.cutDirection = requestedDir;
-          this.facing = requestedDir;
-          this.turnBufferDir = null;
-          this.turnBufferTimer = 0;
-          this.turnedCornerThisStep = true;
-          NativeBridge.hapticCornerTurn();
+      if (nearSafeExit) {
+        // Player tilted thumb anticipating border movement right before exiting:
+        // remember their desired border direction and finish snapping onto the safe border!
+        this.turnBufferDir = requestedDir;
+        this.turnBufferTimer = CORNER_BUFFER_TIME;
+      } else {
+        const lastCorner = this.trailCorners[this.trailCorners.length - 1];
+        const currentSegLen = manhattanDist(lastCorner, { x: this.x, y: this.y });
+        const immediateExitInTurnDir = this.isDirectSafeExitStep(
+          requestedDir,
+          activePolygon,
+          activeBarriers
+        );
+        if (
+          currentSegLen >= MIN_SEGMENT_LEN ||
+          (currentSegLen >= GRID_STEP && (!canGoStraight || immediateExitInTurnDir))
+        ) {
+          if (this.canAdvanceInCutDirection(requestedDir, activePolygon, activeBarriers)) {
+            this.trailCorners.push({ x: this.x, y: this.y });
+            this.cutDirection = requestedDir;
+            this.facing = requestedDir;
+            this.turnBufferDir = null;
+            this.turnBufferTimer = 0;
+            this.turnedCornerThisStep = true;
+            NativeBridge.hapticCornerTurn();
+          }
         }
       }
     }
 
-    // Only advance along `cutDirection` if player is holding `cutDirection` OR holding perpendicular
-    // while waiting to clear `MIN_SEGMENT_LEN` / obstacle
+    // Advance along `cutDirection` if unobstructed
     if (!this.canAdvanceInCutDirection(this.cutDirection, activePolygon, activeBarriers)) {
       return null;
     }
@@ -560,14 +655,64 @@ export class PlayerShip {
       isPointOnPolygonBoundary(nextPos, activePolygon, 0.05)
     ) {
       const completedTrail = [...this.trailCorners, { ...nextPos }];
+      const pendingPerp =
+        this.turnBufferDir &&
+        this.turnBufferDir !== this.cutDirection &&
+        this.turnBufferDir !== OPPOSITE_DIR[this.cutDirection]
+          ? this.turnBufferDir
+          : null;
       this.state = 'ON_BORDER';
       this.trailCorners = [];
-      this.turnBufferDir = null;
-      this.turnBufferTimer = 0;
+      this.moveRemainder = 0;
+      this.turnBufferDir = pendingPerp;
+      this.turnBufferTimer = pendingPerp ? CORNER_BUFFER_TIME : 0;
+      this.postExitAutoCutCooldown = 0.28;
+      this.postExitLatchDir = input.direction;
       return { trail: completedTrail };
     }
 
     return null;
+  }
+
+  /**
+   * Checks if continuing straight along `dir` reaches a clean, safe completion boundary
+   * within `maxDist` pixels (no solid box, own trail, barrier, or cutStartPoint in the way).
+   */
+  private isSafeCutExitAhead(
+    dir: Direction,
+    maxDist: number,
+    activePolygon: readonly Point[],
+    activeBarriers: readonly Barrier[]
+  ): boolean {
+    const { dx, dy } = DIR_VECTORS[dir];
+    for (let dist = GRID_STEP; dist <= maxDist; dist += GRID_STEP) {
+      const mid = { x: this.x + dx * (dist - 1), y: this.y + dy * (dist - 1) };
+      const pt = { x: this.x + dx * dist, y: this.y + dy * dist };
+      if (!pointInPolygonStrict(mid, activePolygon)) return false;
+      if (isPointBlockedBySolidBoxes(pt, this.solidBoxes)) return false;
+      if (this.wouldCollideWithOwnTrail(pt, dir)) return false;
+      if (isPointOnPolygonBoundary(pt, activePolygon, 0.05)) {
+        if (pointsEqual(pt, this.cutStartPoint)) return false;
+        if (isPointOnBarrier(pt, activeBarriers, 0.5)) return false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isDirectSafeExitStep(
+    dir: Direction,
+    activePolygon: readonly Point[],
+    activeBarriers: readonly Barrier[]
+  ): boolean {
+    const { dx, dy } = DIR_VECTORS[dir];
+    const mid = { x: this.x + dx * 1, y: this.y + dy * 1 };
+    const nextPos = { x: this.x + dx * GRID_STEP, y: this.y + dy * GRID_STEP };
+    if (!pointInPolygonStrict(mid, activePolygon)) return false;
+    if (!isPointOnPolygonBoundary(nextPos, activePolygon, 0.05)) return false;
+    if (pointsEqual(nextPos, this.cutStartPoint)) return false;
+    if (isPointOnBarrier(nextPos, activeBarriers, 0.5)) return false;
+    return true;
   }
 
   private canAdvanceInCutDirection(

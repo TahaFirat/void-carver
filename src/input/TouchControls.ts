@@ -1,5 +1,11 @@
 import { PALETTE } from '../core/Config';
-import { GameLayout, getLayout, pointInRect } from '../core/ResponsiveLayout';
+import {
+  GameLayout,
+  getLayout,
+  JoystickSide,
+  pointInRect,
+  setPreferredJoystickSide
+} from '../core/ResponsiveLayout';
 import { Direction } from '../geometry/Types';
 import { NativeBridge } from '../native/NativeBridge';
 import { drawPixelText } from '../rendering/PixelArtEngine';
@@ -7,81 +13,127 @@ import { ControlMode } from '../services/StorageService';
 
 export interface TouchSnapshot {
   direction: Direction | null;
-  /** Set while a touch pointer is actively steering and can request an automatic cut. */
+  /** True while the dedicated `KES` button is held for instant 0ms cut launch. */
   carveActive: boolean;
+  /** True while one-finger joystick/arena drag is steering and eligible for smart auto-cut. */
   autoCarveSwipe: boolean;
 }
 
-const HYSTERESIS = 1.18;
+const HYSTERESIS = 1.15;
 
 /**
- * Mobile-first fixed virtual joystick. Deliberately holding inward from the perimeter
- * automatically starts a cut; no separate carve button or simultaneous thumb is needed. The same
- * orthogonal steering can also be used with a direct arena swipe or keyboard/gamepad.
+ * Ergonomic Dual-Handed / One-Handed Mobile Control Deck:
+ * - Configurable `SAĞ` (Right) or `SOL` (Left) Dynamic-Follow Virtual Joystick.
+ * - Origin anchors at finger-down and follows behind the thumb (`maxTravel`), so off-center
+ *   touches never invert direction and 90° turns / 180° backtracks respond immediately.
+ * - Opposite side provides an optional instant `KES` hold button + 1-tap `⇄ SOL EL / SAĞ EL` switch.
+ * - Direct arena drag uses the same smooth dynamic-follow 4-way steering.
  */
 export class TouchControls {
   private controlMode: ControlMode = 'DPAD';
+  private joystickSide: JoystickSide = 'RIGHT';
+  private onSwapSideCallback: (() => void) | null = null;
 
   private joystickPointerId: number | null = null;
   private joystickDirection: Direction | null = null;
+  private joystickOriginX = 0;
+  private joystickOriginY = 0;
   private joystickThumbX = 0;
   private joystickThumbY = 0;
-  private joystickAnchorX = 0;
-  private joystickAnchorY = 0;
-  private joystickMoved = false;
   private cutArmProgress = 0;
 
+  private cutPointerId: number | null = null;
+
   private swipePointerId: number | null = null;
-  private swipeAnchorX = 0;
-  private swipeAnchorY = 0;
+  private swipeOriginX = 0;
+  private swipeOriginY = 0;
   private swipeCurrentX = 0;
   private swipeCurrentY = 0;
   private swipeDirection: Direction | null = null;
 
-  public configure(mode: ControlMode): void {
-    if (this.controlMode !== mode) this.reset();
+  public setOnSwapSide(cb: () => void): void {
+    this.onSwapSideCallback = cb;
+  }
+
+  public configure(mode: ControlMode, side: JoystickSide = this.joystickSide): void {
+    const changed = this.controlMode !== mode || this.joystickSide !== side;
     this.controlMode = mode;
+    this.joystickSide = side;
+    setPreferredJoystickSide(side);
+    if (changed) {
+      this.reset();
+    }
+  }
+
+  public getJoystickSide(): JoystickSide {
+    return this.joystickSide;
   }
 
   public reset(): void {
     this.joystickPointerId = null;
     this.joystickDirection = null;
+    this.joystickOriginX = 0;
+    this.joystickOriginY = 0;
     this.joystickThumbX = 0;
     this.joystickThumbY = 0;
-    this.joystickAnchorX = 0;
-    this.joystickAnchorY = 0;
-    this.joystickMoved = false;
     this.cutArmProgress = 0;
+    this.cutPointerId = null;
     this.swipePointerId = null;
     this.swipeDirection = null;
   }
 
-  public handlePointerDown(pointerId: number, vx: number, vy: number, gameplayActive: boolean): boolean {
+  public handlePointerDown(
+    pointerId: number,
+    vx: number,
+    vy: number,
+    gameplayActive: boolean
+  ): boolean {
     if (!gameplayActive) return false;
     const layout = getLayout();
-    const stick = layout.joystick;
-    const inStick = Math.hypot(vx - stick.cx, vy - stick.cy) <= stick.radius * 1.45;
 
-    if (this.joystickPointerId === null && inStick) {
+    // 1. Quick 1-tap Left <-> Right hand swap button on the secondary deck side
+    if (pointInRect(vx, vy, layout.swapSideButton, 10)) {
+      this.reset();
+      this.onSwapSideCallback?.();
+      return true;
+    }
+
+    // 2. Dedicated `KES` instant-cut hold button (multi-touch friendly alongside joystick!)
+    const cutBtn = layout.cutButton;
+    if (
+      this.cutPointerId === null &&
+      Math.hypot(vx - cutBtn.cx, vy - cutBtn.cy) <= cutBtn.radius * 1.28
+    ) {
+      this.cutPointerId = pointerId;
+      NativeBridge.hapticCornerTurn();
+      return true;
+    }
+
+    // 3. Generous Joystick / Drag Zone on the chosen side (`SAĞ` or `SOL`)
+    const stick = layout.joystick;
+    const inStickCircle = Math.hypot(vx - stick.cx, vy - stick.cy) <= stick.radius * 1.55;
+    const inStickZone = pointInRect(vx, vy, layout.joystickZone, 8);
+
+    if (this.joystickPointerId === null && (inStickCircle || inStickZone)) {
       this.joystickPointerId = pointerId;
-      this.joystickAnchorX = vx;
-      this.joystickAnchorY = vy;
-      this.joystickMoved = false;
+      this.joystickOriginX = vx;
+      this.joystickOriginY = vy;
       this.joystickDirection = null;
       this.joystickThumbX = 0;
       this.joystickThumbY = 0;
       return true;
     }
 
-    // Optional one-finger arena swipe remains available alongside the joystick.
-    const inArena = pointInRect(vx, vy, layout.arenaFrame, 10);
-    if ((inArena || this.controlMode === 'SWIPE') && this.swipePointerId === null) {
+    // 4. Direct arena or free-space drag steering (uses the same smooth dynamic-follow physics)
+    const inArena = pointInRect(vx, vy, layout.arenaFrame, 12);
+    const inDeck = layout.deckRect ? pointInRect(vx, vy, layout.deckRect, 4) : false;
+    if ((inArena || inDeck || this.controlMode === 'SWIPE') && this.swipePointerId === null) {
       this.swipePointerId = pointerId;
-      this.swipeAnchorX = vx;
-      this.swipeAnchorY = vy;
+      this.swipeOriginX = vx;
+      this.swipeOriginY = vy;
       this.swipeCurrentX = vx;
       this.swipeCurrentY = vy;
-      if (this.controlMode !== 'SWIPE') this.swipeDirection = null;
+      this.swipeDirection = null;
       return true;
     }
 
@@ -90,27 +142,31 @@ export class TouchControls {
 
   public handlePointerMove(pointerId: number, vx: number, vy: number): void {
     if (pointerId === this.joystickPointerId) {
-      const layout = getLayout();
-      const startDistance = Math.hypot(vx - this.joystickAnchorX, vy - this.joystickAnchorY);
-      if (!this.joystickMoved && startDistance < Math.max(10, layout.joystick.radius * 0.12)) return;
-      this.joystickMoved = true;
-      this.updateJoystickFromPointer(vx, vy, layout);
+      this.updateDynamicJoystick(vx, vy, getLayout());
       return;
     }
 
     if (pointerId === this.swipePointerId) {
       this.swipeCurrentX = vx;
       this.swipeCurrentY = vy;
-      const dx = vx - this.swipeAnchorX;
-      const dy = vy - this.swipeAnchorY;
-      if (Math.hypot(dx, dy) >= 15) {
-        const next = this.resolveDirection(dx, dy, this.swipeDirection);
-        if (next !== this.swipeDirection) {
-          this.swipeDirection = next;
-          NativeBridge.hapticCornerTurn();
-        }
-        this.swipeAnchorX = vx;
-        this.swipeAnchorY = vy;
+      let dx = vx - this.swipeOriginX;
+      let dy = vy - this.swipeOriginY;
+      const dist = Math.hypot(dx, dy);
+      const followRadius = 24;
+      if (dist > followRadius) {
+        const pull = (dist - followRadius) / dist;
+        this.swipeOriginX += dx * pull;
+        this.swipeOriginY += dy * pull;
+        dx = vx - this.swipeOriginX;
+        dy = vy - this.swipeOriginY;
+      }
+      if (Math.hypot(dx, dy) < 9) {
+        return;
+      }
+      const next = this.resolveDirection(dx, dy, this.swipeDirection);
+      if (next !== this.swipeDirection) {
+        this.swipeDirection = next;
+        NativeBridge.hapticCornerTurn();
       }
     }
   }
@@ -121,7 +177,11 @@ export class TouchControls {
       this.joystickDirection = null;
       this.joystickThumbX = 0;
       this.joystickThumbY = 0;
-      this.joystickMoved = false;
+      this.cutArmProgress = 0;
+    }
+
+    if (pointerId === this.cutPointerId) {
+      this.cutPointerId = null;
     }
 
     if (pointerId === this.swipePointerId) {
@@ -131,7 +191,11 @@ export class TouchControls {
   }
 
   public isCarveVisuallyPressed(): boolean {
-    return this.joystickDirection !== null || this.swipeDirection !== null;
+    return (
+      this.cutPointerId !== null ||
+      this.joystickDirection !== null ||
+      this.swipeDirection !== null
+    );
   }
 
   public setCutArmProgress(progress: number): void {
@@ -140,26 +204,42 @@ export class TouchControls {
 
   public getSnapshot(): TouchSnapshot {
     const direction = this.joystickDirection ?? this.swipeDirection;
+    const cutHeld = this.cutPointerId !== null;
     return {
       direction,
-      carveActive: false,
+      carveActive: cutHeld,
       autoCarveSwipe:
-        (this.joystickPointerId !== null && this.joystickDirection !== null) ||
-        (this.swipePointerId !== null && this.swipeDirection !== null)
+        !cutHeld &&
+        ((this.joystickPointerId !== null && this.joystickDirection !== null) ||
+          (this.swipePointerId !== null && this.swipeDirection !== null))
     };
   }
 
-  private updateJoystickFromPointer(vx: number, vy: number, layout: GameLayout): void {
+  private updateDynamicJoystick(vx: number, vy: number, layout: GameLayout): void {
     const { radius } = layout.joystick;
-    const dx = vx - layout.joystick.cx;
-    const dy = vy - layout.joystick.cy;
-    const distance = Math.hypot(dx, dy);
-    const travel = radius * 0.54;
-    const clamp = distance > travel ? travel / distance : 1;
-    this.joystickThumbX = dx * clamp;
-    this.joystickThumbY = dy * clamp;
+    let dx = vx - this.joystickOriginX;
+    let dy = vy - this.joystickOriginY;
+    const rawDist = Math.hypot(dx, dy);
 
-    if (distance < Math.max(26, radius * 0.27)) {
+    // Tight 24px (~1cm) logical follow-thumb tether so 90° turns & 180° reversals are instant,
+    // mapped onto full visual knob travel (`radius * 0.46`) for tactile visual feedback!
+    const followRadius = 24;
+    if (rawDist > followRadius) {
+      const pull = (rawDist - followRadius) / rawDist;
+      this.joystickOriginX += dx * pull;
+      this.joystickOriginY += dy * pull;
+      dx = vx - this.joystickOriginX;
+      dy = vy - this.joystickOriginY;
+    }
+
+    const clampedDist = Math.hypot(dx, dy);
+    const visualTravel = Math.max(36, radius * 0.46);
+    const visualScale = visualTravel / followRadius;
+    this.joystickThumbX = dx * visualScale;
+    this.joystickThumbY = dy * visualScale;
+
+    const deadzone = 9;
+    if (clampedDist < deadzone) {
       this.joystickDirection = null;
       return;
     }
@@ -190,45 +270,95 @@ export class TouchControls {
   // ---------------------------------------------------------------------------
   public renderControls(ctx: CanvasRenderingContext2D, shipCutting: boolean): void {
     const layout = getLayout();
-    const { cx, cy, radius } = layout.joystick;
     const litColor = shipCutting ? PALETTE.CUT_ORANGE : PALETTE.SAFE_GREEN;
 
     ctx.save();
     if (layout.deckRect) {
       const d = layout.deckRect;
-      ctx.fillStyle = '#0A0D16';
+      ctx.fillStyle = '#090D16';
       ctx.fillRect(d.x, d.y, d.w, d.h);
-      ctx.fillStyle = '#1C2438';
+      ctx.fillStyle = '#222E46';
       ctx.fillRect(d.x, d.y, d.w, 3);
+
+      // Subtle center divider separating Joystick zone and Auxiliary KES/Swap zone
+      ctx.fillStyle = '#182236';
+      ctx.fillRect(Math.round(d.x + d.w * 0.5) - 1, d.y + 14, 2, Math.max(0, d.h - 28));
     }
 
-    // Recessed circular base and directional ticks.
+    this.getArcadeJoystickSprite(ctx, layout, litColor);
+    this.drawCutButton(ctx, layout, shipCutting);
+    this.drawSwapSideButton(ctx, layout);
+
+    // Floating guide ring when player drags directly inside the arena
+    if (this.swipePointerId !== null) {
+      const ox = Math.round(this.swipeOriginX);
+      const oy = Math.round(this.swipeOriginY);
+      const sx = Math.round(this.swipeCurrentX);
+      const sy = Math.round(this.swipeCurrentY);
+      if (pointInRect(sx, sy, layout.arenaFrame, 20)) {
+        ctx.beginPath();
+        ctx.arc(ox, oy, 36, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, 13, 0, Math.PI * 2);
+        ctx.fillStyle = litColor;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  private getArcadeJoystickSprite(
+    ctx: CanvasRenderingContext2D,
+    layout: GameLayout,
+    litColor: string
+  ): void {
+    const { cx, cy, radius } = layout.joystick;
+
+    // Outer recessed arcade well
     ctx.beginPath();
-    ctx.arc(cx, cy, radius + 9, 0, Math.PI * 2);
+    ctx.arc(cx, cy, radius + 10, 0, Math.PI * 2);
     ctx.fillStyle = '#05070C';
     ctx.fill();
-    ctx.strokeStyle = '#34445F';
+    ctx.strokeStyle = '#384A68';
     ctx.lineWidth = 5;
     ctx.stroke();
 
+    // Active joystick plate
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#111A2A';
+    ctx.fillStyle = '#121C2E';
     ctx.fill();
-    ctx.strokeStyle = this.joystickDirection ? litColor : '#687993';
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = this.joystickDirection ? litColor : '#788CA8';
+    ctx.lineWidth = 4.5;
     ctx.stroke();
 
+    // Inner guide ring
     ctx.beginPath();
-    ctx.arc(cx, cy, radius * 0.73, 0, Math.PI * 2);
-    ctx.strokeStyle = '#2B3A52';
+    ctx.arc(cx, cy, radius * 0.72, 0, Math.PI * 2);
+    ctx.strokeStyle = '#2A3A54';
     ctx.lineWidth = 3;
     ctx.stroke();
 
+    // Smooth gold inward auto-cut progress ring
     if (this.cutArmProgress > 0) {
       ctx.beginPath();
-      ctx.arc(cx, cy, radius + 17, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * this.cutArmProgress);
-      ctx.strokeStyle = '#FFD76A';
+      ctx.arc(
+        cx,
+        cy,
+        radius + 17,
+        -Math.PI * 0.5,
+        -Math.PI * 0.5 + Math.PI * 2 * this.cutArmProgress
+      );
+      ctx.strokeStyle = '#FFE066';
       ctx.lineWidth = 8;
       ctx.lineCap = 'round';
       ctx.stroke();
@@ -238,89 +368,120 @@ export class TouchControls {
 
     const thumbX = cx + (this.joystickPointerId === null ? 0 : this.joystickThumbX);
     const thumbY = cy + (this.joystickPointerId === null ? 0 : this.joystickThumbY);
-    const knobRadius = radius * 0.39;
+    const knobRadius = radius * 0.4;
+
     ctx.beginPath();
-    ctx.arc(thumbX, thumbY + 4, knobRadius + 2, 0, Math.PI * 2);
+    ctx.arc(thumbX, thumbY + 5, knobRadius + 3, 0, Math.PI * 2);
     ctx.fillStyle = '#03050A';
     ctx.fill();
+
     ctx.beginPath();
     ctx.arc(thumbX, thumbY, knobRadius, 0, Math.PI * 2);
-    ctx.fillStyle = this.joystickDirection ? litColor : '#54647D';
+    ctx.fillStyle = this.joystickDirection ? litColor : '#5E7290';
     ctx.fill();
-    ctx.strokeStyle = '#D8E5F8';
+    ctx.strokeStyle = '#E6F0FF';
     ctx.lineWidth = 4;
     ctx.stroke();
+
     ctx.beginPath();
-    ctx.arc(thumbX - knobRadius * 0.18, thumbY - knobRadius * 0.2, knobRadius * 0.62, Math.PI * 1.08, Math.PI * 1.92);
-    ctx.strokeStyle = 'rgba(255,255,255,0.58)';
+    ctx.arc(
+      thumbX - knobRadius * 0.18,
+      thumbY - knobRadius * 0.2,
+      knobRadius * 0.6,
+      Math.PI * 1.08,
+      Math.PI * 1.92
+    );
+    ctx.strokeStyle = 'rgba(255,255,255,0.62)';
     ctx.lineWidth = 5;
     ctx.stroke();
 
-    const hint = this.getAutoCutHint(layout, cy, this.cutArmProgress > 0, shipCutting);
-    const hintScale = hint.scale;
-    drawPixelText(ctx, hint.top, hint.x, hint.y - hintScale * 7, {
-      scale: hintScale,
-      tone: 'gold',
-      align: 'center'
-    });
-    drawPixelText(ctx, hint.bottom, hint.x, hint.y + hintScale * 8, {
-      scale: hintScale,
-      tone: 'green',
-      align: 'center'
-    });
-
-    drawPixelText(ctx, 'JOYSTICK', cx, cy + radius + 25, {
-      scale: Math.max(2.4, Math.min(3.2, radius / 34)),
+    const sideLabel = layout.joystickSide === 'RIGHT' ? 'SAĞ SÜRÜKLE' : 'SOL SÜRÜKLE';
+    drawPixelText(ctx, sideLabel, cx, cy + radius + 26, {
+      scale: Math.max(2.6, Math.min(3.1, radius / 31)),
       tone: this.joystickDirection ? 'green' : 'silver',
       align: 'center'
     });
-
-    // Direct arena drag feedback for the optional swipe mode.
-    if (this.swipePointerId !== null && this.swipeDirection !== null) {
-      const sx = Math.round(this.swipeCurrentX);
-      const sy = Math.round(this.swipeCurrentY);
-      if (pointInRect(sx, sy, layout.arenaFrame)) {
-        ctx.beginPath();
-        ctx.arc(sx, sy, 11, 0, Math.PI * 2);
-        ctx.fillStyle = litColor;
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fill();
-      }
-    }
-
-    ctx.restore();
   }
 
-  private getAutoCutHint(
+  private drawCutButton(
+    ctx: CanvasRenderingContext2D,
     layout: GameLayout,
-    fallbackY: number,
-    arming: boolean,
-    cutting: boolean
-  ): { x: number; y: number; scale: number; top: string; bottom: string } {
-    if (layout.rightWing) {
-      const wing = layout.rightWing;
-      return {
-        x: wing.x + wing.w * 0.5,
-        y: wing.y + wing.h - 105,
-        scale: Math.max(1.8, Math.min(2.3, wing.w / 145)),
-        top: arming ? 'KESİME HAZIRLAN' : cutting ? 'KESİMDE' : 'İÇERİ SÜRÜKLE',
-        bottom: arming ? 'BIRAK: İPTAL' : cutting ? 'SÜRÜKLE: YÖN' : 'KESİM OTOMATİK'
-      };
-    }
-    const deck = layout.deckRect;
-    return {
-      x: deck ? deck.x + deck.w * 0.72 : layout.width * 0.72,
-      y: fallbackY,
-      scale: 2.7,
-      top: arming ? 'KESİME HAZIRLAN' : cutting ? 'KESİMDE' : 'İÇERİ SÜRÜKLE',
-      bottom: arming ? 'BIRAK: İPTAL' : cutting ? 'SÜRÜKLE: YÖN' : 'KESİM OTOMATİK'
-    };
+    shipCutting: boolean
+  ): void {
+    const { cx, cy, radius } = layout.cutButton;
+    const pressed = this.cutPointerId !== null;
+    const activeCut = pressed || shipCutting;
+
+    // Status callout right above the KES button
+    const statusText =
+      this.cutArmProgress > 0
+        ? 'KESİME HAZIR'
+        : shipCutting
+          ? 'KESİMDE!'
+          : 'OTO / HIZLI KES';
+    const statusTone = this.cutArmProgress > 0 ? 'gold' : shipCutting ? 'orange' : 'green';
+    drawPixelText(ctx, statusText, cx, cy - radius - 18, {
+      scale: Math.max(2.4, Math.min(2.9, radius / 26)),
+      tone: statusTone,
+      align: 'center'
+    });
+
+    // Outer recessed bezel
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius + 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#05070C';
+    ctx.fill();
+    ctx.strokeStyle = activeCut ? '#FFB848' : '#3C4E6C';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // Crimson/Orange arcade push button
+    ctx.beginPath();
+    ctx.arc(cx, cy + (pressed ? 3 : 0), radius, 0, Math.PI * 2);
+    ctx.fillStyle = activeCut ? '#D84E14' : '#5E181C';
+    ctx.fill();
+    ctx.strokeStyle = activeCut ? '#FFF098' : '#E08878';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    drawPixelText(ctx, 'KES', cx, cy + (pressed ? 3 : 0) - 4, {
+      scale: Math.max(3.2, Math.min(3.9, radius / 19)),
+      tone: activeCut ? 'gold' : 'white',
+      align: 'center'
+    });
+    drawPixelText(ctx, 'BASILI TUT', cx, cy + (pressed ? 3 : 0) + radius * 0.44, {
+      scale: Math.max(2.0, Math.min(2.4, radius / 31)),
+      tone: activeCut ? 'white' : 'silver',
+      align: 'center'
+    });
   }
 
-  private drawDirectionTicks(ctx: CanvasRenderingContext2D, cx: number, cy: number, distance: number, color: string): void {
+  private drawSwapSideButton(ctx: CanvasRenderingContext2D, layout: GameLayout): void {
+    const r = layout.swapSideButton;
+    const targetLabel = layout.joystickSide === 'RIGHT' ? '⇄ SOL ELE AL' : '⇄ SAĞ ELE AL';
+
+    ctx.fillStyle = '#04060C';
+    ctx.fillRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+    ctx.fillStyle = '#162238';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = '#7A92B8';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+
+    drawPixelText(ctx, targetLabel, r.x + r.w * 0.5, r.y + r.h * 0.5, {
+      scale: Math.max(2.3, Math.min(2.7, r.w / 92)),
+      tone: 'cyan',
+      align: 'center'
+    });
+  }
+
+  private drawDirectionTicks(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    distance: number,
+    color: string
+  ): void {
     const ticks: Array<[Direction, number, number]> = [
       ['UP', 0, -1],
       ['DOWN', 0, 1],
@@ -331,19 +492,27 @@ export class TouchControls {
       const x = cx + dx * distance;
       const y = cy + dy * distance;
       const active = this.joystickDirection === dir;
-      const s = Math.max(7, distance * 0.12);
+      const s = Math.max(8, distance * 0.13);
       ctx.beginPath();
       if (dir === 'UP') {
-        ctx.moveTo(x - s, y + s * 0.45); ctx.lineTo(x, y - s * 0.45); ctx.lineTo(x + s, y + s * 0.45);
+        ctx.moveTo(x - s, y + s * 0.45);
+        ctx.lineTo(x, y - s * 0.45);
+        ctx.lineTo(x + s, y + s * 0.45);
       } else if (dir === 'DOWN') {
-        ctx.moveTo(x - s, y - s * 0.45); ctx.lineTo(x, y + s * 0.45); ctx.lineTo(x + s, y - s * 0.45);
+        ctx.moveTo(x - s, y - s * 0.45);
+        ctx.lineTo(x, y + s * 0.45);
+        ctx.lineTo(x + s, y - s * 0.45);
       } else if (dir === 'LEFT') {
-        ctx.moveTo(x + s * 0.45, y - s); ctx.lineTo(x - s * 0.45, y); ctx.lineTo(x + s * 0.45, y + s);
+        ctx.moveTo(x + s * 0.45, y - s);
+        ctx.lineTo(x - s * 0.45, y);
+        ctx.lineTo(x + s * 0.45, y + s);
       } else {
-        ctx.moveTo(x - s * 0.45, y - s); ctx.lineTo(x + s * 0.45, y); ctx.lineTo(x - s * 0.45, y + s);
+        ctx.moveTo(x - s * 0.45, y - s);
+        ctx.lineTo(x + s * 0.45, y);
+        ctx.lineTo(x - s * 0.45, y + s);
       }
       ctx.strokeStyle = active ? '#FFFFFF' : color;
-      ctx.globalAlpha = active ? 1 : 0.7;
+      ctx.globalAlpha = active ? 1 : 0.72;
       ctx.lineWidth = active ? 6 : 4;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';

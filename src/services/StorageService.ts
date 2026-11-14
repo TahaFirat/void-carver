@@ -4,6 +4,7 @@ import { DifficultyId, SHIP_SKINS, ShipSkinId } from '../core/Config';
 
 export type ControlMode = 'DPAD' | 'SWIPE' | 'KEYBOARD';
 export type CarveButtonMode = 'HOLD' | 'TOGGLE';
+export type JoystickSide = 'RIGHT' | 'LEFT';
 export type LanguageCode = 'TR' | 'EN';
 
 export interface SectorProgress {
@@ -16,6 +17,8 @@ export interface SectorProgress {
 export interface PlayerSettings {
   controlMode: ControlMode;
   carveButtonMode: CarveButtonMode;
+  /** Configurable thumb joystick / drag side (`RIGHT` or `LEFT`). */
+  joystickSide: JoystickSide;
   sfxVolume: number; // 0..1
   ambientVolume: number; // 0..1
   muted: boolean;
@@ -101,6 +104,7 @@ export function createDefaultSaveData(): GameSaveData {
     settings: {
       controlMode: detectDefaultControlMode(),
       carveButtonMode: 'HOLD',
+      joystickSide: 'RIGHT',
       sfxVolume: 0.8,
       ambientVolume: 0.45,
       muted: false,
@@ -150,6 +154,14 @@ class StorageServiceImpl {
           ? parsed.selectedShip
           : 'TITAN';
 
+        const mergedSettings: PlayerSettings = {
+          ...defaults.settings,
+          ...(parsed.settings ?? {})
+        };
+        if (mergedSettings.joystickSide !== 'LEFT' && mergedSettings.joystickSide !== 'RIGHT') {
+          mergedSettings.joystickSide = 'RIGHT';
+        }
+
         this.cached = {
           ...defaults,
           ...parsed,
@@ -161,7 +173,7 @@ class StorageServiceImpl {
           selectedShip: migratedShip,
           sectors: { ...defaults.sectors, ...(parsed.sectors ?? {}) },
           stats: { ...defaults.stats, ...(parsed.stats ?? {}) },
-          settings: { ...defaults.settings, ...(parsed.settings ?? {}) },
+          settings: mergedSettings,
           achievements: Array.isArray(parsed.achievements) ? parsed.achievements : []
         };
       }

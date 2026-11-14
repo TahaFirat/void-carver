@@ -7,6 +7,8 @@ import {
 import { PolygonSplitter } from '../../geometry/PolygonSplitter';
 import { Barrier } from '../../geometry/Types';
 import { InputState } from '../../input/InputManager';
+import { TouchControls } from '../../input/TouchControls';
+import { computeLayout, getLayout, setLayout } from '../../core/ResponsiveLayout';
 import { TitanCore } from '../bosses/TitanCore';
 import { PlayerShip } from '../PlayerShip';
 
@@ -157,5 +159,73 @@ describe('PlayerShip, 180-Degree Line Backtrack, Barrier Physics & Corner Buffer
 
     boss.onPolygonShrunk(classified.activePolygon);
     expect(pointInPolygonStrict(boss.position, classified.activePolygon)).toBe(true);
+  });
+
+  it('uses Border Exit Magnet near safe boundary so early perpendicular thumb tilt exits cleanly onto border', () => {
+    const poly = createInitialArenaPolygon();
+    const ship = new PlayerShip();
+    ship.initForLevel({ x: 450, y: 1200 }, 100);
+
+    // Cut straight UP until within 12px of top border y=0
+    let completed = null;
+    for (let i = 0; i < 300; i++) {
+      completed = ship.update(FIXED_DT, makeInput('UP', true), poly, []);
+      if (ship.y <= 12) break;
+    }
+    expect(ship.state).toBe('CUTTING');
+    expect(ship.y).toBeGreaterThan(0);
+    expect(ship.y).toBeLessThanOrEqual(12);
+
+    // Player tilts thumb RIGHT early anticipating top-border travel:
+    // Ship must finish exiting onto y=0 (NOT get stuck cutting parallel at y=10) and then glide RIGHT!
+    for (let i = 0; i < 8; i++) {
+      const ev = ship.update(FIXED_DT, makeInput('RIGHT', false), poly, []);
+      if (ev) completed = ev;
+    }
+    expect(completed).not.toBeNull();
+    expect(ship.state).toBe('ON_BORDER');
+    expect(ship.y).toBe(0);
+    expect(ship.x).toBeGreaterThan(450);
+    expect(ship.isAutoCutSuppressedAfterExit('RIGHT')).toBe(true);
+  });
+
+  it('detects both inward directions at a concave polygon corner and supports Left/Right dynamic joystick', () => {
+    const arena = createInitialArenaPolygon();
+    const split = PolygonSplitter.split(arena, [
+      { x: 0, y: 900 },
+      { x: 300, y: 900 },
+      { x: 300, y: 1200 }
+    ])!;
+    const classified = PolygonSplitter.classifySplit(split, [{ x: 500, y: 500 }]);
+
+    const ship = new PlayerShip();
+    ship.initForLevel({ x: 300, y: 900 }, 100);
+    const inward = ship.getInwardBorderDirections(classified.activePolygon, []);
+    expect(inward).toContain('UP');
+    expect(inward).toContain('RIGHT');
+
+    // Verify Right vs Left configurable joystick layout & dynamic follow-thumb reversal
+    setLayout(computeLayout(390, 844, { top: 0, right: 0, bottom: 0, left: 0 }, 'RIGHT'));
+    const touch = new TouchControls();
+    touch.configure('DPAD', 'RIGHT');
+    const rightCx = getLayout().joystick.cx;
+    const rightCy = getLayout().joystick.cy;
+    expect(rightCx).toBeGreaterThan(450);
+
+    // Touch 35px right of visual center, drag 18px LEFT -> must steer LEFT (never inverted!)
+    touch.handlePointerDown(1, rightCx + 35, rightCy, true);
+    touch.handlePointerMove(1, rightCx + 17, rightCy);
+    expect(touch.getSnapshot().direction).toBe('LEFT');
+
+    // Drag far RIGHT (+120px), then pull 18px LEFT -> dynamic follow-thumb reverses immediately!
+    touch.handlePointerMove(1, rightCx + 155, rightCy);
+    expect(touch.getSnapshot().direction).toBe('RIGHT');
+    touch.handlePointerMove(1, rightCx + 155 - 55, rightCy);
+    expect(touch.getSnapshot().direction).toBe('LEFT');
+    touch.handlePointerUp(1);
+
+    // Switch joystick to LEFT side
+    touch.configure('DPAD', 'LEFT');
+    expect(getLayout().joystick.cx).toBeLessThan(450);
   });
 });
