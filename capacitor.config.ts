@@ -19,6 +19,11 @@ const config: CapacitorConfig = {
       launchAutoHide: false,
       backgroundColor: '#05070D',
       showSpinner: false
+    },
+    SystemBars: {
+      hidden: true,
+      style: 'DARK',
+      animation: 'NONE'
     }
   }
 };

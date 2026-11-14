@@ -8,10 +8,6 @@ final class GameViewController: CAPBridgeViewController {
         return true
     }
 
-    override var prefersHomeIndicatorAutoHidden: Bool {
-        return true
-    }
-
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge {
         return [.bottom, .top, .left, .right]
     }
