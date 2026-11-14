@@ -19,28 +19,35 @@ interface SegmentState {
 }
 
 /**
- * 16-Bit Pixel-Art Armored Giant Centipede (`CentipedeBoss`).
- * - KOLAY: `YELLOW_GREEN`, `9` segments
- * - ORTA: `GOLD`, `11` segments + twin plasma spit
- * - ZOR / USTA: `GOLD` / `CRIMSON`, `13-15` segments + trail pressure
+ * V7 Authentic 1989 Centipede (`CentipedeWyrm` & Group C `ElderCentipede`):
+ * - `CentipedeWyrm` (Wave 1+ Group A): Classic single-phase Yellow-Green S-curve centipede.
+ * - `ElderCentipede` (Group C — Wave 8+ `ORTA` / Wave 4+ `ZOR`):
+ *   At `>= 70%` claimed area, shatters its outer carapace (`triggerElderArmorShed`) and emerges
+ *   as a **`2.0x` speed Crimson Winged Parasite Serpent**!
  */
 export class CentipedeBoss extends BaseBoss {
   public readonly archetype = 'CENTIPEDE' as const;
-  public readonly displayName = 'GIANT CENTIPEDE';
-  private readonly variant: CentipedeColorVariant;
+  public readonly displayName: string;
+  public readonly isElderVariant: boolean;
+  private variant: CentipedeColorVariant;
   private readonly segments: SegmentState[] = [];
   private weavePhase = 0;
-  private spitTimer = 3.0;
+  private spitTimer = 2.4;
+  public armorShed = false;
+  public parasiteSpeedMultiplier = 1.0;
 
   constructor(
     spawn: Point,
     segmentCount = 9,
     variant: CentipedeColorVariant = 'YELLOW_GREEN',
-    maxHp = 6
+    maxHp = 6,
+    isElderVariant = false
   ) {
-    const baseSpd = variant === 'CRIMSON' ? 205 : variant === 'GOLD' ? 185 : 162;
+    const baseSpd = variant === 'CRIMSON' ? 196 : variant === 'GOLD' ? 178 : 162;
     super(spawn, 36, maxHp, baseSpd, -baseSpd * 0.78);
     this.variant = variant;
+    this.isElderVariant = isElderVariant;
+    this.displayName = isElderVariant ? 'ELDER CENTIPEDE' : 'GIANT CENTIPEDE';
 
     const spacing = 24;
     for (let i = 0; i < segmentCount; i++) {
@@ -52,6 +59,32 @@ export class CentipedeBoss extends BaseBoss {
         angle: 0.6
       });
     }
+  }
+
+  public get segmentCount(): number {
+    return this.segments.length;
+  }
+
+  /**
+   * V7 Group C Evolution (`ElderCentipede` at `>= 70%` claimed):
+   * Shatters outer heavy armor plates, slims down to a sleek 5-segment Crimson Winged Parasite,
+   * and surges to `2.0x` movement speed! Returns shattered armor positions for explosion VFX.
+   */
+  public triggerElderArmorShed(activePolygon: readonly Point[]): Point[] {
+    if (this.armorShed || !this.isElderVariant) return [];
+    this.armorShed = true;
+    this.combatPhase = 2;
+    this.variant = 'CRIMSON';
+    this.parasiteSpeedMultiplier = 2.0;
+
+    const debris: Point[] = this.segments.map((s) => ({ x: s.x, y: s.y }));
+    if (this.segments.length > 5) {
+      this.segments.length = 5;
+    }
+    this.vx *= 2.0;
+    this.vy *= 2.0;
+    this.onPolygonShrunk(activePolygon);
+    return debris;
   }
 
   public override onPolygonShrunk(activePolygon: readonly Point[]): void {
@@ -84,11 +117,13 @@ export class CentipedeBoss extends BaseBoss {
     }
   }
 
+  /**
+   * V7 Law 5: Every segment uses its own exact `HitCircle` (`(seg.x, seg.y, segRadius)`)!
+   */
   public override getHitCircles(): HitCircle[] {
     const circles: HitCircle[] = [
       { x: this.x, y: this.y, radius: this.boundingRadius * 0.84 }
     ];
-    // Hit radius (16 * scale) stays strictly inside polygon clamp radius (18 * scale)
     const segRadius = 16 * this.renderScale;
     for (const seg of this.segments) {
       circles.push({ x: seg.x, y: seg.y, radius: segRadius });
@@ -97,35 +132,48 @@ export class CentipedeBoss extends BaseBoss {
   }
 
   protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
-    const tierMult =
-      this.variant === 'CRIMSON' ? 1.2 : this.variant === 'GOLD' ? 1.08 : 1.0;
-    this.weavePhase += bctx.dt * 2.9 * speedScale * tierMult;
+    // Auto-trigger Elder Armor Shed if `claimedPercent >= 70` during an Elder Centipede fight!
+    if (
+      this.isElderVariant &&
+      !this.armorShed &&
+      (this.combatPhase >= 2 ||
+        (this.phaseBehavior?.specialMechanic === 'ELDER_PARASITE_SHED' && bctx.claimedPercent >= 70))
+    ) {
+      this.triggerElderArmorShed(bctx.activePolygon);
+    }
 
-    const targetSpd = 170 * speedScale * tierMult;
+    const renderVariant: CentipedeColorVariant = this.armorShed ? 'CRIMSON' : this.variant;
+    // Note: if `phaseBehavior` already scaled `speedScale` by `2.0` on Phase 2, avoid double-multiplying;
+    // if `triggerElderArmorShed` was called directly in unit tests without `phaseBehavior`, apply `2.0x`!
+    const extraParasiteBoost =
+      this.armorShed && (!this.phaseBehavior || this.phaseBehavior.phase < 2)
+        ? this.parasiteSpeedMultiplier
+        : 1.0;
+
+    const effectiveSpd = 166 * speedScale * extraParasiteBoost;
+    this.weavePhase += bctx.dt * (this.armorShed ? 4.8 : 2.9) * speedScale;
+
     let heading = Math.atan2(this.vy, this.vx);
+    heading += Math.sin(this.weavePhase) * (this.armorShed ? 1.85 : 1.32) * bctx.dt;
 
-    // Organic serpentine S-curve + gentle hunting pressure when player cuts
-    heading += Math.sin(this.weavePhase) * 1.35 * bctx.dt;
     if (bctx.playerState === 'CUTTING' && bctx.activeTrail.length >= 2) {
-      const targetPt =
-        this.variant === 'CRIMSON'
-          ? bctx.activeTrail[Math.floor(bctx.activeTrail.length * 0.5)]
-          : bctx.playerPos;
+      const targetPt = this.armorShed
+        ? bctx.activeTrail[Math.floor(bctx.activeTrail.length * 0.5)]
+        : bctx.playerPos;
       const desired = Math.atan2(targetPt.y - this.y, targetPt.x - this.x);
       let diff = desired - heading;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      const steerRate = this.variant === 'YELLOW_GREEN' ? 0.52 : 1.05;
+      const steerRate = this.armorShed ? 2.1 : renderVariant === 'YELLOW_GREEN' ? 0.55 : 1.05;
       heading += Math.max(-steerRate * bctx.dt, Math.min(steerRate * bctx.dt, diff));
     }
 
-    this.vx = Math.cos(heading) * targetSpd;
-    this.vy = Math.sin(heading) * targetSpd;
+    this.vx = Math.cos(heading) * effectiveSpd;
+    this.vy = Math.sin(heading) * effectiveSpd;
     this.x += this.vx * bctx.dt;
     this.y += this.vy * bctx.dt;
 
-    // Follow-the-leader kinematic chain for all segments
-    const segDist = 23 * this.renderScale;
+    const segDist = (this.armorShed ? 20 : 23) * this.renderScale;
     const segClampR = 18 * this.renderScale;
     let leaderX = this.x;
     let leaderY = this.y;
@@ -151,27 +199,12 @@ export class CentipedeBoss extends BaseBoss {
       leaderY = seg.y;
     }
 
-    // Gold & Crimson Centipedes (or enraged YELLOW_GREEN) spit twin pincer plasma bolts from safe range
-    if (this.variant !== 'YELLOW_GREEN' || this.enraged) {
-      this.spitTimer -= bctx.dt * speedScale * tierMult;
-      if (this.spitTimer <= 0) {
-        this.spitTimer = this.variant === 'CRIMSON' ? 2.3 : 3.0;
-        const distToPlayer = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
-        if (distToPlayer >= 105 && pointInPolygonStrict({ x: this.x, y: this.y }, bctx.activePolygon)) {
-          const aim = Math.atan2(bctx.playerPos.y - this.y, bctx.playerPos.x - this.x);
-          const spd = 245 * speedScale;
-          for (const spread of [-0.16, 0.16]) {
-            const a = aim + spread;
-            bctx.projectiles.spawnEnemyBullet(
-              { x: this.x, y: this.y },
-              Math.cos(a) * spd,
-              Math.sin(a) * spd,
-              PALETTE.CUT_ORANGE,
-              5.5
-            );
-          }
-        }
-      }
+    this.spitTimer -= bctx.dt;
+    if (this.spitTimer <= 0) {
+      this.spitTimer = this.armorShed
+        ? Math.min(1.35, this.phaseBehavior?.fireIntervalSec ?? 1.35)
+        : (this.phaseBehavior?.fireIntervalSec ?? 2.6);
+      this.firePhasePattern(bctx, speedScale, this.armorShed ? '#FF2848' : PALETTE.CUT_ORANGE);
     }
   }
 
@@ -183,14 +216,18 @@ export class CentipedeBoss extends BaseBoss {
   ): void {
     const pos = this.getRenderPos(alpha);
     const headAngle = Math.atan2(this.vy, this.vx);
-    const jawFrame: 0 | 1 = Math.floor(timeSeconds * 6.5) % 2 === 0 ? 0 : 1;
+    const jawFrame: 0 | 1 = Math.floor(timeSeconds * (this.armorShed ? 12 : 6.5)) % 2 === 0 ? 0 : 1;
+    const activeVariant: CentipedeColorVariant = this.armorShed ? 'CRIMSON' : this.variant;
 
-    // Draw tail-to-head so each forward segment overlaps cleanly over the one behind it!
+    if (this.armorShed || this.combatPhase >= 2) {
+      this.renderPhaseAuraAndWings(ctx, pos.x, pos.y, timeSeconds);
+    }
+
     for (let i = this.segments.length - 1; i >= 0; i--) {
       const seg = this.segments[i];
-      const legFrame: 0 | 1 = Math.floor(timeSeconds * 11 + i * 0.7) % 2 === 0 ? 0 : 1;
-      const taper = Math.max(0.76, 1 - i * 0.015);
-      const segSprite = getCentipedeSegmentSprite(this.variant, legFrame);
+      const legFrame: 0 | 1 = Math.floor(timeSeconds * 12 + i * 0.7) % 2 === 0 ? 0 : 1;
+      const taper = Math.max(0.74, 1 - i * 0.02);
+      const segSprite = getCentipedeSegmentSprite(activeVariant, legFrame);
       blitArenaPixelSprite(
         ctx,
         segSprite,
@@ -201,7 +238,7 @@ export class CentipedeBoss extends BaseBoss {
       );
     }
 
-    const headSprite = getCentipedeHeadSprite(this.variant, jawFrame);
+    const headSprite = getCentipedeHeadSprite(activeVariant, jawFrame);
     blitArenaPixelSprite(
       ctx,
       headSprite,

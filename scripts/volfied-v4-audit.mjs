@@ -153,12 +153,12 @@ for (const boss of REQUIRED_BOSS_ARCHETYPES) {
 }
 if (
   missingBosses === 0 &&
-  baseBossText.includes('0.62') &&
+  baseBossText.includes('0.45') &&
   baseBossText.includes('crushedInPocket')
 ) {
-  pass('All 10 pixel-art boss archetypes + 0.62x corridor shrink + 1.8s pocket crush verified.');
+  pass('All pixel-art boss archetypes + 0.45x Pinball Shrink-Speedup + 1.8s pocket crush verified.');
 } else if (missingBosses === 0) {
-  fail('BaseBoss.ts missing 0.62x corridor shrink or crushedInPocket support.');
+  fail('BaseBoss.ts missing 0.45x Pinball Shrink-Speedup or crushedInPocket support.');
 }
 
 // 5. Verify Mobile 180-Degree Line Backtrack & 3-Mode Clean Control Deck
@@ -209,10 +209,40 @@ if (externalHits === 0) {
   pass(`Verified ${srcFiles.length} files — 100% self-contained procedural pixel-art & WebAudio.`);
 }
 
+console.log('\n8. Auditing V7 Zero-Inertia Controls, Swarm Aggro & Rare Group C Boss Evolutions...');
+const gestureText = fs.readFileSync(
+  path.join(SRC_DIR, 'input', 'TouchGestureEngine.ts'),
+  'utf8'
+);
+const navigatorText = fs.readFileSync(
+  path.join(SRC_DIR, 'entities', 'BorderAndCutNavigator.ts'),
+  'utf8'
+);
+const endlessText = fs.readFileSync(
+  path.join(SRC_DIR, 'levels', 'EndlessBossDirector.ts'),
+  'utf8'
+);
+const engineText = fs.readFileSync(path.join(SRC_DIR, 'core', 'GameEngine.ts'), 'utf8');
+const menuText = fs.readFileSync(path.join(SRC_DIR, 'ui', 'MenuRenderer.ts'), 'utf8');
+
+if (
+  gestureText.includes('CLASSIC_ARCADE') &&
+  gestureText.includes('JOYSTICK_KES') &&
+  gestureText.includes('SINGLE_HAND_DRAG') &&
+  navigatorText.includes('canLaunchCutFrom') &&
+  endlessText.includes('canEvolvePhase2') &&
+  engineText.includes('FAZ II') &&
+  menuText.includes('ULAŞILAN DERİNLİK')
+) {
+  pass('V7 Zero-Inertia Controls, Safe-Border Navigator & Rare Group C Boss Director verified.');
+} else {
+  fail('Missing V7 Zero-Inertia Controls, Safe-Border Navigator, Endless Menu or Phase 2 HUD.');
+}
+
 console.log('\n=====================================================================');
 if (violations > 0) {
-  console.error(`V4 DESIGN AUDIT FAILED with ${violations} violation(s).`);
+  console.error(`V7 DESIGN AUDIT FAILED with ${violations} violation(s).`);
   process.exit(1);
 } else {
-  console.log('V4 DESIGN AUDIT PASSED (0 VIOLATIONS) — 100% 16-BIT ARCADE & MOBILE READY!');
+  console.log('V7 DESIGN AUDIT PASSED (0 VIOLATIONS) — 100% 1989 ARCADE & MOBILE READY!');
 }

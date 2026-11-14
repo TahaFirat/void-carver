@@ -141,8 +141,8 @@ export function getCircularShieldSprite(frame: 0 | 1, warningRed: boolean): HTML
   const s = createPixelSurface(28, 28);
   const cx = 13.5;
   const cy = 13.5;
-  const cMain = hexToU32(warningRed ? '#FF3820' : '#38F048');
-  const cSpark = hexToU32(warningRed ? '#FFF068' : '#C8FF68');
+  const cMain = hexToU32(warningRed ? '#FF2820' : '#28E838');
+  const cSpark = hexToU32(warningRed ? '#FFF048' : '#E0F828');
 
   for (let y = 0; y < 28; y++) {
     for (let x = 0; x < 28; x++) {
@@ -1121,15 +1121,76 @@ export function getMenuPlanetHeroSprite(): HTMLCanvasElement {
   return out;
 }
 
+export function getYellowSwarmerSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:swarmer:${frame}`;
+  const cached = SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(18, 18);
+  const wingCol = hexToU32(frame === 0 ? '#E8FCFF' : '#98E8FF');
+  const bodyRamp = [
+    hexToU32('#FFF878'),
+    hexToU32('#F8C818'),
+    hexToU32('#B86808'),
+    hexToU32('#482004')
+  ];
+  const eyeCol = hexToU32('#FF2820');
+
+  const flutter = frame === 0 ? -1 : 1;
+  fillRectPx(s, 1, 5 + flutter, 5, 4, wingCol);
+  fillRectPx(s, 12, 5 + flutter, 5, 4, wingCol);
+  fillEllipseDitheredPx(s, 8.5, 9.0, 4.2, 5.8, bodyRamp);
+  fillRectPx(s, 6, 9, 6, 1, hexToU32('#201808'));
+  fillRectPx(s, 6, 12, 6, 1, hexToU32('#201808'));
+  setPx(s, 7, 5, eyeCol);
+  setPx(s, 10, 5, eyeCol);
+
+  applyArcadeOutline(s, '#080810');
+  const out = commitPixelSurface(s);
+  SPRITE_CACHE.set(key, out);
+  return out;
+}
+
+export function getSawBladeMinionSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:saw:${frame}`;
+  const cached = SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(20, 20);
+  const cBlade = hexToU32('#E8F2FF');
+  const cMid = hexToU32('#889AB4');
+  if (frame === 0) {
+    drawLinePx(s, 10, 1, 10, 18, cBlade, 2);
+    drawLinePx(s, 1, 10, 18, 10, cBlade, 2);
+    drawLinePx(s, 3, 3, 16, 16, cMid, 2);
+    drawLinePx(s, 16, 3, 3, 16, cMid, 2);
+  } else {
+    drawLinePx(s, 3, 3, 16, 16, cBlade, 2);
+    drawLinePx(s, 16, 3, 3, 16, cBlade, 2);
+    drawLinePx(s, 10, 1, 10, 18, cMid, 2);
+    drawLinePx(s, 1, 10, 18, 10, cMid, 2);
+  }
+  fillEllipseDitheredPx(s, 9.5, 9.5, 5.4, 5.4, [
+    hexToU32('#FFF098'),
+    hexToU32('#FF3828'),
+    hexToU32('#505C74')
+  ]);
+  applyArcadeOutline(s, '#080810');
+  const out = commitPixelSurface(s);
+  SPRITE_CACHE.set(key, out);
+  return out;
+}
+
 // ============================================================================
-// V5 SOLID WALL BLOCKS (impassable riveted steel towers, 20x20 arcade px face)
+// V5/V7 SOLID WALL BLOCKS (impassable riveted steel towers, 20x20 arcade px face)
 // ============================================================================
-export type SolidWallVariant = 'STEEL' | 'GOLD' | 'ARMOR';
+export type SolidWallVariant = 'STEEL' | 'RED_PULSE' | 'GOLD' | 'ARMOR';
 
 /**
  * Riveted steel tower face with 4 corner rivets.
- * - `STEEL`: standard power-up wall (red ruby gem)
- * - `GOLD`: special super-shot wall (gold frame + big ruby)
+ * - `STEEL`: standard silver-grey beveled block
+ * - `RED_PULSE`: Stage-1 Special Red-Flashing Core block (spawns `GOLD` when enclosed!)
+ * - `GOLD`: Stage-2 Gleaming Gold Special block (drops `★` Boss Cannon!)
  * - `ARMOR`: blind armor pillar (no gem, diagonal riveted cross plate)
  */
 export function getSolidWallSprite(variant: SolidWallVariant, gemBrightFrame: 0 | 1): HTMLCanvasElement {
@@ -1141,9 +1202,12 @@ export function getSolidWallSprite(variant: SolidWallVariant, gemBrightFrame: 0 
   const cBlack = hexToU32('#080810');
   const isGold = variant === 'GOLD';
   const isArmor = variant === 'ARMOR';
+  const isRedPulse = variant === 'RED_PULSE';
 
   const cTop = hexToU32(isGold ? '#FFF290' : isArmor ? '#B8C0CC' : '#DCE4F0');
-  const cMid = hexToU32(isGold ? '#F0B824' : isArmor ? '#6C7484' : '#8E98AA');
+  const cMid = hexToU32(
+    isGold ? '#F0B824' : isArmor ? '#6C7484' : isRedPulse && gemBrightFrame === 1 ? '#B8848E' : '#8E98AA'
+  );
   const cBot = hexToU32(isGold ? '#946208' : isArmor ? '#363C4A' : '#4C5464');
   const cRivet = hexToU32(isGold ? '#FFFBD0' : '#F4F8FF');
   const cRivetShadow = hexToU32('#2A2E3A');
@@ -1195,11 +1259,23 @@ export function getSolidWallSprite(variant: SolidWallVariant, gemBrightFrame: 0 
     }
   } else {
     fillRectPx(s, 6, 6, 8, 8, hexToU32('#181C28'));
-    const cGemDark = hexToU32('#880A12');
-    const cGemMid = hexToU32(gemBrightFrame === 1 ? '#FF3028' : '#D81820');
-    const cGemGlint = hexToU32('#FFB8B8');
-    const rStart = isGold ? 6 : 7;
-    const rSize = isGold ? 8 : 6;
+    const cGemDark = hexToU32(isRedPulse ? '#B80818' : '#586478');
+    const cGemMid = hexToU32(
+      isGold
+        ? gemBrightFrame === 1
+          ? '#FFF890'
+          : '#FFD028'
+        : isRedPulse
+          ? gemBrightFrame === 1
+            ? '#FF2420'
+            : '#B01018'
+          : gemBrightFrame === 1
+            ? '#A8B8D0'
+            : '#7C8CA4'
+    );
+    const cGemGlint = hexToU32(isRedPulse ? '#FFD0D0' : '#F0F6FF');
+    const rStart = isGold || isRedPulse ? 6 : 7;
+    const rSize = isGold || isRedPulse ? 8 : 6;
     fillRectPx(s, rStart, rStart, rSize, rSize, cGemDark);
     fillRectPx(s, rStart, rStart, rSize - 1, rSize - 1, cGemMid);
     const socket = hexToU32('#181C28');
@@ -1212,6 +1288,116 @@ export function getSolidWallSprite(variant: SolidWallVariant, gemBrightFrame: 0 
     setPx(s, rStart + 1, rStart + 2, cGemGlint);
   }
 
+  const out = commitPixelSurface(s);
+  SPRITE_CACHE.set(key, out);
+  return out;
+}
+
+export function getPincerBeetleSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `boss:pincer:${frame}`;
+  const cached = SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(44, 44);
+  const shellRamp = [
+    hexToU32('#FFE878'),
+    hexToU32('#D88C18'),
+    hexToU32('#8C440C'),
+    hexToU32('#441C04')
+  ];
+  const pincerRamp = [hexToU32('#FFFFFF'), hexToU32('#B8D0F0'), hexToU32('#586C8C')];
+  const pinch = frame === 1 ? 2 : 0;
+
+  // Top & Bottom vertical scissor emitter horns + front mandibles
+  fillRectPx(s, 18, 2, 6, 8, pincerRamp[1]);
+  fillRectPx(s, 18, 34, 6, 8, pincerRamp[1]);
+  fillRectPx(s, 19, 1, 4, 3, hexToU32('#50F0FF'));
+  fillRectPx(s, 19, 40, 4, 3, hexToU32('#50F0FF'));
+
+  fillEllipseDitheredPx(s, 33, 12 + pinch, 8, 4, pincerRamp);
+  fillEllipseDitheredPx(s, 33, 31 - pinch, 8, 4, pincerRamp);
+
+  fillEllipseDitheredPx(s, 19, 21.5, 13, 13.5, shellRamp);
+  drawLinePx(s, 9, 21, 29, 21, hexToU32('#281004'), 2);
+  fillRectPx(s, 26, 15, 4, 3, hexToU32('#FF2820'));
+  fillRectPx(s, 26, 25, 4, 3, hexToU32('#FF2820'));
+
+  applyArcadeOutline(s, '#080810');
+  const out = commitPixelSurface(s);
+  SPRITE_CACHE.set(key, out);
+  return out;
+}
+
+export function getSniperLadybirdSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `boss:ladybird:${frame}`;
+  const cached = SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(40, 40);
+  const redRamp = [
+    hexToU32('#FF9888'),
+    hexToU32('#E82420'),
+    hexToU32('#981014'),
+    hexToU32('#4C060A')
+  ];
+  const darkCol = hexToU32('#181C2C');
+
+  // 6 mechanical insect legs
+  const legShift = frame === 0 ? 0 : 2;
+  for (const ly of [11, 20, 29]) {
+    drawLinePx(s, 8, ly, 2, ly - 2 + legShift, hexToU32('#9AA8C4'), 2);
+    drawLinePx(s, 31, ly, 37, ly + 2 - legShift, hexToU32('#9AA8C4'), 2);
+  }
+
+  // Spotted crimson carapace + precision sniper barrel
+  fillEllipseDitheredPx(s, 19.5, 21, 13, 13.5, redRamp);
+  fillEllipseDitheredPx(s, 19.5, 9, 7.5, 4.5, [hexToU32('#7080A0'), darkCol]);
+  drawLinePx(s, 19, 10, 19, 33, darkCol, 2);
+
+  for (const [sx, sy] of [
+    [13, 16],
+    [26, 16],
+    [12, 24],
+    [27, 24],
+    [15, 30],
+    [24, 30]
+  ]) {
+    fillRectPx(s, sx - 2, sy - 2, 4, 4, darkCol);
+  }
+
+  // Glowing sniper scope eye
+  fillRectPx(s, 17, 5, 5, 4, hexToU32(frame === 0 ? '#FFF058' : '#50F8FF'));
+  setPx(s, 19, 6, hexToU32('#FFFFFF'));
+
+  applyArcadeOutline(s, '#080810');
+  const out = commitPixelSurface(s);
+  SPRITE_CACHE.set(key, out);
+  return out;
+}
+
+export function getPinballFrogSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `boss:frog:${frame}`;
+  const cached = SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(28, 28);
+  const frogRamp = [
+    hexToU32('#B8FF78'),
+    hexToU32('#28D858'),
+    hexToU32('#108838'),
+    hexToU32('#08441C')
+  ];
+  const bumperCol = hexToU32(frame === 0 ? '#FFE858' : '#FF5828');
+
+  // Compact pinball bumper ring + cybernetic frog core
+  fillEllipseDitheredPx(s, 13.5, 13.5, 10.5, 10.5, frogRamp);
+  fillRectPx(s, 7, 5, 4, 4, bumperCol);
+  fillRectPx(s, 17, 5, 4, 4, bumperCol);
+  setPx(s, 8, 6, hexToU32('#080810'));
+  setPx(s, 18, 6, hexToU32('#080810'));
+  fillRectPx(s, 9, 16, 10, 3, hexToU32('#FFF498'));
+
+  applyArcadeOutline(s, '#080810');
   const out = commitPixelSurface(s);
   SPRITE_CACHE.set(key, out);
   return out;

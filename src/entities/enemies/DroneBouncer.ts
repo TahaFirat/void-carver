@@ -4,11 +4,12 @@ import { getScarabBeetleSprite } from '../../rendering/VolfiedSprites';
 import { InteriorMinion, MinionContext } from './BaseMinion';
 
 /**
- * 16-Bit Pixel-Art Amber-Emerald Scarab Beetle (`18x18` arcade px, `01-hedef-oynanis.jpg` beetles!)
+ * 16-Bit Pixel-Art Amber-Emerald Scarab Beetle (`18x18` arcade px):
+ * Bounces diagonally while player is shielded on border; lunges on `Swarm Aggro` when unshielded!
  */
 export class DroneBouncer extends InteriorMinion {
   public readonly kind = 'DRONE' as const;
-  private readonly baseSpeed: number;
+  public readonly baseSpeed: number;
 
   constructor(pos: Point, speed = 178, angleRad = Math.PI * 0.25) {
     const safeAngle =
@@ -23,20 +24,23 @@ export class DroneBouncer extends InteriorMinion {
     this.prevX = this.x;
     this.prevY = this.y;
 
-    const targetSpd = this.baseSpeed * mctx.speedScale;
-    const curSpd = Math.hypot(this.vx, this.vy) || 1;
-    this.vx = (this.vx / curSpd) * targetSpd;
-    this.vy = (this.vy / curSpd) * targetSpd;
+    if (!this.applySwarmAggro(mctx, this.baseSpeed)) {
+      const targetSpd = this.baseSpeed * mctx.speedScale;
+      this.currentSpeed = targetSpd;
+      const curSpd = Math.hypot(this.vx, this.vy) || 1;
+      this.vx = (this.vx / curSpd) * targetSpd;
+      this.vy = (this.vy / curSpd) * targetSpd;
 
-    if (Math.abs(this.vx) < targetSpd * 0.25) {
-      this.vx = (this.vx >= 0 ? 1 : -1) * targetSpd * 0.5;
+      if (Math.abs(this.vx) < targetSpd * 0.25) {
+        this.vx = (this.vx >= 0 ? 1 : -1) * targetSpd * 0.5;
+      }
+      if (Math.abs(this.vy) < targetSpd * 0.25) {
+        this.vy = (this.vy >= 0 ? 1 : -1) * targetSpd * 0.5;
+      }
+      const norm = Math.hypot(this.vx, this.vy) || 1;
+      this.vx = (this.vx / norm) * targetSpd;
+      this.vy = (this.vy / norm) * targetSpd;
     }
-    if (Math.abs(this.vy) < targetSpd * 0.25) {
-      this.vy = (this.vy >= 0 ? 1 : -1) * targetSpd * 0.5;
-    }
-    const norm = Math.hypot(this.vx, this.vy) || 1;
-    this.vx = (this.vx / norm) * targetSpd;
-    this.vy = (this.vy / norm) * targetSpd;
 
     this.x += this.vx * mctx.dt;
     this.y += this.vy * mctx.dt;
@@ -45,7 +49,8 @@ export class DroneBouncer extends InteriorMinion {
 
   public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
     const pos = this.getRenderPos(alpha);
-    const legFrame: 0 | 1 = Math.floor(timeSeconds * 10) % 2 === 0 ? 0 : 1;
+    const animRate = this.isSwarmAggro ? 18 : 10;
+    const legFrame: 0 | 1 = Math.floor(timeSeconds * animRate) % 2 === 0 ? 0 : 1;
     const sprite = getScarabBeetleSprite(legFrame);
     blitArenaPixelSprite(ctx, sprite, pos.x, pos.y, 1.15);
   }

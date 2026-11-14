@@ -2,11 +2,8 @@ import {
   BACKTRACK_SPEED_MULTIPLIER,
   BASE_BORDER_SPEED,
   BASE_CUT_SPEED,
-  CORNER_BUFFER_DIST,
-  CORNER_BUFFER_TIME,
   GRID_STEP,
   MAX_SPEED_MULTIPLIER,
-  MIN_SEGMENT_LEN,
   PALETTE,
   SHIELD_ZERO_GRACE_SECONDS,
   ShipSkinConfig,
@@ -14,23 +11,24 @@ import {
   SPEED_UP_STEP
 } from '../core/Config';
 import {
-  castOrthogonalRayToPolygon,
   getPolylineLength,
   isPointOnBarrier,
   isPointOnPolygonBoundary,
-  manhattanDist,
   pointInPolygonStrict,
-  pointsEqual,
   projectPointToPolygon,
-  projectPointToSegment,
   snapPoint
 } from '../geometry/PolygonMath';
+import { SOLID_BOX_HALF, SolidRect } from '../geometry/SolidBoxes';
 import { Barrier, Direction, DIR_VECTORS, OPPOSITE_DIR, Point } from '../geometry/Types';
-import { isPointBlockedBySolidBoxes, SolidRect } from '../geometry/SolidBoxes';
 import { InputState } from '../input/InputManager';
 import { NativeBridge } from '../native/NativeBridge';
 import { blitArenaPixelSprite } from '../rendering/PixelArtEngine';
 import { getCircularShieldSprite, getPlayerShipSprite } from '../rendering/VolfiedSprites';
+import {
+  BorderAndCutNavigator,
+  oppositeDir,
+  SolidBoxObstacle
+} from './BorderAndCutNavigator';
 
 export type ShipState = 'ON_BORDER' | 'CUTTING';
 
@@ -39,10 +37,14 @@ export interface CompletedCutEvent {
 }
 
 export class PlayerShip {
+  public readonly navigator = new BorderAndCutNavigator({ x: 450, y: 1200 });
+
   public x = 450;
   public y = 1200;
   public prevX = 450;
   public prevY = 1200;
+  public vx = 0;
+  public vy = 0;
 
   public state: ShipState = 'ON_BORDER';
   public facing: Direction = 'UP';
@@ -50,7 +52,6 @@ export class PlayerShip {
   public isBacktracking = false;
 
   public cutStartPoint: Point = { x: 450, y: 1200 };
-  private trailCorners: Point[] = [];
 
   // Shield & power-up state
   public maxShieldDuration = 95;
@@ -65,16 +66,10 @@ export class PlayerShip {
   public shieldHitFlash = 0;
   public turnedCornerThisStep = false;
 
-  /** V5 solid wall blocks the cutting ship can never pass through (set by the engine every frame). */
+  /** Solid wall blocks the cutting ship can never pass through (synced every frame). */
   public solidBoxes: readonly SolidRect[] = [];
-  /** True when the ship was stopped by a solid wall block during the latest update. */
+  /** True when the ship stopped flush against a solid wall block during the latest step. */
   public boxContactThisStep = false;
-  private moveRemainder = 0;
-  private turnBufferDir: Direction | null = null;
-  private turnBufferTimer = 0;
-  private backtrackCornerLatchDir: Direction | null = null;
-  private postExitAutoCutCooldown = 0;
-  private postExitLatchDir: Direction | null = null;
   private fireCooldown = 0;
 
   public initForLevel(
@@ -83,16 +78,22 @@ export class PlayerShip {
     initialShieldUnits = 950
   ): void {
     const snapped = snapPoint(spawnPoint);
-    this.x = snapped.x;
-    this.y = snapped.y;
-    this.prevX = snapped.x;
-    this.prevY = snapped.y;
+    this.navigator.resetToBorder(snapped);
+    this.navigator.facing = 'UP';
+    this.navigator.cutDir = 'UP';
+
+    this.x = this.navigator.pos.x;
+    this.y = this.navigator.pos.y;
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.vx = 0;
+    this.vy = 0;
     this.state = 'ON_BORDER';
     this.facing = 'UP';
     this.cutDirection = 'UP';
     this.isBacktracking = false;
-    this.cutStartPoint = { ...snapped };
-    this.trailCorners = [];
+    this.cutStartPoint = { x: this.x, y: this.y };
+
     this.maxShieldDuration = Math.max(10, shieldDuration);
     this.maxShieldUnits = Math.max(100, Math.min(999, Math.round(initialShieldUnits)));
     this.shieldTimer = this.maxShieldDuration;
@@ -104,12 +105,7 @@ export class PlayerShip {
     this.invulnerableTimer = 2.0;
     this.shieldHitFlash = 0;
     this.turnedCornerThisStep = false;
-    this.moveRemainder = 0;
-    this.turnBufferDir = null;
-    this.turnBufferTimer = 0;
-    this.backtrackCornerLatchDir = null;
-    this.postExitAutoCutCooldown = 0;
-    this.postExitLatchDir = null;
+    this.boxContactThisStep = false;
     this.fireCooldown = 0;
   }
 
@@ -118,13 +114,15 @@ export class PlayerShip {
     if (!isPointOnPolygonBoundary(target, activePolygon, 0.5)) {
       target = snapPoint(projectPointToPolygon(target, activePolygon).point);
     }
-    this.x = target.x;
-    this.y = target.y;
-    this.prevX = target.x;
-    this.prevY = target.y;
+    this.navigator.resetToBorder(target);
+    this.x = this.navigator.pos.x;
+    this.y = this.navigator.pos.y;
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.vx = 0;
+    this.vy = 0;
     this.state = 'ON_BORDER';
     this.isBacktracking = false;
-    this.trailCorners = [];
     this.speedMultiplier = 1.0;
     this.laserTimer = 0;
     this.bossCannonTimer = 0;
@@ -132,22 +130,24 @@ export class PlayerShip {
     if (this.shieldTimer <= 0 && this.shieldGraceTimer <= 0) {
       this.shieldGraceTimer = SHIELD_ZERO_GRACE_SECONDS;
     }
-    this.moveRemainder = 0;
-    this.turnBufferDir = null;
-    this.turnBufferTimer = 0;
-    this.backtrackCornerLatchDir = null;
-    this.postExitAutoCutCooldown = 0.32;
-    this.postExitLatchDir = null;
+    this.turnedCornerThisStep = false;
+    this.boxContactThisStep = false;
   }
 
   public snapOntoUpdatedPolygon(activePolygon: readonly Point[]): void {
-    if (!isPointOnPolygonBoundary({ x: this.x, y: this.y }, activePolygon, 0.5)) {
-      const proj = snapPoint(projectPointToPolygon({ x: this.x, y: this.y }, activePolygon).point);
-      this.x = proj.x;
-      this.y = proj.y;
-      this.prevX = proj.x;
-      this.prevY = proj.y;
+    let target = { x: this.x, y: this.y };
+    if (!isPointOnPolygonBoundary(target, activePolygon, 0.5)) {
+      target = snapPoint(projectPointToPolygon(target, activePolygon).point);
     }
+    this.navigator.resetToBorder(target);
+    this.x = this.navigator.pos.x;
+    this.y = this.navigator.pos.y;
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.vx = 0;
+    this.vy = 0;
+    this.state = 'ON_BORDER';
+    this.isBacktracking = false;
   }
 
   public getShieldUnits(): number {
@@ -186,16 +186,12 @@ export class PlayerShip {
 
   public getActiveTrail(): Point[] {
     if (this.state !== 'CUTTING') return [];
-    const last = this.trailCorners[this.trailCorners.length - 1];
-    if (last && last.x === this.x && last.y === this.y) {
-      return [...this.trailCorners];
-    }
-    return [...this.trailCorners, { x: this.x, y: this.y }];
+    return this.navigator.trail.map((p) => ({ x: p.x, y: p.y }));
   }
 
   public getActiveTrailLength(): number {
     if (this.state !== 'CUTTING') return 0;
-    return getPolylineLength(this.getActiveTrail());
+    return getPolylineLength(this.navigator.trail);
   }
 
   public getRenderPosition(alpha: number): Point {
@@ -207,27 +203,17 @@ export class PlayerShip {
 
   /**
    * Computes all valid inward entry directions from the current border position
-   * (supports concave vertices where 2 directions point into `activePolygon`).
+   * (including narrow peninsula tips & concave vertices where 2 directions enter `activePolygon`).
    */
   public getInwardBorderDirections(
     activePolygon: readonly Point[],
-    activeBarriers?: readonly Barrier[]
+    activeBarriers: readonly Barrier[] = []
   ): Direction[] {
-    if (activeBarriers && isPointOnBarrier({ x: this.x, y: this.y }, activeBarriers, 0.5)) {
-      return [];
-    }
-    const validBorder = this.getValidBorderDirections({ x: this.x, y: this.y }, activePolygon);
+    const navBoxes = this.toNavigatorBoxes();
     const out: Direction[] = [];
     const dirs: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
     for (const d of dirs) {
-      if (validBorder.includes(d)) continue;
-      const { dx, dy } = DIR_VECTORS[d];
-      const probe1 = { x: this.x + dx * 1, y: this.y + dy * 1 };
-      const probe2 = { x: this.x + dx * GRID_STEP, y: this.y + dy * GRID_STEP };
-      if (
-        pointInPolygonStrict(probe1, activePolygon) &&
-        !isPointBlockedBySolidBoxes(probe2, this.solidBoxes)
-      ) {
+      if (this.navigator.canLaunchCutFrom({ x: this.x, y: this.y }, d, activePolygon, navBoxes, activeBarriers)) {
         out.push(d);
       }
     }
@@ -243,7 +229,7 @@ export class PlayerShip {
       const allDirs: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
       for (const d of allDirs) {
         const { dx, dy } = DIR_VECTORS[d];
-        if (pointInPolygonStrict({ x: this.x + dx * 2, y: this.y + dy * 2 }, activePolygon)) {
+        if (pointInPolygonStrict({ x: this.x + dx * GRID_STEP, y: this.y + dy * GRID_STEP }, activePolygon)) {
           return d;
         }
       }
@@ -251,30 +237,6 @@ export class PlayerShip {
     }
     if (dirs.includes(this.facing)) return this.facing;
     return dirs[0];
-  }
-
-  /**
-   * Returns true if `dir` walks directly along the safe border OR approaches an upcoming
-   * border corner within `CORNER_BUFFER_DIST` (prevents auto-cut from freezing corner turns!).
-   */
-  public canMoveOrApproachOnBorder(dir: Direction, activePolygon: readonly Point[]): boolean {
-    const pos = { x: this.x, y: this.y };
-    const validBorderDirs = this.getValidBorderDirections(pos, activePolygon);
-    if (validBorderDirs.includes(dir)) return true;
-    return (
-      this.findCornerApproachDirection(pos, dir, validBorderDirs, activePolygon) !== null
-    );
-  }
-
-  /**
-   * Prevents accidental bounce re-entry right after completing a cut or 180° backtrack.
-   */
-  public isAutoCutSuppressedAfterExit(heldDir: Direction | null): boolean {
-    if (this.postExitAutoCutCooldown > 0) return true;
-    if (heldDir !== null && this.postExitLatchDir !== null && heldDir === this.postExitLatchDir) {
-      return true;
-    }
-    return false;
   }
 
   public canFireWeapon(dt: number): 'LASER' | 'BOSS_CANNON' | null {
@@ -292,6 +254,17 @@ export class PlayerShip {
       return 'LASER';
     }
     return null;
+  }
+
+  private toNavigatorBoxes(): SolidBoxObstacle[] {
+    const half = Math.max(4, SOLID_BOX_HALF - 4); // 30 + 4 pad = 34 (`SOLID_BOX_HALF`)
+    return this.solidBoxes.map((b, idx) => ({
+      id: `box_${idx}`,
+      x: b.x,
+      y: b.y,
+      halfSize: half,
+      active: true
+    }));
   }
 
   public update(
@@ -318,536 +291,73 @@ export class PlayerShip {
     if (this.bossCannonTimer > 0) {
       this.bossCannonTimer = Math.max(0, this.bossCannonTimer - dt);
     }
-    if (this.shieldLockTimer > 0) {
-      this.shieldLockTimer = Math.max(0, this.shieldLockTimer - dt);
-    } else if (this.shieldTimer > 0) {
-      this.shieldTimer = Math.max(0, this.shieldTimer - dt);
-    } else if (this.shieldGraceTimer > 0) {
-      this.shieldGraceTimer = Math.max(0, this.shieldGraceTimer - dt);
-    }
-
-    if (this.turnBufferTimer > 0) {
-      this.turnBufferTimer = Math.max(0, this.turnBufferTimer - dt);
-      if (this.turnBufferTimer <= 0) {
-        this.turnBufferDir = null;
+    // V7 Law 2: Perimeter Shield Economy!
+    // Shield energy (`shieldTimer` & `shieldGraceTimer`) drains ONLY while resting on `ON_BORDER`,
+    // and PAUSES completely (`0.000` drain) while unshielded in open space (`CUTTING`)!
+    if (this.state === 'ON_BORDER') {
+      if (this.shieldLockTimer > 0) {
+        this.shieldLockTimer = Math.max(0, this.shieldLockTimer - dt);
+      } else if (this.shieldTimer > 0) {
+        this.shieldTimer = Math.max(0, this.shieldTimer - dt);
+      } else if (this.shieldGraceTimer > 0) {
+        this.shieldGraceTimer = Math.max(0, this.shieldGraceTimer - dt);
       }
     }
 
-    if (this.backtrackCornerLatchDir && input.direction !== this.backtrackCornerLatchDir) {
-      this.backtrackCornerLatchDir = null;
-    }
-    if (this.postExitAutoCutCooldown > 0) {
-      this.postExitAutoCutCooldown = Math.max(0, this.postExitAutoCutCooldown - dt);
-    }
-    if (this.postExitLatchDir && input.direction !== this.postExitLatchDir) {
-      this.postExitLatchDir = null;
-    }
-
-    // Buffer perpendicular direction inputs for crisp 90-degree cornering (`140ms`)
-    if (input.direction) {
-      if (this.state === 'CUTTING') {
-        if (
-          input.direction !== this.cutDirection &&
-          input.direction !== OPPOSITE_DIR[this.cutDirection] &&
-          input.direction !== this.backtrackCornerLatchDir
-        ) {
-          this.turnBufferDir = input.direction;
-          this.turnBufferTimer = CORNER_BUFFER_TIME;
-        }
-      } else {
-        this.turnBufferDir = input.direction;
-        this.turnBufferTimer = CORNER_BUFFER_TIME;
-      }
-    }
-
+    const prevMode = this.state;
     const wantsBacktrack =
-      this.state === 'CUTTING' && input.direction === OPPOSITE_DIR[this.cutDirection];
-    this.isBacktracking = wantsBacktrack;
+      prevMode === 'CUTTING' &&
+      input.direction !== null &&
+      input.direction === oppositeDir(this.navigator.cutDir);
 
     const baseSpd =
-      (this.state === 'CUTTING' ? BASE_CUT_SPEED : BASE_BORDER_SPEED) * this.speedMultiplier;
-    const speed = wantsBacktrack ? baseSpd * BACKTRACK_SPEED_MULTIPLIER : baseSpd;
+      (prevMode === 'CUTTING' ? BASE_CUT_SPEED : BASE_BORDER_SPEED) * this.speedMultiplier;
+    const cutAllowed = Boolean(input.carveHeld || input.autoCarveSwipe);
+    const navBoxes = this.toNavigatorBoxes();
 
-    const totalPixels = speed * dt + this.moveRemainder;
-    const gridSteps = Math.floor(totalPixels / GRID_STEP);
-    this.moveRemainder = totalPixels - gridSteps * GRID_STEP;
+    const outcome = this.navigator.step(
+      dt,
+      baseSpd,
+      input.direction,
+      cutAllowed,
+      activePolygon,
+      navBoxes,
+      activeBarriers,
+      input.secondaryDirection ?? null
+    );
 
-    if (gridSteps === 0 && this.state === 'ON_BORDER' && input.direction) {
-      const carveRequested = input.carveHeld || input.autoCarveSwipe;
-      if (carveRequested && this.tryLaunchCut(input.direction, activePolygon, activeBarriers)) {
-        return null;
-      }
+    this.x = outcome.pos.x;
+    this.y = outcome.pos.y;
+    this.vx = dt > 0 ? (this.x - this.prevX) / dt : 0;
+    this.vy = dt > 0 ? (this.y - this.prevY) / dt : 0;
+    this.state = outcome.mode;
+    this.facing = outcome.facing;
+    this.cutDirection = this.navigator.cutDir;
+    this.isBacktracking = outcome.mode === 'CUTTING' && wantsBacktrack;
+    this.boxContactThisStep = Boolean(outcome.hitSolidBox);
+    this.turnedCornerThisStep = Boolean(outcome.turnedCorner);
+
+    if (prevMode === 'ON_BORDER' && outcome.mode === 'CUTTING' && outcome.trail.length > 0) {
+      this.cutStartPoint = { x: outcome.trail[0].x, y: outcome.trail[0].y };
     }
 
-    for (let s = 0; s < gridSteps; s++) {
-      if (this.state === 'ON_BORDER') {
-        this.stepOnBorder(input, activePolygon, activeBarriers);
-      } else {
-        const completed = this.stepCutting(input, activePolygon, activeBarriers);
-        if (completed) {
-          this.isBacktracking = false;
-          return completed;
-        }
-        // If a 180° backtrack safely docked back onto ON_BORDER, stop remaining sub-steps
-        // so the player rests cleanly on their border anchor!
-        if ((this.state as 'ON_BORDER' | 'CUTTING') === 'ON_BORDER') {
-          this.isBacktracking = false;
-          this.moveRemainder = 0;
-          return null;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private stepOnBorder(
-    input: InputState,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): void {
-    const pos = { x: this.x, y: this.y };
-    const validBorderDirs = this.getValidBorderDirections(pos, activePolygon);
-    const carveRequested = input.carveHeld || input.autoCarveSwipe;
-
-    // 1. Launch cut if player presses into polygon interior while Carve (`KES` or swipe) is active
-    const candidateLaunchDir = input.direction ?? this.turnBufferDir;
-    if (
-      carveRequested &&
-      candidateLaunchDir &&
-      !validBorderDirs.includes(candidateLaunchDir) &&
-      this.tryLaunchCut(candidateLaunchDir, activePolygon, activeBarriers)
-    ) {
-      this.stepCutting(input, activePolygon, activeBarriers);
-      return;
-    }
-
-    // 2. Execute buffered corner turn if now at a vertex where turnBufferDir is valid
-    if (this.turnBufferDir && validBorderDirs.includes(this.turnBufferDir)) {
-      const chosen = this.turnBufferDir;
-      if (this.facing !== chosen) {
-        this.turnedCornerThisStep = true;
-        NativeBridge.hapticCornerTurn();
-      }
-      this.facing = chosen;
-      this.turnBufferDir = null;
-      this.turnBufferTimer = 0;
-      this.x += DIR_VECTORS[chosen].dx * GRID_STEP;
-      this.y += DIR_VECTORS[chosen].dy * GRID_STEP;
-      return;
-    }
-
-    // 3. Direct movement along border
-    if (input.direction && validBorderDirs.includes(input.direction)) {
-      if (this.facing !== input.direction) {
-        this.turnedCornerThisStep = true;
-        NativeBridge.hapticCornerTurn();
-      }
-      this.facing = input.direction;
-      this.x += DIR_VECTORS[input.direction].dx * GRID_STEP;
-      this.y += DIR_VECTORS[input.direction].dy * GRID_STEP;
-      return;
-    }
-
-    // 4. Corner Turn Magnet / Buffering Assist within `CORNER_BUFFER_DIST` of corner
-    const desiredTurn = input.direction ?? this.turnBufferDir;
-    if (desiredTurn && !validBorderDirs.includes(desiredTurn)) {
-      const approachDir = this.findCornerApproachDirection(
-        pos,
-        desiredTurn,
-        validBorderDirs,
-        activePolygon
-      );
-      if (approachDir) {
-        this.facing = approachDir;
-        this.x += DIR_VECTORS[approachDir].dx * GRID_STEP;
-        this.y += DIR_VECTORS[approachDir].dy * GRID_STEP;
-        return;
-      }
-    }
-
-    // 5. Diagonal Outer-Wall Glide: if primary direction points outside the arena (not an inward
-    // cut entry), glide along any valid secondary border axis so exits & corners never stall!
-    const secDir = input.secondaryDirection ?? null;
-    if (
-      secDir &&
-      validBorderDirs.includes(secDir) &&
-      input.direction &&
-      !this.getInwardBorderDirections(activePolygon, activeBarriers).includes(input.direction)
-    ) {
-      if (this.facing !== secDir) {
-        this.turnedCornerThisStep = true;
-        NativeBridge.hapticCornerTurn();
-      }
-      this.facing = secDir;
-      this.x += DIR_VECTORS[secDir].dx * GRID_STEP;
-      this.y += DIR_VECTORS[secDir].dy * GRID_STEP;
-    }
-  }
-
-  private tryLaunchCut(
-    dir: Direction,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): boolean {
-    const pos = { x: this.x, y: this.y };
-
-    if (isPointOnBarrier(pos, activeBarriers, 0.5)) {
-      return false;
-    }
-
-    const { dx, dy } = DIR_VECTORS[dir];
-    const probe = { x: pos.x + dx * 1, y: pos.y + dy * 1 };
-    if (!pointInPolygonStrict(probe, activePolygon)) {
-      return false;
-    }
-
-    const ray = castOrthogonalRayToPolygon(pos, dir, activePolygon);
-    if (!ray || ray.distance < MIN_SEGMENT_LEN) {
-      return false;
-    }
-    if (ray.distance === MIN_SEGMENT_LEN && isPointOnBarrier(ray.hitPoint, activeBarriers, 0.5)) {
-      return false;
-    }
-
-    // V5: never start a cut straight into a solid wall block hugging the border
-    const firstStep = { x: pos.x + dx * GRID_STEP, y: pos.y + dy * GRID_STEP };
-    if (isPointBlockedBySolidBoxes(firstStep, this.solidBoxes)) {
-      this.boxContactThisStep = true;
-      return false;
-    }
-
-    this.state = 'CUTTING';
-    this.cutDirection = dir;
-    this.facing = dir;
-    this.isBacktracking = false;
-    this.cutStartPoint = { ...pos };
-    this.trailCorners = [{ ...pos }];
-    this.turnBufferDir = null;
-    this.turnBufferTimer = 0;
-    this.backtrackCornerLatchDir = null;
-    this.turnedCornerThisStep = true;
-    NativeBridge.hapticCornerTurn();
-    return true;
-  }
-
-  /**
-   * Steps 2px backward along `trailCorners` when player pulls `180°` opposite to `cutDirection`!
-   * Safely rewinds corners and docks back onto `ON_BORDER` upon reaching `cutStartPoint`.
-   */
-  private stepBacktrack(heldDir: Direction): void {
-    const lastCorner = this.trailCorners[this.trailCorners.length - 1];
-    if (!lastCorner) {
-      this.state = 'ON_BORDER';
-      return;
-    }
-
-    const backDir = OPPOSITE_DIR[this.cutDirection];
-    if (heldDir !== backDir) return;
-
-    const { dx, dy } = DIR_VECTORS[backDir];
-    this.x += dx * GRID_STEP;
-    this.y += dy * GRID_STEP;
-    this.facing = this.cutDirection;
-    this.isBacktracking = true;
-
-    if (pointsEqual({ x: this.x, y: this.y }, lastCorner)) {
-      if (this.trailCorners.length <= 1) {
-        // Reached `cutStartPoint` on safe green border -> retreat complete!
-        this.state = 'ON_BORDER';
-        this.trailCorners = [];
-        this.isBacktracking = false;
-        this.turnBufferDir = null;
-        this.turnBufferTimer = 0;
-        this.postExitAutoCutCooldown = 0.28;
-        this.postExitLatchDir = heldDir;
-        NativeBridge.hapticCornerTurn();
-        return;
-      }
-
-      // Pop the corner we just unwound back onto and restore previous segment direction!
-      this.trailCorners.pop();
-      const prevCorner = this.trailCorners[this.trailCorners.length - 1];
-      const segDx = this.x - prevCorner.x;
-      const segDy = this.y - prevCorner.y;
-      if (Math.abs(segDx) >= Math.abs(segDy)) {
-        this.cutDirection = segDx >= 0 ? 'RIGHT' : 'LEFT';
-      } else {
-        this.cutDirection = segDy >= 0 ? 'DOWN' : 'UP';
-      }
-      this.facing = this.cutDirection;
-      // Hold cleanly at popped corner while thumb continues holding `heldDir` until changed/released!
-      this.backtrackCornerLatchDir = heldDir;
-      this.turnBufferDir = null;
-      this.turnBufferTimer = 0;
+    if (this.turnedCornerThisStep) {
       NativeBridge.hapticCornerTurn();
     }
-  }
 
-  private stepCutting(
-    input: InputState,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): CompletedCutEvent | null {
-    // 1. Authentic 180-Degree Line Backtrack / Retreat!
-    if (input.direction && input.direction === OPPOSITE_DIR[this.cutDirection]) {
-      this.stepBacktrack(input.direction);
-      return null;
+    if (outcome.completedCut) {
+      this.isBacktracking = false;
+      return { trail: outcome.trail };
     }
 
-    this.isBacktracking = false;
-
-    // If holding the latched post-backtrack direction right at a popped corner, pause briefly
-    // until player releases or steers a new direction
-    if (input.direction && input.direction === this.backtrackCornerLatchDir) {
-      return null;
-    }
-
-    // 2. Continuous Cruise While Cutting + 90-degree orthogonal turn (with generous Border Exit Magnet!)
-    // Once CUTTING, the ship glides forward automatically along `cutDirection` even if the thumb
-    // lifts or crosses center deadzone, eliminating mid-exit stalls inside the danger zone.
-    const canGoStraight = this.canAdvanceInCutDirection(
-      this.cutDirection,
-      activePolygon,
-      activeBarriers
-    );
-    const lastCornerForExit = this.trailCorners[this.trailCorners.length - 1];
-    const currentSegForExit = lastCornerForExit
-      ? manhattanDist(lastCornerForExit, { x: this.x, y: this.y })
-      : 0;
-    const exitMagnetDist = currentSegForExit >= 36 ? 34 : 16;
-    const nearSafeExit =
-      canGoStraight &&
-      this.isSafeCutExitAhead(this.cutDirection, exitMagnetDist, activePolygon, activeBarriers);
-
-    const requestedDir = input.direction ?? this.turnBufferDir;
-    if (
-      requestedDir &&
-      requestedDir !== this.cutDirection &&
-      requestedDir !== OPPOSITE_DIR[this.cutDirection]
-    ) {
-      if (nearSafeExit) {
-        // Player tilted thumb anticipating border movement right before exiting:
-        // remember their desired border direction and finish snapping onto the safe border!
-        this.turnBufferDir = requestedDir;
-        this.turnBufferTimer = CORNER_BUFFER_TIME;
-      } else {
-        const lastCorner = this.trailCorners[this.trailCorners.length - 1];
-        const currentSegLen = manhattanDist(lastCorner, { x: this.x, y: this.y });
-        const immediateExitInTurnDir = this.isDirectSafeExitStep(
-          requestedDir,
-          activePolygon,
-          activeBarriers
-        );
-        if (
-          currentSegLen >= MIN_SEGMENT_LEN ||
-          (currentSegLen >= GRID_STEP && (!canGoStraight || immediateExitInTurnDir))
-        ) {
-          if (this.canAdvanceInCutDirection(requestedDir, activePolygon, activeBarriers)) {
-            this.trailCorners.push({ x: this.x, y: this.y });
-            this.cutDirection = requestedDir;
-            this.facing = requestedDir;
-            this.turnBufferDir = null;
-            this.turnBufferTimer = 0;
-            this.turnedCornerThisStep = true;
-            NativeBridge.hapticCornerTurn();
-          }
-        }
-      }
-    }
-
-    // Advance along `cutDirection` if unobstructed
-    if (!this.canAdvanceInCutDirection(this.cutDirection, activePolygon, activeBarriers)) {
-      return null;
-    }
-
-    const { dx, dy } = DIR_VECTORS[this.cutDirection];
-    const nextPos = {
-      x: this.x + dx * GRID_STEP,
-      y: this.y + dy * GRID_STEP
-    };
-
-    this.x = nextPos.x;
-    this.y = nextPos.y;
-    this.facing = this.cutDirection;
-
-    if (
-      !pointsEqual(nextPos, this.cutStartPoint) &&
-      isPointOnPolygonBoundary(nextPos, activePolygon, 0.05)
-    ) {
-      const completedTrail = [...this.trailCorners, { ...nextPos }];
-      const pendingPerp =
-        this.turnBufferDir &&
-        this.turnBufferDir !== this.cutDirection &&
-        this.turnBufferDir !== OPPOSITE_DIR[this.cutDirection]
-          ? this.turnBufferDir
-          : null;
-      this.state = 'ON_BORDER';
-      this.trailCorners = [];
-      this.moveRemainder = 0;
-      this.turnBufferDir = pendingPerp;
-      this.turnBufferTimer = pendingPerp ? CORNER_BUFFER_TIME : 0;
-      this.postExitAutoCutCooldown = 0.28;
-      this.postExitLatchDir = input.direction;
-      return { trail: completedTrail };
-    }
-
-    return null;
-  }
-
-  /**
-   * Checks if continuing straight along `dir` reaches a clean, safe completion boundary
-   * within `maxDist` pixels (no solid box, own trail, barrier, or cutStartPoint in the way).
-   */
-  private isSafeCutExitAhead(
-    dir: Direction,
-    maxDist: number,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): boolean {
-    const { dx, dy } = DIR_VECTORS[dir];
-    for (let dist = GRID_STEP; dist <= maxDist; dist += GRID_STEP) {
-      const mid = { x: this.x + dx * (dist - 1), y: this.y + dy * (dist - 1) };
-      const pt = { x: this.x + dx * dist, y: this.y + dy * dist };
-      if (!pointInPolygonStrict(mid, activePolygon)) return false;
-      if (isPointBlockedBySolidBoxes(pt, this.solidBoxes)) return false;
-      if (this.wouldCollideWithOwnTrail(pt, dir)) return false;
-      if (isPointOnPolygonBoundary(pt, activePolygon, 0.05)) {
-        if (pointsEqual(pt, this.cutStartPoint)) return false;
-        if (isPointOnBarrier(pt, activeBarriers, 0.5)) return false;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private isDirectSafeExitStep(
-    dir: Direction,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): boolean {
-    const { dx, dy } = DIR_VECTORS[dir];
-    const mid = { x: this.x + dx * 1, y: this.y + dy * 1 };
-    const nextPos = { x: this.x + dx * GRID_STEP, y: this.y + dy * GRID_STEP };
-    if (!pointInPolygonStrict(mid, activePolygon)) return false;
-    if (!isPointOnPolygonBoundary(nextPos, activePolygon, 0.05)) return false;
-    if (pointsEqual(nextPos, this.cutStartPoint)) return false;
-    if (isPointOnBarrier(nextPos, activeBarriers, 0.5)) return false;
-    return true;
-  }
-
-  private canAdvanceInCutDirection(
-    dir: Direction,
-    activePolygon: readonly Point[],
-    activeBarriers: readonly Barrier[]
-  ): boolean {
-    const { dx, dy } = DIR_VECTORS[dir];
-    const nextPos = {
-      x: this.x + dx * GRID_STEP,
-      y: this.y + dy * GRID_STEP
-    };
-    const midPos = {
-      x: this.x + dx * 1,
-      y: this.y + dy * 1
-    };
-
-    if (!pointInPolygonStrict(midPos, activePolygon)) {
-      return false;
-    }
-
-    // V5 Solid Wall Blocks: the ship stops flush against the wall (no death, cut stays open)
-    if (isPointBlockedBySolidBoxes(nextPos, this.solidBoxes)) {
-      this.boxContactThisStep = true;
-      return false;
-    }
-    if (this.wouldCollideWithOwnTrail(nextPos, dir)) {
-      return false;
-    }
-
-    if (isPointOnPolygonBoundary(nextPos, activePolygon, 0.05)) {
-      if (pointsEqual(nextPos, this.cutStartPoint)) {
-        return false;
-      }
-      if (isPointOnBarrier(nextPos, activeBarriers, 0.5)) {
-        return false;
-      }
-      return true;
-    }
-
-    const ahead4 = {
-      x: this.x + dx * MIN_SEGMENT_LEN,
-      y: this.y + dy * MIN_SEGMENT_LEN
-    };
-    if (
-      isPointOnPolygonBoundary(ahead4, activePolygon, 0.05) &&
-      (isPointOnBarrier(ahead4, activeBarriers, 0.5) || pointsEqual(ahead4, this.cutStartPoint))
-    ) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private wouldCollideWithOwnTrail(nextPos: Point, dir: Direction): boolean {
-    const corners = this.trailCorners;
-    if (corners.length < 2) return false;
-
-    const { dx, dy } = DIR_VECTORS[dir];
-    const probeAhead = {
-      x: this.x + dx * MIN_SEGMENT_LEN,
-      y: this.y + dy * MIN_SEGMENT_LEN
-    };
-
-    for (let i = 0; i <= corners.length - 3; i++) {
-      const a = corners[i];
-      const b = corners[i + 1];
-      const dNext = projectPointToSegment(nextPos, a, b).distance;
-      const dAhead = projectPointToSegment(probeAhead, a, b).distance;
-      if (dNext < GRID_STEP || dAhead < GRID_STEP) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private getValidBorderDirections(pos: Point, poly: readonly Point[]): Direction[] {
-    const valid: Direction[] = [];
-    const dirs: Direction[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
-    for (const d of dirs) {
-      const { dx, dy } = DIR_VECTORS[d];
-      const mid = { x: pos.x + dx * 1, y: pos.y + dy * 1 };
-      if (isPointOnPolygonBoundary(mid, poly, 0.05)) {
-        valid.push(d);
-      }
-    }
-    return valid;
-  }
-
-  private findCornerApproachDirection(
-    pos: Point,
-    desiredTurn: Direction,
-    validBorderDirs: readonly Direction[],
-    poly: readonly Point[]
-  ): Direction | null {
-    for (const walkDir of validBorderDirs) {
-      const { dx, dy } = DIR_VECTORS[walkDir];
-      for (let dist = GRID_STEP; dist <= CORNER_BUFFER_DIST; dist += GRID_STEP) {
-        const checkPt = { x: pos.x + dx * dist, y: pos.y + dy * dist };
-        if (!isPointOnPolygonBoundary(checkPt, poly, 0.05)) break;
-        const dirsAtCorner = this.getValidBorderDirections(checkPt, poly);
-        if (dirsAtCorner.includes(desiredTurn)) {
-          return walkDir;
-        }
-      }
-    }
     return null;
   }
 
   /**
    * Renders:
    * 1. Crisp 90-degree 16-bit Pixel Orange Cutting Line (`#FF7810` + `#FFF0A0` core + `#080810` border)
-   * 2. Mobile Clarity Aid: Pulsing Pixel Entry Arrow pointing inward when `KES` is armed on safe border!
-   * 3. 2-Frame Circular Pixel Green/Red Forcefield (`getCircularShieldSprite`) matching `01-hedef-oynanis.jpg`
+   * 2. Mobile Clarity Aid: Subtle inward pixel chevron when on safe border
+   * 3. 2-Frame Circular Pixel Green/Red Forcefield (`getCircularShieldSprite`)
    * 4. 16-Bit Twin-Prong Pixel Starfighter (`getPlayerShipSprite`)
    */
   public render(
@@ -860,17 +370,18 @@ export class PlayerShip {
     activeBarriers?: readonly Barrier[]
   ): void {
     const renderPos = this.getRenderPosition(alpha);
+    const trail = this.navigator.trail;
 
-    // 1. 16-Bit Pixel Orange Cutting Trail (`01-hedef-oynanis.jpg`!)
-    if (this.state === 'CUTTING' && this.trailCorners.length > 0) {
+    // 1. 16-Bit Pixel Orange Cutting Trail (`02-hedef-faz2-boss-ve-temiz-kontrol.jpg`!)
+    if (this.state === 'CUTTING' && trail.length >= 2) {
       ctx.save();
       ctx.lineCap = 'square';
       ctx.lineJoin = 'miter';
 
       ctx.beginPath();
-      ctx.moveTo(Math.round(this.trailCorners[0].x), Math.round(this.trailCorners[0].y));
-      for (let i = 1; i < this.trailCorners.length; i++) {
-        ctx.lineTo(Math.round(this.trailCorners[i].x), Math.round(this.trailCorners[i].y));
+      ctx.moveTo(Math.round(trail[0].x), Math.round(trail[0].y));
+      for (let i = 1; i < trail.length - 1; i++) {
+        ctx.lineTo(Math.round(trail[i].x), Math.round(trail[i].y));
       }
       ctx.lineTo(Math.round(renderPos.x), Math.round(renderPos.y));
 
@@ -890,9 +401,9 @@ export class PlayerShip {
       ctx.stroke();
 
       // Crisp 90-degree pixel corner nodes + anchor spark
-      for (const c of this.trailCorners) {
-        const cx = Math.round(c.x);
-        const cy = Math.round(c.y);
+      for (let i = 0; i < trail.length - 1; i++) {
+        const cx = Math.round(trail[i].x);
+        const cy = Math.round(trail[i].y);
         ctx.fillStyle = PALETTE.PIXEL_BLACK;
         ctx.fillRect(cx - 5, cy - 5, 10, 10);
         ctx.fillStyle = PALETTE.CUT_ORANGE;
@@ -903,8 +414,7 @@ export class PlayerShip {
       ctx.restore();
     }
 
-    // 2. Mobile Clarity Aid (V5 Inward Direction Hint): a small pixel arrow always shows which
-    // direction enters the uncut field; it grows into a pulsing 3-step chevron when `KES` is armed.
+    // 2. Mobile Clarity Aid: small pixel chevron showing valid inward entry on safe border
     if (
       this.state === 'ON_BORDER' &&
       activePolygon &&
@@ -921,8 +431,7 @@ export class PlayerShip {
         const steps = carveArmed ? 3 : 2;
 
         ctx.save();
-        ctx.globalAlpha = carveArmed ? 1 : 0.85;
-        // Pixel arrow chevron pointing into the uncut territory
+        ctx.globalAlpha = carveArmed ? 1 : 0.82;
         for (let step = 0; step < steps; step++) {
           const sx = ax - dx * step * 4;
           const sy = ay - dy * step * 4;
@@ -953,7 +462,7 @@ export class PlayerShip {
     ctx.save();
     ctx.globalAlpha = invulnAlpha;
 
-    // 4. 2-Frame Circular Pixel Green/Red Forcefield (`ON_BORDER` while shield or 3s grace active!)
+    // 4. 2-Frame Circular Pixel Green/Red Forcefield (`ON_BORDER` while shield or grace active!)
     if (this.isPerimeterShieldActive()) {
       const shieldUnits = this.getShieldUnits();
       const warning = shieldUnits < 150 || this.isShieldInZeroWarning();

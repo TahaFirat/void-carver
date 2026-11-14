@@ -1,10 +1,12 @@
 import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
-import { DifficultyId, SHIP_SKINS, ShipSkinId } from '../core/Config';
+import { DifficultyId, SHIP_SKINS, ShipSkinConfig, ShipSkinId } from '../core/Config';
+import type { ControlScheme } from '../input/TouchGestureEngine';
+import type { RunDifficulty } from '../levels/EndlessBossDirector';
 
-export type ControlMode = 'JOYSTICK' | 'DPAD' | 'SWIPE';
+export type ControlMode = ControlScheme;
 export type CarveButtonMode = 'HOLD' | 'TOGGLE';
-export type JoystickSide = 'RIGHT' | 'LEFT' | 'CENTER';
+export type JoystickSide = 'LEFT' | 'CENTER' | 'RIGHT';
 export type LanguageCode = 'TR' | 'EN';
 
 export interface SectorProgress {
@@ -14,17 +16,21 @@ export interface SectorProgress {
   bestScore: number;
 }
 
+export interface DifficultyPersonalRecord {
+  highScore: number;
+  bestWave: number;
+}
+
 export interface PlayerSettings {
   controlMode: ControlMode;
   carveButtonMode: CarveButtonMode;
-  /** Configurable thumb joystick / drag side (`RIGHT` or `LEFT`). */
+  /** Configurable thumb pad side (`LEFT`, `CENTER`, or `RIGHT`). */
   joystickSide: JoystickSide;
   sfxVolume: number; // 0..1
   ambientVolume: number; // 0..1
   muted: boolean;
   hapticsEnabled: boolean;
   language: LanguageCode;
-  /** V5 `[OTOMATİK]` one-hand mode: pressing the inward arrow for 0.10s starts a cut without `KES`. */
   autoCut: boolean;
 }
 
@@ -47,6 +53,7 @@ export interface GameSaveData {
   highScoreCampaign: number;
   highScoreEndless: number;
   bestEndlessWave: number;
+  difficultyRecords: Record<RunDifficulty, DifficultyPersonalRecord>;
   achievements: string[];
   premiumUnlocked: boolean;
   stats: LifetimeStats;
@@ -55,12 +62,18 @@ export interface GameSaveData {
 
 const STORAGE_KEY = 'void_carver_sector80_save_v1';
 
+export function difficultyIdToRunDifficulty(diff: DifficultyId): RunDifficulty {
+  if (diff === 'EXPLORER') return 'EASY';
+  if (diff === 'LEGEND') return 'HARD';
+  return 'MEDIUM';
+}
+
 function isValidShipId(val: unknown): val is ShipSkinId {
   return typeof val === 'string' && SHIP_SKINS.some((s) => s.id === val);
 }
 
 function detectDefaultControlMode(): ControlMode {
-  return 'JOYSTICK';
+  return 'CLASSIC_ARCADE';
 }
 
 export function createDefaultSaveData(): GameSaveData {
@@ -75,7 +88,7 @@ export function createDefaultSaveData(): GameSaveData {
   }
 
   return {
-    version: 4,
+    version: 7,
     difficulty: 'COMMANDER',
     selectedShip: 'TITAN',
     unlockedSector: 1,
@@ -83,6 +96,11 @@ export function createDefaultSaveData(): GameSaveData {
     highScoreCampaign: 0,
     highScoreEndless: 0,
     bestEndlessWave: 0,
+    difficultyRecords: {
+      EASY: { highScore: 0, bestWave: 0 },
+      MEDIUM: { highScore: 0, bestWave: 0 },
+      HARD: { highScore: 0, bestWave: 0 }
+    },
     achievements: [],
     premiumUnlocked: false,
     stats: {
@@ -97,13 +115,13 @@ export function createDefaultSaveData(): GameSaveData {
     settings: {
       controlMode: detectDefaultControlMode(),
       carveButtonMode: 'HOLD',
-      joystickSide: 'RIGHT',
+      joystickSide: 'LEFT',
       sfxVolume: 0.8,
       ambientVolume: 0.45,
       muted: false,
       hapticsEnabled: true,
       language: 'TR',
-      autoCut: true
+      autoCut: false
     }
   };
 }
@@ -130,6 +148,45 @@ class StorageServiceImpl {
     return sum;
   }
 
+  public getBestWaveOverall(save: GameSaveData = this.cached): number {
+    return Math.max(
+      save.bestEndlessWave || 0,
+      save.difficultyRecords?.EASY?.bestWave || 0,
+      save.difficultyRecords?.MEDIUM?.bestWave || 0,
+      save.difficultyRecords?.HARD?.bestWave || 0
+    );
+  }
+
+  public getBestScoreOverall(save: GameSaveData = this.cached): number {
+    return Math.max(
+      save.highScoreEndless || 0,
+      save.highScoreCampaign || 0,
+      save.difficultyRecords?.EASY?.highScore || 0,
+      save.difficultyRecords?.MEDIUM?.highScore || 0,
+      save.difficultyRecords?.HARD?.highScore || 0
+    );
+  }
+
+  public getDifficultyRecord(
+    diff: DifficultyId = this.cached.difficulty,
+    save: GameSaveData = this.cached
+  ): DifficultyPersonalRecord {
+    const key = difficultyIdToRunDifficulty(diff);
+    return save.difficultyRecords?.[key] ?? { highScore: 0, bestWave: 0 };
+  }
+
+  public isShipUnlocked(skin: ShipSkinConfig, save: GameSaveData = this.cached): boolean {
+    if (skin.waveRequired <= 1 && skin.scoreRequired <= 0) return true;
+    const bestWave = this.getBestWaveOverall(save);
+    const bestScore = this.getBestScoreOverall(save);
+    const stars = this.getTotalStars();
+    return (
+      bestWave >= skin.waveRequired ||
+      bestScore >= skin.scoreRequired ||
+      stars >= skin.starsRequired
+    );
+  }
+
   public async load(): Promise<GameSaveData> {
     try {
       let raw: string | null = null;
@@ -152,37 +209,75 @@ class StorageServiceImpl {
           ...defaults.settings,
           ...(parsed.settings ?? {})
         };
-        if (
-          mergedSettings.joystickSide !== 'LEFT' &&
-          mergedSettings.joystickSide !== 'RIGHT' &&
-          mergedSettings.joystickSide !== 'CENTER'
-        ) {
-          mergedSettings.joystickSide = 'RIGHT';
-        }
-        // Migrate pre-v4 saves (where 'DPAD' or 'KEYBOARD' was the legacy default) cleanly to 'JOYSTICK'
+
         const rawMode = (parsed.settings as { controlMode?: string } | undefined)?.controlMode;
-        if (rawVersion < 4) {
-          mergedSettings.controlMode = rawMode === 'SWIPE' ? 'SWIPE' : 'JOYSTICK';
-          mergedSettings.autoCut = true;
-        } else if (
-          mergedSettings.controlMode !== 'JOYSTICK' &&
-          mergedSettings.controlMode !== 'DPAD' &&
-          mergedSettings.controlMode !== 'SWIPE'
-        ) {
-          mergedSettings.controlMode = 'JOYSTICK';
+        if (rawVersion < 7) {
+          mergedSettings.controlMode =
+            rawMode === 'JOYSTICK_KES' ? 'JOYSTICK_KES' : 'CLASSIC_ARCADE';
+          mergedSettings.joystickSide =
+            mergedSettings.joystickSide === 'RIGHT' ? 'RIGHT' : 'LEFT';
+          mergedSettings.autoCut = false;
+        } else {
+          if (
+            mergedSettings.controlMode !== 'CLASSIC_ARCADE' &&
+            mergedSettings.controlMode !== 'JOYSTICK_KES' &&
+            mergedSettings.controlMode !== 'SINGLE_HAND_DRAG'
+          ) {
+            mergedSettings.controlMode = 'CLASSIC_ARCADE';
+          }
+          if (
+            mergedSettings.joystickSide !== 'LEFT' &&
+            mergedSettings.joystickSide !== 'CENTER' &&
+            mergedSettings.joystickSide !== 'RIGHT'
+          ) {
+            mergedSettings.joystickSide = 'LEFT';
+          }
+          if (
+            mergedSettings.controlMode !== 'SINGLE_HAND_DRAG' &&
+            mergedSettings.joystickSide === 'CENTER'
+          ) {
+            mergedSettings.joystickSide = 'LEFT';
+          }
         }
 
-        const validDiff =
+        const validDiff: DifficultyId =
           parsed.difficulty === 'EXPLORER' ||
           parsed.difficulty === 'COMMANDER' ||
           parsed.difficulty === 'LEGEND'
             ? parsed.difficulty
             : 'COMMANDER';
 
+        const legacyHigh = Math.max(
+          Number(parsed.highScoreEndless) || 0,
+          Number(parsed.highScoreCampaign) || 0
+        );
+        const legacyWave = Math.max(0, Number(parsed.bestEndlessWave) || 0);
+        const parsedRecords = parsed.difficultyRecords;
+        const difficultyRecords: Record<RunDifficulty, DifficultyPersonalRecord> = {
+          EASY: {
+            highScore: Math.max(0, Number(parsedRecords?.EASY?.highScore) || 0),
+            bestWave: Math.max(0, Number(parsedRecords?.EASY?.bestWave) || 0)
+          },
+          MEDIUM: {
+            highScore: Math.max(
+              rawVersion < 6 ? legacyHigh : 0,
+              Number(parsedRecords?.MEDIUM?.highScore) || 0
+            ),
+            bestWave: Math.max(
+              rawVersion < 6 ? legacyWave : 0,
+              Number(parsedRecords?.MEDIUM?.bestWave) || 0
+            )
+          },
+          HARD: {
+            highScore: Math.max(0, Number(parsedRecords?.HARD?.highScore) || 0),
+            bestWave: Math.max(0, Number(parsedRecords?.HARD?.bestWave) || 0)
+          }
+        };
+
         this.cached = {
           ...defaults,
           ...parsed,
-          version: 4,
+          version: 7,
           difficulty: validDiff,
           unlockedSector: Math.max(
             1,
@@ -190,6 +285,7 @@ class StorageServiceImpl {
           ),
           selectedShip: migratedShip,
           sectors: { ...defaults.sectors, ...(parsed.sectors ?? {}) },
+          difficultyRecords,
           stats: { ...defaults.stats, ...(parsed.stats ?? {}) },
           settings: mergedSettings,
           achievements: Array.isArray(parsed.achievements) ? parsed.achievements : []

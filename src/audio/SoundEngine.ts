@@ -213,6 +213,105 @@ class SoundEngineImpl {
     osc.stop(now + 0.095);
   }
 
+  /**
+   * V7 Audio Signature 1 (`Burglar-Alarm Shield Tick`):
+   * Plays while `ON_BORDER` as shield drains; accelerates into an urgent emergency alarm when `< 200`!
+   * Stops automatically when the player launches into `CUTTING`!
+   */
+  public playShieldPulseTick(shieldUnits: number): void {
+    if (this.muted || this.sfxVolume <= 0.01) return;
+    const ctx = this.ensureContext();
+    if (!ctx || ctx.state !== 'running') return;
+
+    const now = ctx.currentTime;
+    const urgent = shieldUnits < 200;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = urgent ? 'square' : 'triangle';
+    osc.frequency.setValueAtTime(urgent ? 940 : 480, now);
+    if (urgent) {
+      osc.frequency.setValueAtTime(680, now + 0.032);
+    } else {
+      osc.frequency.exponentialRampToValueAtTime(340, now + 0.035);
+    }
+    g.gain.setValueAtTime((urgent ? 0.058 : 0.028) * this.sfxVolume, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + (urgent ? 0.068 : 0.04));
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + (urgent ? 0.072 : 0.045));
+  }
+
+  /**
+   * V7 Audio Signature 2 (`Electric Line Shock`):
+   * Sharp high-voltage crackle when an enemy or projectile strikes `activeTrail`!
+   */
+  public playElectricShock(): void {
+    if (this.muted || this.sfxVolume <= 0.01) return;
+    const ctx = this.ensureContext();
+    if (!ctx || ctx.state !== 'running') return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1680, now);
+    osc.frequency.exponentialRampToValueAtTime(240, now + 0.11);
+    g.gain.setValueAtTime(0.14 * this.sfxVolume, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
+
+    this.triggerNoiseBurst(0.11, 2100, 0.15 * this.sfxVolume, 2.0);
+  }
+
+  /**
+   * V7 Audio Signature 3 (`1.2s Multi-Explosion Wave Clear Chain`):
+   * 9 cascading 16-bit FM explosions tearing the defeated Boss & minions apart!
+   */
+  public playWaveClearExplosionChain(): void {
+    if (this.muted || this.sfxVolume <= 0.01) return;
+    const ctx = this.ensureContext();
+    if (!ctx || ctx.state !== 'running') return;
+
+    this.stopLaserCutLoop();
+    const now = ctx.currentTime;
+    const stages = 9;
+
+    for (let i = 0; i < stages; i++) {
+      const delaySec = i * 0.13;
+      const isFinal = i === stages - 1;
+      const t0 = now + delaySec;
+
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      const startFreq = isFinal ? 185 : 220 - i * 11;
+      const dur = isFinal ? 0.42 : 0.16;
+      osc.frequency.setValueAtTime(startFreq, t0);
+      osc.frequency.exponentialRampToValueAtTime(isFinal ? 24 : 38, t0 + dur);
+      g.gain.setValueAtTime((isFinal ? 0.26 : 0.15) * this.sfxVolume, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur + 0.02);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.03);
+
+      setTimeout(() => {
+        if (!this.muted) {
+          this.triggerNoiseBurst(
+            isFinal ? 0.34 : 0.12,
+            isFinal ? 460 : 720 - i * 25,
+            (isFinal ? 0.22 : 0.12) * this.sfxVolume,
+            1.0
+          );
+        }
+      }, Math.round(delaySec * 1000));
+    }
+  }
+
   public stopLaserCutLoop(): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;

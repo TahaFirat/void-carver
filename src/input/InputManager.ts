@@ -4,11 +4,12 @@ import { TouchControls } from './TouchControls';
 
 export interface InputState {
   direction: Direction | null;
+  /** Second-most-recent held keyboard direction (`Last-Key-Wins` stack) for diagonal safe-border corner rounding. */
   secondaryDirection?: Direction | null;
   carveHeld: boolean;
-  autoCarveSwipe: boolean;
+  autoCarveSwipe?: boolean;
   pauseJustPressed: boolean;
-  debugSectorSelect: number | null; // 1..16 via Shift+1..9 or Alt+1..7
+  debugSectorSelect: number | null;
 }
 
 export class InputManager {
@@ -16,6 +17,7 @@ export class InputManager {
 
   private readonly dirStack: Direction[] = [];
   private carveKeys = new Set<string>();
+  private mouseCutHeld = false;
   private pauseQueued = false;
   private debugSectorQueued: number | null = null;
   private gamepadPauseWasPressed = false;
@@ -28,7 +30,7 @@ export class InputManager {
     mode: ControlMode,
     _carveMode: CarveButtonMode,
     _autoCut = false,
-    joystickSide: JoystickSide = 'RIGHT'
+    joystickSide: JoystickSide = 'LEFT'
   ): void {
     this.touch.configure(mode, joystickSide);
   }
@@ -36,6 +38,7 @@ export class InputManager {
   public resetActiveInputs(): void {
     this.dirStack.length = 0;
     this.carveKeys.clear();
+    this.mouseCutHeld = false;
     this.touch.reset();
   }
 
@@ -43,21 +46,22 @@ export class InputManager {
     const touchSnap = this.touch.getSnapshot();
     const gpSnap = this.pollGamepad();
 
-    // Priority: active touch -> most recent keyboard direction -> gamepad
-    const direction: Direction | null =
-      touchSnap.direction ??
-      (this.dirStack.length > 0 ? this.dirStack[this.dirStack.length - 1] : null) ??
-      gpSnap.direction;
+    const kbDir = this.dirStack.length > 0 ? this.dirStack[this.dirStack.length - 1] : null;
+    const kbSecondaryDir =
+      this.dirStack.length >= 2 ? this.dirStack[this.dirStack.length - 2] : null;
+    const usingTouch = touchSnap.direction !== null;
 
-    const secondaryDirection: Direction | null =
-      touchSnap.direction !== null
-        ? touchSnap.secondaryDirection
-        : this.dirStack.length >= 2
-          ? this.dirStack[this.dirStack.length - 2]
-          : null;
+    // Priority: active touch -> most recent keyboard direction (`Last-Key-Wins`) -> gamepad
+    const direction: Direction | null = touchSnap.direction ?? kbDir ?? gpSnap.direction;
+    const secondaryDirection: Direction | null = usingTouch ? null : kbSecondaryDir;
 
-    const carveHeld =
-      touchSnap.carveActive || this.carveKeys.size > 0 || gpSnap.carveHeld;
+    // V7 Law 1 & PC Keyboard Purity:
+    // Bare keyboard directional keys NEVER set `carveHeld`!
+    // Launching off the safe border requires explicit `cutIntent` (`Space / Shift / Z / J / Enter` or `KES`).
+    const kbCutHeld = this.carveKeys.size > 0 || (this.mouseCutHeld && kbDir !== null);
+    const carveHeld = usingTouch
+      ? touchSnap.cutAllowed || kbCutHeld || gpSnap.carveHeld
+      : touchSnap.cutAllowed || kbCutHeld || gpSnap.carveHeld;
 
     const pauseJustPressed = this.pauseQueued || gpSnap.pauseJustPressed;
     this.pauseQueued = false;
@@ -69,13 +73,14 @@ export class InputManager {
       direction,
       secondaryDirection,
       carveHeld,
-      autoCarveSwipe: touchSnap.autoCarveSwipe,
+      autoCarveSwipe: false,
       pauseJustPressed,
       debugSectorSelect
     };
   }
 
   private bindKeyboard(): void {
+    if (typeof window === 'undefined') return;
     window.addEventListener('keydown', (e) => {
       const dir = this.mapKeyToDir(e.code, e.key);
       if (dir) {
@@ -90,24 +95,29 @@ export class InputManager {
 
       const carveToken = this.normalizeCarveKey(e.code, e.key);
       if (carveToken) {
-        if (carveToken === 'Space') e.preventDefault();
+        if (carveToken === 'Space' || carveToken === 'Enter') e.preventDefault();
         this.carveKeys.add(carveToken);
         return;
       }
 
-      if (e.code === 'Escape' || e.code === 'KeyP' || e.key === 'Escape' || e.key === 'p' || e.key === 'P') {
+      if (
+        e.code === 'Escape' ||
+        e.code === 'KeyP' ||
+        e.key === 'Escape' ||
+        e.key === 'p' ||
+        e.key === 'P'
+      ) {
         this.pauseQueued = true;
         return;
       }
 
-      // Debug sector jump shortcut (1..9 or Alt+1..7 for 10..16)
       if (e.code.startsWith('Digit')) {
         const digit = Number(e.code.replace('Digit', ''));
         if (digit >= 1 && digit <= 9) {
           if (e.altKey && digit <= 7) {
-            this.debugSectorQueued = 9 + digit; // 10..16
+            this.debugSectorQueued = 9 + digit;
           } else if (e.shiftKey) {
-            this.debugSectorQueued = digit; // 1..9
+            this.debugSectorQueued = digit;
           }
         }
       }
@@ -129,9 +139,22 @@ export class InputManager {
       }
     });
 
+    window.addEventListener('mousedown', (e) => {
+      if (e.button === 0) {
+        this.mouseCutHeld = true;
+      }
+    });
+
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) {
+        this.mouseCutHeld = false;
+      }
+    });
+
     window.addEventListener('blur', () => {
       this.dirStack.length = 0;
       this.carveKeys.clear();
+      this.mouseCutHeld = false;
     });
   }
 
@@ -140,6 +163,7 @@ export class InputManager {
     if (code === 'ShiftLeft' || code === 'ShiftRight' || key === 'Shift') return code || 'Shift';
     if (code === 'KeyZ' || key === 'z' || key === 'Z') return 'KeyZ';
     if (code === 'KeyJ' || key === 'j' || key === 'J') return 'KeyJ';
+    if (code === 'Enter' || key === 'Enter') return 'Enter';
     return null;
   }
 

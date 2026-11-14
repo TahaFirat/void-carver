@@ -9,13 +9,13 @@ import { InteriorMinion, MinionContext } from './BaseMinion';
  */
 export class PrismSplitter extends InteriorMinion {
   public readonly kind: 'PRISM' | 'SHARD';
-  private readonly baseSpeed: number;
+  public readonly baseSpeed: number;
   private actionTimer: number;
   private readonly isShard: boolean;
 
-  constructor(pos: Point, isShard = false, speed = 135) {
+  constructor(pos: Point, isShard = false, speed = 142) {
     const ang = Math.random() * Math.PI * 2;
-    const finalSpeed = isShard ? speed * 1.48 : speed;
+    const finalSpeed = isShard ? speed * 1.45 : speed;
     super(pos, Math.cos(ang) * finalSpeed, Math.sin(ang) * finalSpeed, isShard ? 12 : 18);
     this.isShard = isShard;
     this.kind = isShard ? 'SHARD' : 'PRISM';
@@ -27,10 +27,13 @@ export class PrismSplitter extends InteriorMinion {
     this.prevX = this.x;
     this.prevY = this.y;
 
-    const targetSpd = this.baseSpeed * mctx.speedScale;
-    const curSpd = Math.hypot(this.vx, this.vy) || 1;
-    this.vx = (this.vx / curSpd) * targetSpd;
-    this.vy = (this.vy / curSpd) * targetSpd;
+    if (!this.applySwarmAggro(mctx, this.baseSpeed)) {
+      const targetSpd = this.baseSpeed * mctx.speedScale;
+      this.currentSpeed = targetSpd;
+      const curSpd = Math.hypot(this.vx, this.vy) || 1;
+      this.vx = (this.vx / curSpd) * targetSpd;
+      this.vy = (this.vy / curSpd) * targetSpd;
+    }
 
     this.x += this.vx * mctx.dt;
     this.y += this.vy * mctx.dt;
@@ -42,7 +45,7 @@ export class PrismSplitter extends InteriorMinion {
     if (this.actionTimer <= 0) {
       this.actionTimer = 4.6 + Math.random() * 1.8;
 
-      if (mctx.currentMinionCount < 5 && Math.random() < 0.5) {
+      if (mctx.currentMinionCount < 6 && Math.random() < 0.5) {
         const s1 = new PrismSplitter({ x: this.x - 8, y: this.y - 8 }, true, this.baseSpeed);
         const s2 = new PrismSplitter({ x: this.x + 8, y: this.y + 8 }, true, this.baseSpeed);
         mctx.spawnChildMinion(s1);
@@ -59,7 +62,7 @@ export class PrismSplitter extends InteriorMinion {
 
   public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
     const pos = this.getRenderPos(alpha);
-    const frame: 0 | 1 = Math.floor(timeSeconds * 7) % 2 === 0 ? 0 : 1;
+    const frame: 0 | 1 = Math.floor(timeSeconds * (this.isSwarmAggro ? 14 : 7)) % 2 === 0 ? 0 : 1;
     const sprite = getBlueSphereSprite(this.isShard, frame);
     blitArenaPixelSprite(ctx, sprite, pos.x, pos.y, 1.05);
   }

@@ -25,8 +25,11 @@ export interface EnemyBullet {
   radius: number;
   color: string;
   piercesBorderCheck: boolean;
-  /** V5: wall-block ricochets already used (ZOR/USTA allow one). */
   ricochets: number;
+  homingTurnRate: number;
+  lifeLeftSec: number;
+  /** V7 Law 4: True when fired by the Stage Boss (`ZOR` Boss bullets detonate cut lines in `0ms`!). */
+  fromBoss: boolean;
 }
 
 export class ProjectileManager {
@@ -47,7 +50,7 @@ export class ProjectileManager {
         radius: 6
       });
     }
-    for (let i = 0; i < 96; i++) {
+    for (let i = 0; i < 128; i++) {
       this.enemyBullets.push({
         active: false,
         x: 0,
@@ -59,7 +62,10 @@ export class ProjectileManager {
         radius: 6,
         color: PALETTE.CUT_ORANGE,
         piercesBorderCheck: false,
-        ricochets: 0
+        ricochets: 0,
+        homingTurnRate: 0,
+        lifeLeftSec: -1,
+        fromBoss: false
       });
     }
   }
@@ -81,7 +87,6 @@ export class ProjectileManager {
     const baseAngle = Math.atan2(dy, dx);
 
     if (heavyPlasma) {
-      // 3-Way Super Shot (`★` Power-Up): center + ±16° plasma spread!
       const speed = 660;
       for (const offsetRad of [-0.28, 0, 0.28]) {
         const a = baseAngle + offsetRad;
@@ -137,7 +142,10 @@ export class ProjectileManager {
     vx: number,
     vy: number,
     color: string = PALETTE.CUT_ORANGE,
-    radius = 6
+    radius = 6,
+    homingTurnRate = 0,
+    lifeLeftSec = -1,
+    fromBoss = false
   ): void {
     for (const b of this.enemyBullets) {
       if (!b.active) {
@@ -152,12 +160,20 @@ export class ProjectileManager {
         b.radius = radius;
         b.piercesBorderCheck = false;
         b.ricochets = 0;
+        b.homingTurnRate = homingTurnRate;
+        b.lifeLeftSec = lifeLeftSec;
+        b.fromBoss = fromBoss;
         return;
       }
     }
   }
 
-  public update(dt: number, activePolygon: readonly Point[], timeFrozen: boolean): void {
+  public update(
+    dt: number,
+    activePolygon: readonly Point[],
+    timeFrozen: boolean,
+    playerPos?: Point
+  ): void {
     for (const b of this.playerBolts) {
       if (!b.active) continue;
       b.prevX = b.x;
@@ -173,6 +189,27 @@ export class ProjectileManager {
 
     for (const eb of this.enemyBullets) {
       if (!eb.active) continue;
+      if (eb.lifeLeftSec > 0) {
+        eb.lifeLeftSec -= dt;
+        if (eb.lifeLeftSec <= 0) {
+          eb.active = false;
+          continue;
+        }
+      }
+      if (eb.homingTurnRate > 0 && playerPos) {
+        const spd = Math.hypot(eb.vx, eb.vy);
+        if (spd > 1) {
+          const curAng = Math.atan2(eb.vy, eb.vx);
+          const desAng = Math.atan2(playerPos.y - eb.y, playerPos.x - eb.x);
+          let diff = desAng - curAng;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          const maxStep = eb.homingTurnRate * dt;
+          const nextAng = curAng + Math.max(-maxStep, Math.min(maxStep, diff));
+          eb.vx = Math.cos(nextAng) * spd;
+          eb.vy = Math.sin(nextAng) * spd;
+        }
+      }
       eb.prevX = eb.x;
       eb.prevY = eb.y;
       eb.x += eb.vx * dt;
@@ -228,7 +265,7 @@ export class ProjectileManager {
       }
     }
 
-    // 2. Crisp 16-bit Pixel Enemy Plasma Orbs
+    // 2. Crisp 16-bit Pixel Enemy Plasma Orbs & Molten Embers
     for (const eb of this.enemyBullets) {
       if (!eb.active) continue;
       const rx = Math.round(eb.prevX + (eb.x - eb.prevX) * alpha);
@@ -240,7 +277,12 @@ export class ProjectileManager {
       ctx.fillStyle = eb.color;
       ctx.fillRect(rx - s, ry - s, s * 2, s * 2);
       ctx.fillStyle = '#FFF8C8';
-      ctx.fillRect(rx - Math.max(2, Math.floor(s * 0.45)), ry - Math.max(2, Math.floor(s * 0.45)), Math.max(4, Math.floor(s * 0.9)), Math.max(4, Math.floor(s * 0.9)));
+      ctx.fillRect(
+        rx - Math.max(2, Math.floor(s * 0.45)),
+        ry - Math.max(2, Math.floor(s * 0.45)),
+        Math.max(4, Math.floor(s * 0.9)),
+        Math.max(4, Math.floor(s * 0.9))
+      );
     }
   }
 }

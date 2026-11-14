@@ -1,7 +1,6 @@
 import {
   CANVAS_HEIGHT,
   CANVAS_WIDTH,
-  DEFAULT_ARCADE_HIGH_SCORE,
   PALETTE,
   PIXEL_SCALE,
   SHIP_SKINS,
@@ -20,20 +19,11 @@ import {
 } from '../rendering/PixelArtEngine';
 import {
   getMenuPlanetHeroSprite,
-  getPadlockPixelSprite,
   getPixelStarSprite,
   getPlayerShipSprite
 } from '../rendering/VolfiedSprites';
 import { GameSaveData, StorageService } from '../services/StorageService';
 import { ColumnTransform, getLayout } from '../core/ResponsiveLayout';
-import {
-  formatStageNumber,
-  getTierForStage,
-  isTierUnlocked,
-  STAGES_PER_TIER,
-  TIERS,
-  TOTAL_STAGES
-} from '../levels/CampaignGenerator';
 
 export type ScreenState =
   | 'MAIN_MENU'
@@ -77,7 +67,7 @@ const SPACE_STARS: StarSpec[] = Array.from({ length: 84 }, (_, idx) => {
   return {
     x: Math.floor((seed1 / 10000) * CANVAS_WIDTH),
     y: Math.floor((seed2 / 10000) * CANVAS_HEIGHT),
-    size: idx % 9 === 0 ? 6 : idx % 3 === 0 ? 3 : 3,
+    size: idx % 9 === 0 ? 6 : 3,
     speed: 9 + (idx % 4) * 6,
     phase: idx * 0.77,
     color: cols[idx % cols.length]
@@ -88,7 +78,11 @@ function formatScoreDigits(val: number, len = 7): string {
   return Math.max(0, Math.floor(val)).toString().padStart(len, '0');
 }
 
-// Cached 16-Bit Chrome & Crimson-Beveled `VOID CARVER` Arcade Title Logo (`02-hedef-ana-menu.jpg`!)
+function formatGroupedScore(val: number): string {
+  const n = Math.max(0, Math.floor(val));
+  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
 let cachedTitleLogo: HTMLCanvasElement | null = null;
 
 const LOGO_FONT_8X11: Record<string, readonly string[]> = {
@@ -201,7 +195,6 @@ const LOGO_FONT_8X11: Record<string, readonly string[]> = {
 function getVoidCarverLogoSprite(): HTMLCanvasElement {
   if (cachedTitleLogo) return cachedTitleLogo;
 
-  // Render `VOID CARVER` at 2x internal pixel thickness (`236 x 34` arcade pixels -> `708 x 102` screen px!)
   const text = 'VOID CARVER';
   const s: PixelSurface = createPixelSurface(244, 38);
 
@@ -222,7 +215,6 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     hexToU32('#8CA4C4')
   ];
 
-  // Pass 1: Deep black drop shadow + Crimson/Orange 3D arcade extrusion
   let cursorX = 8;
   for (const ch of text) {
     if (ch === ' ') {
@@ -262,7 +254,6 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     cursorX += 20;
   }
 
-  // Pass 2: Metallic Chrome-Silver & Horizon Gold-Reflected Letter Faces
   cursorX = 8;
   for (const ch of text) {
     if (ch === ' ') {
@@ -283,7 +274,6 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     cursorX += 20;
   }
 
-  // Subtle star gleam on `V` and `C`
   setPx(s, 10, 6, hexToU32('#FFFFFF'));
   setPx(s, 104, 6, hexToU32('#FFFFFF'));
 
@@ -293,26 +283,7 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
 
 export class MenuRenderer {
   public readonly activeButtons: UiButtonRect[] = [];
-  private selectedSector = 1;
-  private selectedTier = 0;
-  private lastSyncedUnlocked = -1;
   private cur: ColumnTransform = { tx: 0, ty: 0, s: 1 };
-
-  public setSelectedSector(sectorId: number): void {
-    this.selectedSector = Math.max(1, Math.min(TOTAL_STAGES, Math.round(sectorId)));
-    this.selectedTier = getTierForStage(this.selectedSector).index;
-  }
-
-  public getSelectedSector(): number {
-    return this.selectedSector;
-  }
-
-  public setSelectedTier(tierIndex: number, unlockedSector: number): boolean {
-    const idx = Math.max(0, Math.min(3, Math.round(tierIndex)));
-    if (!isTierUnlocked(idx, unlockedSector)) return false;
-    this.selectedTier = idx;
-    return true;
-  }
 
   public hitTest(vx: number, vy: number): string | null {
     for (let i = this.activeButtons.length - 1; i >= 0; i--) {
@@ -324,7 +295,6 @@ export class MenuRenderer {
     return null;
   }
 
-  /** Records a hit rect given in legacy column coords, mapped through the active transform. */
   private addButton(id: string, x: number, y: number, w: number, h: number): void {
     const t = this.cur;
     this.activeButtons.push({ id, x: t.tx + x * t.s, y: t.ty + y * t.s, w: w * t.s, h: h * t.s });
@@ -351,8 +321,8 @@ export class MenuRenderer {
     timeSeconds: number,
     overlayData: {
       currentScore: number;
-      currentSector: number;
-      isEndless: boolean;
+      currentWave: number;
+      isNewRecord: boolean;
       clearBreakdown: LevelClearBreakdown | null;
       adCountdown: number;
       statusToast: string | null;
@@ -360,17 +330,6 @@ export class MenuRenderer {
   ): void {
     this.activeButtons.length = 0;
     const layout = getLayout();
-
-    if (this.lastSyncedUnlocked !== save.unlockedSector) {
-      this.setSelectedSector(save.unlockedSector);
-      this.lastSyncedUnlocked = save.unlockedSector;
-    }
-    if (this.selectedSector > save.unlockedSector) {
-      this.setSelectedSector(save.unlockedSector);
-    }
-    if (!isTierUnlocked(this.selectedTier, save.unlockedSector)) {
-      this.selectedTier = getTierForStage(save.unlockedSector).index;
-    }
 
     const isMenu =
       screen === 'MAIN_MENU' ||
@@ -386,8 +345,7 @@ export class MenuRenderer {
     }
 
     if ((screen === 'MAIN_MENU' || screen === 'SECTOR_SELECT') && layout.menuHero && layout.menuSelector) {
-      // Landscape: 2-column main menu (logo + continue | tier tabs + 5x5 grid)
-      this.withTransform(ctx, layout.menuHero, () => this.renderMenuHero(ctx, save));
+      this.withTransform(ctx, layout.menuHero, () => this.renderMenuHero(ctx, save, timeSeconds));
       this.withTransform(ctx, layout.menuSelector, () => this.renderMenuSelector(ctx, save));
     } else {
       this.withTransform(ctx, layout.menuColumn, () => {
@@ -409,8 +367,8 @@ export class MenuRenderer {
     timeSeconds: number,
     overlayData: {
       currentScore: number;
-      currentSector: number;
-      isEndless: boolean;
+      currentWave: number;
+      isNewRecord: boolean;
       clearBreakdown: LevelClearBreakdown | null;
       adCountdown: number;
       statusToast: string | null;
@@ -419,7 +377,7 @@ export class MenuRenderer {
     switch (screen) {
       case 'MAIN_MENU':
       case 'SECTOR_SELECT':
-        this.renderCleanMainMenu(ctx, save, timeSeconds);
+        this.renderEndlessMainMenu(ctx, save, timeSeconds);
         break;
       case 'HANGAR':
         this.renderShipsScreen(ctx, save);
@@ -443,16 +401,18 @@ export class MenuRenderer {
             ctx,
             overlayData.clearBreakdown,
             overlayData.currentScore,
-            overlayData.currentSector,
-            overlayData.isEndless
+            overlayData.currentWave
           );
         }
         break;
       case 'GAME_OVER':
-        this.renderGameOverModal(ctx, overlayData.currentScore, overlayData.currentSector);
-        break;
       case 'CAMPAIGN_VICTORY':
-        this.renderCampaignVictoryModal(ctx, overlayData.currentScore);
+        this.renderGameOverModal(
+          ctx,
+          overlayData.currentScore,
+          overlayData.currentWave,
+          overlayData.isNewRecord
+        );
         break;
       default:
         break;
@@ -460,7 +420,7 @@ export class MenuRenderer {
   }
 
   // ============================================================================
-  // 16-BIT PIXEL SPACE BACKDROP & RIVETED PANEL HELPERS
+  // 16-BIT PIXEL SPACE BACKDROP & RIVETED CABINET FRAME HELPERS
   // ============================================================================
   private drawPixelSpaceBackdrop(
     ctx: CanvasRenderingContext2D,
@@ -487,13 +447,45 @@ export class MenuRenderer {
     }
   }
 
+  private drawCabinetOuterBezel(ctx: CanvasRenderingContext2D): void {
+    ctx.save();
+    const m = 10;
+    const w = CANVAS_WIDTH - m * 2;
+    const h = CANVAS_HEIGHT - m * 2;
+
+    // Steel cabinet outer rim (`01-hedef-sonsuz-menu.jpg`)
+    ctx.strokeStyle = '#5C687E';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(m, m, w, h);
+    ctx.strokeStyle = '#9AA8C0';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(m + 4, m + 4, w - 8, h - 8);
+
+    // 4 Corner steel L-brackets with rivets
+    const corners: Array<[number, number]> = [
+      [m, m],
+      [CANVAS_WIDTH - m - 96, m],
+      [m, CANVAS_HEIGHT - m - 96],
+      [CANVAS_WIDTH - m - 96, CANVAS_HEIGHT - m - 96]
+    ];
+    for (const [cx, cy] of corners) {
+      ctx.fillStyle = '#6A7890';
+      ctx.fillRect(cx, cy, 96, 22);
+      ctx.fillRect(cx === m ? cx : cx + 74, cy, 22, 96);
+      ctx.fillStyle = '#182030';
+      ctx.fillRect(cx + 8, cy + 7, 8, 8);
+      ctx.fillRect(cx + 80, cy + 7, 8, 8);
+    }
+    ctx.restore();
+  }
+
   private drawPixelPanel(
     ctx: CanvasRenderingContext2D,
     x: number,
     y: number,
     w: number,
     h: number,
-    style: 'goldRed' | 'steel' | 'goldSelected' | 'locked' | 'navyBtn'
+    style: 'goldRed' | 'steel' | 'goldSelected' | 'locked' | 'navyBtn' | 'brushedSteel'
   ): void {
     const rx = Math.round(x);
     const ry = Math.round(y);
@@ -503,14 +495,13 @@ export class MenuRenderer {
     let fill = '#161E30';
     let topRim = '#98ACC8';
     let botRim = '#384660';
-    let outerBorder = PALETTE.PIXEL_BLACK;
 
     if (style === 'goldRed') {
-      fill = '#5A1416';
+      fill = '#B81012';
       topRim = '#FFF088';
       botRim = '#B87814';
     } else if (style === 'goldSelected') {
-      fill = '#2C2618';
+      fill = '#181410';
       topRim = '#FFF490';
       botRim = '#C88414';
     } else if (style === 'locked') {
@@ -521,206 +512,245 @@ export class MenuRenderer {
       fill = '#101A30';
       topRim = '#B8CAE4';
       botRim = '#485A7A';
+    } else if (style === 'brushedSteel') {
+      fill = '#6A768C';
+      topRim = '#C8D6EA';
+      botRim = '#3A4458';
     }
 
-    // Outer 3px pixel black contour
-    ctx.fillStyle = outerBorder;
+    ctx.fillStyle = PALETTE.PIXEL_BLACK;
     ctx.fillRect(rx - 3, ry - 3, rw + 6, rh + 6);
 
-    // Bevel border (`6px` thick)
     ctx.fillStyle = topRim;
     ctx.fillRect(rx, ry, rw, rh);
     ctx.fillStyle = botRim;
     ctx.fillRect(rx + 6, ry + 6, rw - 6, rh - 6);
 
-    // Inner fill
     ctx.fillStyle = fill;
     ctx.fillRect(rx + 6, ry + 6, rw - 12, rh - 12);
 
-    // 4 Corner Pixel Rivets!
-    const rivetCol = style === 'locked' ? '#38445A' : '#E8F2FF';
+    const rivetCol =
+      style === 'locked' ? '#38445A' : style === 'brushedSteel' ? '#263042' : '#E8F2FF';
     ctx.fillStyle = rivetCol;
-    ctx.fillRect(rx + 9, ry + 9, 4, 4);
-    ctx.fillRect(rx + rw - 13, ry + 9, 4, 4);
-    ctx.fillRect(rx + 9, ry + rh - 13, 4, 4);
-    ctx.fillRect(rx + rw - 13, ry + rh - 13, 4, 4);
+    ctx.fillRect(rx + 10, ry + 10, 6, 6);
+    ctx.fillRect(rx + rw - 16, ry + 10, 6, 6);
+    ctx.fillRect(rx + 10, ry + rh - 16, 6, 6);
+    ctx.fillRect(rx + rw - 16, ry + rh - 16, 6, 6);
   }
 
   // ============================================================================
-  // ULTRA-CLEAN MAIN MENU (`02-hedef-ana-menu.jpg` EXACT MATCH!)
+  // V6 ENDLESS MYSTERY MAIN MENU (`01-hedef-sonsuz-menu.jpg` 1:1 MATCH!)
   // ============================================================================
-  private renderCleanMainMenu(
+  private renderEndlessMainMenu(
     ctx: CanvasRenderingContext2D,
     save: GameSaveData,
-    _timeSeconds: number
+    timeSeconds: number
   ): void {
-    this.renderMenuHero(ctx, save);
+    this.drawCabinetOuterBezel(ctx);
+    this.renderMenuHero(ctx, save, timeSeconds);
     this.renderMenuSelector(ctx, save);
   }
 
   /**
-   * Legacy column y `0..610`: `REKOR`, wireframe planet + chrome `VOID CARVER`,
-   * and the big `DEVAM ET • BÖLÜM 034` button (`02-hedef-100-bolum-kademeli-menu.jpg`).
+   * Hero section (`y: 40..610`):
+   * Green wireframe planet + diagonal twin-prong fighter + dual thruster flames + chrome `VOID CARVER` logo!
    */
-  private renderMenuHero(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    const bestScore = Math.max(DEFAULT_ARCADE_HIGH_SCORE, save.highScoreCampaign, save.highScoreEndless);
-    drawPixelText(ctx, `REKOR ${formatScoreDigits(bestScore, 7)}`, CANVAS_WIDTH * 0.5, 50, {
-      scale: 4.0,
-      tone: 'gold',
-      align: 'center'
-    });
-
+  private renderMenuHero(
+    ctx: CanvasRenderingContext2D,
+    save: GameSaveData,
+    timeSeconds = 0
+  ): void {
     const planetHero = getMenuPlanetHeroSprite();
-    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 282, PIXEL_SCALE);
+    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 315, PIXEL_SCALE * 1.32);
+
     const titleLogo = getVoidCarverLogoSprite();
-    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 294, PIXEL_SCALE);
+    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 212, PIXEL_SCALE * 1.08);
 
-    const btnX = 66;
-    const btnY = 496;
-    const btnW = 768;
-    const btnH = 100;
-    const isFrontier = this.selectedSector === save.unlockedSector;
-    const verb = isFrontier ? 'DEVAM ET' : 'OYNA';
+    // Diagonal Twin-Prong Fighter + Dual Golden Exhaust Plumes (`01-hedef-sonsuz-menu.jpg`!)
+    const skin = SHIP_SKINS.find((s) => s.id === save.selectedShip) ?? SHIP_SKINS[0];
+    const shipSprite = getPlayerShipSprite(skin, 'UP');
+    const bob = Math.sin(timeSeconds * 3.2) * 5;
+    const sx = CANVAS_WIDTH * 0.5 + 18;
+    const sy = 415 + bob;
 
-    this.drawPixelPanel(ctx, btnX, btnY, btnW, btnH, 'goldRed');
-    drawPixelText(
-      ctx,
-      `${verb} • BÖLÜM ${formatStageNumber(this.selectedSector)}`,
-      CANVAS_WIDTH * 0.5,
-      btnY + btnH * 0.5,
-      { scale: 4.0, tone: 'gold', align: 'center' }
-    );
-    this.addButton(`LAUNCH_SECTOR_${this.selectedSector}`, btnX, btnY, btnW, btnH);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(1.12); // ~64° up-right flight angle across wireframe globe!
+
+    // Dual golden-white pixel thruster flames behind twin engines
+    const flameLen = 84 + Math.round(Math.sin(timeSeconds * 22) * 10);
+    for (const exOff of [-22, 22]) {
+      ctx.fillStyle = 'rgba(255, 160, 48, 0.35)';
+      ctx.fillRect(exOff - 12, 46, 24, flameLen + 18);
+      ctx.fillStyle = '#FF9828';
+      ctx.fillRect(exOff - 8, 44, 16, flameLen);
+      ctx.fillStyle = '#FFF4A8';
+      ctx.fillRect(exOff - 5, 44, 10, Math.round(flameLen * 0.65));
+    }
+
+    ctx.imageSmoothingEnabled = false;
+    const scale = 6.2;
+    const dw = shipSprite.width * scale;
+    const dh = shipSprite.height * scale;
+    ctx.drawImage(shipSprite, -dw * 0.5, -dh * 0.5, dw, dh);
+    ctx.restore();
   }
 
   /**
-   * Legacy column y `610..1440`: 4 tier tabs (`KOLAY 1-25`, `ORTA 26-50`, `ZOR 51-75`,
-   * `USTA 76-100`), the selected tier's `5x5` riveted stage grid and `GEMİLER` / `AYARLAR`.
+   * Endless Record Card + `KOLAY / ORTA / ZOR` + Giant `OYNA` + `GEMİLER / AYARLAR` (`y: 650..1550`)
    */
   private renderMenuSelector(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    // 1. Tier tab bar
-    const tabY = 616;
-    const tabH = 104;
-    const tabGap = 12;
-    const tabW = (768 - tabGap * 3) / 4;
-    for (let i = 0; i < 4; i++) {
-      const tier = TIERS[i];
-      const tx = 66 + i * (tabW + tabGap);
-      const unlocked = isTierUnlocked(i, save.unlockedSector);
-      const completed = save.sectors[tier.end]?.cleared === true;
-      const active = i === this.selectedTier;
+    // 1. Gold-Framed Personal Record Card (`01-hedef-sonsuz-menu.jpg`)
+    const cardX = 72;
+    const cardY = 660;
+    const cardW = 756;
+    const cardH = 204;
 
-      const style = active ? 'goldSelected' : unlocked ? 'steel' : 'locked';
-      this.drawPixelPanel(ctx, tx, tabY, tabW, tabH, style);
-      if (tier.id === 'USTA' && !active) {
-        ctx.fillStyle = unlocked ? '#4A1420' : '#2A0E16';
-        ctx.fillRect(tx + 6, tabY + 6, tabW - 12, tabH - 12);
+    ctx.save();
+    ctx.shadowColor = 'rgba(255, 208, 72, 0.32)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#05070E';
+    ctx.fillRect(cardX, cardY, cardW, cardH);
+    ctx.strokeStyle = '#F8D058';
+    ctx.lineWidth = 7;
+    ctx.strokeRect(cardX, cardY, cardW, cardH);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#FFF8B8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cardX + 5, cardY + 5, cardW - 10, cardH - 10);
+    ctx.restore();
+
+    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
+    const shownScore = Math.max(rec.highScore, 0);
+    const shownWave = Math.max(1, rec.bestWave);
+
+    drawPixelText(
+      ctx,
+      `EN YÜKSEK SKOR: ${formatGroupedScore(shownScore)}`,
+      CANVAS_WIDTH * 0.5,
+      cardY + 68,
+      { scale: 3.7, tone: 'gold', align: 'center' }
+    );
+    drawPixelText(
+      ctx,
+      `ULAŞILAN DERİNLİK: DALGA ${String(shownWave).padStart(2, '0')}`,
+      CANVAS_WIDTH * 0.5,
+      cardY + 142,
+      { scale: 3.5, tone: 'cyan', align: 'center' }
+    );
+
+    // 2. Side-by-Side `KOLAY` · `ORTA` · `ZOR` Difficulty Selector (`01-hedef-sonsuz-menu.jpg`)
+    const diffY = 948;
+    const diffH = 128;
+    const diffGap = 24;
+    const diffW = Math.floor((756 - diffGap * 2) / 3); // 236
+
+    const diffs: Array<{
+      id: 'EXPLORER' | 'COMMANDER' | 'LEGEND';
+      label: string;
+      borderCol: string;
+      textTone: 'green' | 'gold' | 'red';
+    }> = [
+      { id: 'EXPLORER', label: 'KOLAY', borderCol: '#1ED058', textTone: 'green' },
+      { id: 'COMMANDER', label: 'ORTA', borderCol: '#F8D048', textTone: 'gold' },
+      { id: 'LEGEND', label: 'ZOR', borderCol: '#E82828', textTone: 'red' }
+    ];
+
+    for (let i = 0; i < diffs.length; i++) {
+      const d = diffs[i];
+      const bx = cardX + i * (diffW + diffGap);
+      const active = save.difficulty === d.id;
+      const by = active ? diffY - 6 : diffY;
+      const bh = active ? diffH + 12 : diffH;
+
+      ctx.save();
+      if (active) {
+        ctx.shadowColor = 'rgba(255, 214, 72, 0.55)';
+        ctx.shadowBlur = 22;
       }
+      ctx.fillStyle = active ? '#171510' : '#090D16';
+      ctx.fillRect(bx, by, diffW, bh);
 
-      const nameTone = !unlocked ? 'muted' : active ? 'gold' : tier.id === 'USTA' ? 'crimson' : completed ? 'green' : 'white';
-      drawPixelText(ctx, tier.nameTr, tx + tabW * 0.5, tabY + 35, {
-        scale: 3.3,
-        tone: nameTone,
+      ctx.strokeStyle = active ? '#FFF078' : d.borderCol;
+      ctx.lineWidth = active ? 7 : 5;
+      ctx.strokeRect(bx, by, diffW, bh);
+
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = active ? '#C89218' : d.borderCol;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(bx + 10, by + 10, diffW - 20, bh - 20);
+      ctx.restore();
+
+      drawPixelText(ctx, d.label, bx + diffW * 0.5, by + bh * 0.5, {
+        scale: active ? 4.2 : 3.8,
+        tone: active ? 'gold' : d.textTone,
         align: 'center'
       });
-      drawPixelText(ctx, `${tier.start}-${tier.end}`, tx + tabW * 0.5, tabY + 75, {
-        scale: 2.7,
-        tone: unlocked ? (active ? 'gold' : 'silver') : 'muted',
-        align: 'center'
-      });
-      if (!unlocked) {
-        blitPixelSprite(ctx, getPadlockPixelSprite(), tx + tabW - 22, tabY + 25, 2);
-      } else if (completed) {
-        drawPixelText(ctx, '✔', tx + tabW - 20, tabY + 76, { scale: 2.4, tone: 'green', align: 'center' });
-      }
-      if (unlocked) {
-        this.addButton(`SELECT_TIER_${i}`, tx, tabY, tabW, tabH);
-      }
+
+      this.addButton(`SET_DIFF_${d.id}`, bx, by, diffW, bh);
     }
 
-    // Gold underline joining the active tab to the grid
-    ctx.fillStyle = '#C88414';
-    ctx.fillRect(40, tabY + tabH + 6, CANVAS_WIDTH - 80, 4);
+    // 3. Giant Crimson-Gold `OYNA` Button (`01-hedef-sonsuz-menu.jpg`)
+    const playW = 576;
+    const playH = 196;
+    const playX = Math.round((CANVAS_WIDTH - playW) * 0.5);
+    const playY = 1158;
 
-    // 2. 5x5 riveted stage grid for the selected tier
-    const tier = TIERS[this.selectedTier];
-    const cols = 5;
-    const gapX = 14;
-    const gapY = 12;
-    const cellW = (768 - gapX * (cols - 1)) / cols;
-    const cellH = 100;
-    const gridX = 66;
-    const gridY = 742;
-    const padlock = getPadlockPixelSprite();
+    ctx.save();
+    ctx.shadowColor = 'rgba(255, 208, 64, 0.55)';
+    ctx.shadowBlur = 28;
+    ctx.fillStyle = '#FFF078';
+    ctx.fillRect(playX - 8, playY - 8, playW + 16, playH + 16);
+    ctx.shadowBlur = 0;
 
-    for (let k = 0; k < STAGES_PER_TIER; k++) {
-      const id = tier.start + k;
-      const col = k % cols;
-      const row = Math.floor(k / cols);
-      const bx = gridX + col * (cellW + gapX);
-      const by = gridY + row * (cellH + gapY);
+    ctx.fillStyle = '#080810';
+    ctx.fillRect(playX, playY, playW, playH);
 
-      const unlocked = id <= save.unlockedSector;
-      const prog = save.sectors[id];
-      const cleared = Boolean(prog?.cleared);
-      const stars = Math.max(0, Math.min(3, prog?.stars ?? 0));
-      const isSelected = id === this.selectedSector;
-      const isFrontier = id === save.unlockedSector && !cleared;
+    // Rich crimson arcade button face
+    ctx.fillStyle = '#E01818';
+    ctx.fillRect(playX + 8, playY + 8, playW - 16, playH - 16);
+    ctx.fillStyle = '#B40C10';
+    ctx.fillRect(playX + 14, playY + playH * 0.52, playW - 28, playH * 0.48 - 14);
+    ctx.strokeStyle = '#FF7868';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(playX + 12, playY + 12, playW - 24, playH - 24);
+    ctx.restore();
 
-      const style = !unlocked ? 'locked' : isSelected || isFrontier ? 'goldSelected' : 'steel';
-      this.drawPixelPanel(ctx, bx, by, cellW, cellH, style);
-      if (isSelected) {
-        ctx.strokeStyle = '#FFE058';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(bx - 7, by - 7, cellW + 14, cellH + 14);
-      }
-
-      drawPixelText(ctx, String(id).padStart(2, '0'), bx + cellW * 0.5, by + (unlocked && !cleared ? 50 : 40), {
-        scale: id >= 100 ? 3.4 : 4.1,
-        tone: !unlocked ? 'muted' : isSelected || isFrontier ? 'gold' : 'white',
-        align: 'center'
-      });
-
-      if (!unlocked) {
-        blitPixelSprite(ctx, padlock, bx + cellW * 0.5, by + 76, 2);
-      } else if (cleared || stars > 0) {
-        for (let sIdx = 0; sIdx < 3; sIdx++) {
-          blitPixelSprite(ctx, getPixelStarSprite(sIdx < stars), bx + cellW * 0.5 + (sIdx - 1) * 28, by + 76, 2);
-        }
-      }
-
-      if (unlocked) {
-        const action = isSelected ? `LAUNCH_SECTOR_${id}` : `SELECT_SECTOR_${id}`;
-        this.addButton(action, bx, by, cellW, cellH);
-      }
-    }
-
-    // 3. Bottom `GEMİLER` & `AYARLAR`
-    const botY = 1326;
-    const botH = 100;
-    const botW = 374;
-    this.drawPixelPanel(ctx, 66, botY, botW, botH, 'navyBtn');
-    drawPixelText(ctx, 'GEMİLER', 66 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.9,
-      tone: 'silver',
+    drawPixelText(ctx, 'OYNA', CANVAS_WIDTH * 0.5, playY + playH * 0.5, {
+      scale: 8.6,
+      tone: 'gold',
       align: 'center'
     });
-    this.addButton('OPEN_SHIPS', 66, botY, botW, botH);
+    this.addButton('START_ENDLESS_RUN', playX, playY, playW, playH);
 
-    this.drawPixelPanel(ctx, 460, botY, botW, botH, 'navyBtn');
-    drawPixelText(ctx, 'AYARLAR', 460 + botW * 0.5, botY + botH * 0.5, {
+    // 4. Bottom Riveted Brushed-Steel `GEMİLER` & `AYARLAR` Buttons (`01-hedef-sonsuz-menu.jpg`)
+    const botY = 1432;
+    const botH = 104;
+    const botW = 324;
+
+    this.drawPixelPanel(ctx, 108, botY, botW, botH, 'brushedSteel');
+    drawPixelText(ctx, 'GEMİLER', 108 + botW * 0.5, botY + botH * 0.5, {
       scale: 3.9,
-      tone: 'silver',
+      tone: 'white',
       align: 'center'
     });
-    this.addButton('GOTO_SETTINGS', 460, botY, botW, botH);
+    this.addButton('OPEN_SHIPS', 108, botY, botW, botH);
+
+    this.drawPixelPanel(ctx, 468, botY, botW, botH, 'brushedSteel');
+    drawPixelText(ctx, 'AYARLAR', 468 + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.9,
+      tone: 'white',
+      align: 'center'
+    });
+    this.addButton('GOTO_SETTINGS', 468, botY, botW, botH);
   }
 
   // ============================================================================
-  // CLEAN 4-SHIP `GEMİLER` SCREEN (`GÜMÜŞ`, `KIZIL`, `ALTIN`, `GÖLGE`)
+  // CLEAN 4-SHIP `GEMİLER` SCREEN (UNLOCKED VIA ENDLESS WAVE DEPTH / SCORE!)
   // ============================================================================
   private renderShipsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    const totalStars = StorageService.getTotalStars();
+    this.drawCabinetOuterBezel(ctx);
+    const bestWave = Math.max(1, StorageService.getBestWaveOverall(save));
 
     drawPixelText(ctx, 'GEMİLER', CANVAS_WIDTH * 0.5, 96, {
       scale: 4.9,
@@ -728,9 +758,9 @@ export class MenuRenderer {
       align: 'center'
     });
 
-    drawPixelText(ctx, `TOPLAM ★ ${totalStars}`, CANVAS_WIDTH * 0.5, 168, {
-      scale: 3.5,
-      tone: 'silver',
+    drawPixelText(ctx, `EN DERİN DALGA: ${String(bestWave).padStart(2, '0')}`, CANVAS_WIDTH * 0.5, 168, {
+      scale: 3.4,
+      tone: 'cyan',
       align: 'center'
     });
 
@@ -748,7 +778,7 @@ export class MenuRenderer {
       const cx = startX + col * (cardW + gapX);
       const cy = startY + row * (cardH + gapY);
 
-      const unlocked = totalStars >= skin.starsRequired;
+      const unlocked = StorageService.isShipUnlocked(skin, save);
       const selected = save.selectedShip === skin.id;
 
       this.drawPixelPanel(
@@ -760,27 +790,24 @@ export class MenuRenderer {
         selected ? 'goldSelected' : unlocked ? 'steel' : 'locked'
       );
 
-      // Large 16-bit Pixel Twin-Prong Ship Preview (`6x` pixel scale!)
       const shipSprite = getPlayerShipSprite(skin, 'UP');
       blitPixelSprite(ctx, shipSprite, cx + cardW * 0.5, cy + 145, 6);
 
-      // Single-word Ship Name (`GÜMÜŞ` / `KIZIL` / `ALTIN` / `GÖLGE`)
       drawPixelText(ctx, skin.nameTr, cx + cardW * 0.5, cy + 275, {
         scale: 4.1,
         tone: selected ? 'gold' : 'white',
         align: 'center'
       });
 
-      // Single clean status pill (`SEÇİLİ` / `SEÇ` / `15 ★`)
       const statusText = selected
         ? 'SEÇİLİ'
         : unlocked
           ? 'SEÇ'
-          : `${skin.starsRequired} ★`;
+          : `DALGA ${String(skin.waveRequired).padStart(2, '0')}`;
       const statusTone = selected ? 'green' : unlocked ? 'gold' : 'muted';
 
       drawPixelText(ctx, statusText, cx + cardW * 0.5, cy + 350, {
-        scale: 3.6,
+        scale: 3.4,
         tone: statusTone,
         align: 'center'
       });
@@ -788,21 +815,21 @@ export class MenuRenderer {
       this.addButton(`SELECT_SHIP_${skin.id}`, cx, cy, cardW, cardH);
     }
 
-    // Bottom `GERİ` button
-    this.drawPixelPanel(ctx, 250, 1230, 400, 100, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1280, {
+    this.drawPixelPanel(ctx, 250, 1250, 400, 104, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1302, {
       scale: 4.0,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1230, 400, 100);
+    this.addButton('BACK_MAIN', 250, 1250, 400, 104);
   }
 
   // ============================================================================
-  // CLEAN `AYARLAR` SCREEN (3 CONTROL MODES + 3 POSITIONS + LIVE PREVIEW!)
+  // CLEAN `AYARLAR` SCREEN (V7 ZERO-INERTIA 3 CONTROL MODES + LIVE PREVIEW!)
   // ============================================================================
   private renderSettingsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 92, {
+    this.drawCabinetOuterBezel(ctx);
+    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 96, {
       scale: 4.9,
       tone: 'gold',
       align: 'center'
@@ -810,43 +837,47 @@ export class MenuRenderer {
 
     const rowX = 66;
     const rowW = 768;
-    const rowH = 104;
+    const rowH = 108;
 
-    // 1. KONTROL TİPİ: YÜZEN JOYSTICK / YÖN TUŞLARI / SERBEST SÜRÜKLE
-    const y0 = 158;
+    // 1. KONTROL ŞEMASI: KLASİK ATARİ / ATARİ KOLU + KES / TEK EL SÜRÜKLE
+    const y0 = 166;
     const ctrlLabel =
-      save.settings.controlMode === 'DPAD'
-        ? 'YÖN TUŞLARI'
-        : save.settings.controlMode === 'SWIPE'
-          ? 'SERBEST SÜRÜKLE'
-          : 'YÜZEN JOYSTICK';
+      save.settings.controlMode === 'CLASSIC_ARCADE'
+        ? 'KLASİK ATARİ'
+        : save.settings.controlMode === 'JOYSTICK_KES'
+          ? 'ATARİ KOLU + KES'
+          : 'TEK EL SÜRÜKLE';
     this.drawPixelPanel(ctx, rowX, y0, rowW, rowH, 'goldSelected');
     drawPixelText(ctx, `KONTROL: ${ctrlLabel} ⇄`, CANVAS_WIDTH * 0.5, y0 + rowH * 0.5, {
-      scale: 3.5,
+      scale: 3.3,
       tone: 'gold',
       align: 'center'
     });
     this.addButton('CYCLE_CONTROL_MODE', rowX, y0, rowW, rowH);
 
-    // 2. KONTROL YERİ: SAĞ / SOL / ORTA
-    const y1 = y0 + rowH + 16;
+    // 2. KONTROL KONUMU: SOL / SAĞ (veya TEK EL modunda SOL / ORTA / SAĞ)
+    const y1 = y0 + rowH + 18;
     const sideLabel =
-      save.settings.joystickSide === 'LEFT'
-        ? 'SOL'
-        : save.settings.joystickSide === 'CENTER'
-          ? 'ORTA'
-          : 'SAĞ';
+      save.settings.controlMode === 'SINGLE_HAND_DRAG'
+        ? save.settings.joystickSide === 'LEFT'
+          ? 'SOL'
+          : save.settings.joystickSide === 'RIGHT'
+            ? 'SAĞ'
+            : 'ORTA'
+        : save.settings.joystickSide === 'RIGHT'
+          ? 'SAĞ YÖN / SOL KES'
+          : 'SOL YÖN / SAĞ KES';
     this.drawPixelPanel(ctx, rowX, y1, rowW, rowH, 'goldSelected');
     drawPixelText(ctx, `KONUM: ${sideLabel} ⇄`, CANVAS_WIDTH * 0.5, y1 + rowH * 0.5, {
-      scale: 3.7,
+      scale: 3.2,
       tone: 'cyan',
       align: 'center'
     });
     this.addButton('TOGGLE_JOYSTICK_SIDE', rowX, y1, rowW, rowH);
 
-    // 3. LIVE CONTROLLER MINI-PREVIEW DECK (shows immediate visual change!)
-    const prevY = y1 + rowH + 18;
-    const prevH = 196;
+    // 3. LIVE CONTROLLER MINI-PREVIEW DECK + PC KEYBOARD BINDING HINT
+    const prevY = y1 + rowH + 20;
+    const prevH = 216;
     this.drawPixelPanel(ctx, rowX, prevY, rowW, prevH, 'steel');
     drawPixelText(ctx, 'CANLI KONTROL ÖNİZLEME', CANVAS_WIDTH * 0.5, prevY + 30, {
       scale: 2.5,
@@ -854,71 +885,87 @@ export class MenuRenderer {
       align: 'center'
     });
 
-    const previewCx =
-      save.settings.joystickSide === 'LEFT'
-        ? rowX + 185
-        : save.settings.joystickSide === 'CENTER'
-          ? CANVAS_WIDTH * 0.5
-          : rowX + rowW - 185;
-    const previewCy = prevY + 118;
-
+    const previewCy = prevY + 114;
     ctx.save();
-    if (save.settings.controlMode === 'DPAD') {
-      const arm = 48;
-      const half = 17;
-      ctx.fillStyle = '#080C16';
+    if (save.settings.controlMode === 'SINGLE_HAND_DRAG') {
+      const padCx =
+        save.settings.joystickSide === 'LEFT'
+          ? rowX + 180
+          : save.settings.joystickSide === 'RIGHT'
+            ? rowX + rowW - 180
+            : CANVAS_WIDTH * 0.5;
       ctx.beginPath();
-      ctx.arc(previewCx, previewCy, arm + 8, 0, Math.PI * 2);
+      ctx.arc(padCx, previewCy, 50, 0, Math.PI * 2);
+      ctx.fillStyle = '#0A0F1C';
       ctx.fill();
-      ctx.fillStyle = PALETTE.SAFE_GREEN;
-      ctx.fillRect(previewCx - half, previewCy - arm, half * 2, arm * 2);
-      ctx.fillRect(previewCx - arm, previewCy - half, arm * 2, half * 2);
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2.5;
-      ctx.strokeRect(previewCx - half, previewCy - arm, half * 2, arm * 2);
-      ctx.strokeRect(previewCx - arm, previewCy - half, arm * 2, half * 2);
-    } else if (save.settings.controlMode === 'SWIPE') {
-      ctx.fillStyle = '#0B1324';
-      ctx.fillRect(previewCx - 125, previewCy - 44, 250, 88);
-      ctx.strokeStyle = '#50E8FF';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(previewCx - 125, previewCy - 44, 250, 88);
-      drawPixelText(ctx, 'SÜRÜKLE', previewCx, previewCy, {
-        scale: 3.0,
-        tone: 'cyan',
-        align: 'center'
-      });
-    } else {
-      ctx.beginPath();
-      ctx.arc(previewCx, previewCy, 50, 0, Math.PI * 2);
-      ctx.fillStyle = '#0F1A2E';
-      ctx.fill();
-      ctx.strokeStyle = PALETTE.SAFE_GREEN;
+      ctx.strokeStyle = '#3E5274';
       ctx.lineWidth = 4;
       ctx.stroke();
+      drawPixelText(ctx, '▲', padCx, previewCy - 28, { scale: 2.6, tone: 'orange', align: 'center' });
+      drawPixelText(ctx, '▼', padCx, previewCy + 28, { scale: 2.4, tone: 'silver', align: 'center' });
+      drawPixelText(ctx, '◄', padCx - 28, previewCy, { scale: 2.4, tone: 'silver', align: 'center' });
+      drawPixelText(ctx, '►', padCx + 28, previewCy, { scale: 2.4, tone: 'silver', align: 'center' });
+    } else {
+      const leftPad = save.settings.joystickSide !== 'RIGHT';
+      const padCx = leftPad ? rowX + 185 : rowX + rowW - 185;
+      const kesCx = leftPad ? rowX + rowW - 165 : rowX + 165;
+
+      if (save.settings.controlMode === 'CLASSIC_ARCADE') {
+        const arm = 44;
+        const half = 16;
+        ctx.fillStyle = '#1A2842';
+        ctx.fillRect(padCx - half, previewCy - arm, half * 2, arm * 2);
+        ctx.fillRect(padCx - arm, previewCy - half, arm * 2, half * 2);
+        ctx.strokeStyle = '#EAF2FF';
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(padCx - half, previewCy - arm, half * 2, arm * 2);
+        ctx.strokeRect(padCx - arm, previewCy - half, arm * 2, half * 2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(padCx, previewCy, 46, 0, Math.PI * 2);
+        ctx.fillStyle = '#0E1728';
+        ctx.fill();
+        ctx.strokeStyle = PALETTE.CUT_ORANGE;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(padCx, previewCy, 19, 0, Math.PI * 2);
+        ctx.fillStyle = PALETTE.CUT_ORANGE;
+        ctx.fill();
+      }
+
       ctx.beginPath();
-      ctx.arc(previewCx, previewCy, 22, 0, Math.PI * 2);
-      ctx.fillStyle = PALETTE.SAFE_GREEN;
+      ctx.arc(kesCx, previewCy, 40, 0, Math.PI * 2);
+      ctx.fillStyle = '#B81418';
       ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#FFF088';
+      ctx.lineWidth = 3.5;
       ctx.stroke();
+      drawPixelText(ctx, 'KES', kesCx, previewCy, { scale: 2.7, tone: 'gold', align: 'center' });
     }
     ctx.restore();
 
-    // 4. ZORLUK: KOLAY / NORMAL / ZOR
-    const y2 = prevY + prevH + 18;
+    drawPixelText(
+      ctx,
+      'PC KLAVYE: OK TUŞLARI  •  KESİM: BOŞLUK',
+      CANVAS_WIDTH * 0.5,
+      prevY + prevH - 22,
+      { scale: 2.1, tone: 'gold', align: 'center' }
+    );
+
+    // 4. ZORLUK: KOLAY / ORTA / ZOR
+    const y2 = prevY + prevH + 20;
     const diffName =
       save.difficulty === 'EXPLORER'
         ? 'KOLAY'
         : save.difficulty === 'LEGEND'
           ? 'ZOR'
-          : 'NORMAL';
+          : 'ORTA';
     const diffTone =
       save.difficulty === 'EXPLORER'
         ? 'green'
         : save.difficulty === 'LEGEND'
-          ? 'orange'
+          ? 'red'
           : 'gold';
     this.drawPixelPanel(ctx, rowX, y2, rowW, rowH, 'steel');
     drawPixelText(ctx, `ZORLUK: ${diffName} ⇄`, CANVAS_WIDTH * 0.5, y2 + rowH * 0.5, {
@@ -928,8 +975,8 @@ export class MenuRenderer {
     });
     this.addButton('CYCLE_DIFFICULTY', rowX, y2, rowW, rowH);
 
-    // 5. SES & TİTREŞİM (Side-by-side 2-column buttons)
-    const y3 = y2 + rowH + 16;
+    // 5. SES & TİTREŞİM
+    const y3 = y2 + rowH + 18;
     const halfW = 374;
     const soundOn = !save.settings.muted;
     this.drawPixelPanel(ctx, rowX, y3, halfW, rowH, 'steel');
@@ -938,11 +985,7 @@ export class MenuRenderer {
       `SES: ${soundOn ? 'AÇIK' : 'KAPALI'}`,
       rowX + halfW * 0.5,
       y3 + rowH * 0.5,
-      {
-        scale: 3.3,
-        tone: soundOn ? 'green' : 'muted',
-        align: 'center'
-      }
+      { scale: 3.3, tone: soundOn ? 'green' : 'muted', align: 'center' }
     );
     this.addButton('TOGGLE_MUTE', rowX, y3, halfW, rowH);
 
@@ -954,38 +997,22 @@ export class MenuRenderer {
       `TİTREŞİM: ${hapOn ? 'AÇIK' : 'KAPALI'}`,
       rightColX + halfW * 0.5,
       y3 + rowH * 0.5,
-      {
-        scale: 3.1,
-        tone: hapOn ? 'green' : 'muted',
-        align: 'center'
-      }
+      { scale: 3.1, tone: hapOn ? 'green' : 'muted', align: 'center' }
     );
     this.addButton('TOGGLE_HAPTICS', rightColX, y3, halfW, rowH);
 
-    // 6. Optional `SONSUZ MOD` once the final stage (100) is cleared!
-    if (save.sectors[TOTAL_STAGES]?.cleared) {
-      const y4 = y3 + rowH + 16;
-      this.drawPixelPanel(ctx, rowX, y4, rowW, 102, 'goldRed');
-      drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, y4 + 51, {
-        scale: 3.8,
-        tone: 'gold',
-        align: 'center'
-      });
-      this.addButton('START_ENDLESS', rowX, y4, rowW, 102);
-    }
-
     // Bottom `GERİ` Button
-    this.drawPixelPanel(ctx, 250, 1256, 400, 100, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1306, {
+    this.drawPixelPanel(ctx, 250, 1280, 400, 104, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1332, {
       scale: 4.0,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1256, 400, 100);
+    this.addButton('BACK_MAIN', 250, 1280, 400, 104);
   }
 
   // ============================================================================
-  // IN-GAME PIXEL MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`, `VICTORY`)
+  // IN-GAME PIXEL MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`)
   // ============================================================================
   private renderPauseModal(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     this.drawPixelPanel(ctx, 76, 286, 748, 800, 'steel');
@@ -997,17 +1024,21 @@ export class MenuRenderer {
     });
 
     const ctrlShort =
-      save.settings.controlMode === 'DPAD'
-        ? 'YÖN TUŞU'
-        : save.settings.controlMode === 'SWIPE'
-          ? 'SÜRÜKLE'
-          : 'JOYSTICK';
+      save.settings.controlMode === 'CLASSIC_ARCADE'
+        ? 'KLASİK ATARİ'
+        : save.settings.controlMode === 'JOYSTICK_KES'
+          ? 'ATARİ KOLU + KES'
+          : 'TEK EL SÜRÜKLE';
     const sideLabel =
-      save.settings.joystickSide === 'LEFT'
-        ? 'SOL'
-        : save.settings.joystickSide === 'CENTER'
-          ? 'ORTA'
-          : 'SAĞ';
+      save.settings.controlMode === 'SINGLE_HAND_DRAG'
+        ? save.settings.joystickSide === 'LEFT'
+          ? 'SOL'
+          : save.settings.joystickSide === 'RIGHT'
+            ? 'SAĞ'
+            : 'ORTA'
+        : save.settings.joystickSide === 'RIGHT'
+          ? 'SAĞ YÖN'
+          : 'SOL YÖN';
 
     this.drawModalActionBtn(ctx, 'DEVAM ET', 432, 'goldRed', 'RESUME_GAME', 94);
     this.drawModalActionBtn(
@@ -1026,7 +1057,7 @@ export class MenuRenderer {
       'TOGGLE_JOYSTICK_SIDE',
       92
     );
-    this.drawModalActionBtn(ctx, 'TEKRAR BAŞLA', 764, 'navyBtn', 'RESTART_SECTOR', 92);
+    this.drawModalActionBtn(ctx, 'YENİDEN BAŞLA', 764, 'navyBtn', 'RESTART_RUN', 92);
     this.drawModalActionBtn(ctx, 'ANA MENÜ', 874, 'navyBtn', 'QUIT_TO_MENU', 92);
   }
 
@@ -1066,22 +1097,17 @@ export class MenuRenderer {
     ctx: CanvasRenderingContext2D,
     bd: LevelClearBreakdown,
     currentScore: number,
-    sectorId: number,
-    isEndless: boolean
+    waveNumber: number
   ): void {
     this.drawPixelPanel(ctx, 72, 310, 756, 880, 'steel');
 
-    const title = isEndless
-      ? `DALGA ${String(sectorId).padStart(3, '0')} TAMAM`
-      : `BÖLÜM ${formatStageNumber(sectorId)} TAMAM`;
-
+    const title = `DALGA ${String(waveNumber).padStart(2, '0')} TAMAM`;
     drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 398, {
-      scale: 4.1,
+      scale: 4.2,
       tone: 'gold',
       align: 'center'
     });
 
-    // 3 Large Earned Pixel Stars!
     for (let i = 0; i < 3; i++) {
       const star = getPixelStarSprite(i < bd.stars);
       blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 484, 5);
@@ -1096,7 +1122,7 @@ export class MenuRenderer {
 
     const bonusRows: Array<[string, string, 'white' | 'gold' | 'green' | 'cyan']> = [
       ['ALAN', shownPct, 'green'],
-      ['BÖLÜM BONUSU', `+${bd.baseBonus}`, 'white']
+      ['DALGA BONUSU', `+${bd.baseBonus}`, 'white']
     ];
     if (bd.over80Bonus > 0) {
       bonusRows.push(['ÜSTÜN KESİM', `+${bd.over80Bonus}`, 'gold']);
@@ -1123,18 +1149,19 @@ export class MenuRenderer {
       align: 'center'
     });
 
-    this.drawModalActionBtn(ctx, 'SONRAKİ BÖLÜM', 994, 'goldRed', 'NEXT_SECTOR');
+    this.drawModalActionBtn(ctx, 'SONRAKİ DALGA', 994, 'goldRed', 'NEXT_SECTOR');
     this.drawModalActionBtn(ctx, 'ANA MENÜ', 1108, 'navyBtn', 'QUIT_TO_MENU', 90);
   }
 
   private renderGameOverModal(
     ctx: CanvasRenderingContext2D,
     currentScore: number,
-    sectorId: number
+    waveNumber: number,
+    isNewRecord: boolean
   ): void {
-    this.drawPixelPanel(ctx, 84, 410, 732, 640, 'steel');
+    this.drawPixelPanel(ctx, 84, 390, 732, 680, 'steel');
 
-    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 504, {
+    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 480, {
       scale: 4.8,
       tone: 'red',
       align: 'center'
@@ -1142,66 +1169,30 @@ export class MenuRenderer {
 
     drawPixelText(
       ctx,
-      `BÖLÜM ${formatStageNumber(sectorId)}`,
+      `ULAŞILAN DERİNLİK: DALGA ${String(waveNumber).padStart(2, '0')}`,
       CANVAS_WIDTH * 0.5,
-      594,
-      {
-        scale: 3.6,
-        tone: 'silver',
-        align: 'center'
-      }
+      566,
+      { scale: 3.3, tone: 'cyan', align: 'center' }
     );
 
     drawPixelText(
       ctx,
-      `SKOR ${formatScoreDigits(currentScore, 7)}`,
+      `SKOR ${formatGroupedScore(currentScore)}`,
       CANVAS_WIDTH * 0.5,
-      670,
-      {
-        scale: 3.9,
-        tone: 'gold',
-        align: 'center'
-      }
+      640,
+      { scale: 3.9, tone: 'gold', align: 'center' }
     );
 
-    this.drawModalActionBtn(ctx, 'TEKRAR DENE', 760, 'goldRed', 'RESTART_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 890, 'navyBtn', 'QUIT_TO_MENU');
-  }
-
-  private renderCampaignVictoryModal(ctx: CanvasRenderingContext2D, currentScore: number): void {
-    this.drawPixelPanel(ctx, 72, 370, 756, 700, 'goldSelected');
-
-    drawPixelText(ctx, 'GEZEGEN KURTARILDI', CANVAS_WIDTH * 0.5, 468, {
-      scale: 3.9,
-      tone: 'gold',
-      align: 'center'
-    });
-
-    for (let i = 0; i < 3; i++) {
-      const star = getPixelStarSprite(true);
-      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 560, 5);
+    if (isNewRecord) {
+      drawPixelText(ctx, '★ YENİ KİŞİSEL REKOR! ★', CANVAS_WIDTH * 0.5, 706, {
+        scale: 3.1,
+        tone: 'green',
+        align: 'center'
+      });
     }
 
-    drawPixelText(ctx, '100 BÖLÜM TAMAMLANDI', CANVAS_WIDTH * 0.5, 654, {
-      scale: 3.4,
-      tone: 'green',
-      align: 'center'
-    });
-
-    drawPixelText(
-      ctx,
-      `SKOR ${formatScoreDigits(currentScore, 7)}`,
-      CANVAS_WIDTH * 0.5,
-      736,
-      {
-        scale: 3.9,
-        tone: 'gold',
-        align: 'center'
-      }
-    );
-
-    this.drawModalActionBtn(ctx, 'SONSUZ MOD', 825, 'goldRed', 'START_ENDLESS');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 950, 'navyBtn', 'QUIT_TO_MENU');
+    this.drawModalActionBtn(ctx, 'TEKRAR OYNA', 766, 'goldRed', 'RESTART_RUN');
+    this.drawModalActionBtn(ctx, 'ANA MENÜ', 896, 'navyBtn', 'QUIT_TO_MENU');
   }
 
   private drawModalActionBtn(
@@ -1216,7 +1207,7 @@ export class MenuRenderer {
     const x = Math.round((CANVAS_WIDTH - w) * 0.5);
     this.drawPixelPanel(ctx, x, y, w, h, style);
     drawPixelText(ctx, label, CANVAS_WIDTH * 0.5, y + h * 0.5, {
-      scale: 3.6,
+      scale: 3.5,
       tone: style === 'goldRed' ? 'gold' : 'white',
       align: 'center'
     });

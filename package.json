@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run src",
     "audit:design": "node scripts/visual-audit.mjs",
     "assets:generate": "node scripts/generate-placeholder-assets.mjs",
     "ios:prepare": "node scripts/ios-full-prepare.mjs",

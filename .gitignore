@@ -20,3 +20,11 @@ ios/App/build/
 *.ipa
 *.aab
 *.apk
+
+# Local reference prompt packs
+void-carver-v6/
+volfied-v7-paketi/
+volfied-elit-prompt-paketi/
+volfied-orijinal-v4/
+volfied-v5-paketi/
+apple_certs/

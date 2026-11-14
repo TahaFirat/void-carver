@@ -33,10 +33,10 @@ export const ARENA_VIEW_Y = 116;
 export const MIDDLE_ZONE_Y = ARENA_VIEW_Y - FRAME_BEZEL_PX; // 92
 export const MIDDLE_ZONE_HEIGHT = ARENA_VIEW_HEIGHT + FRAME_BEZEL_PX * 2; // 1128
 export const ARENA_PADDING = ARENA_VIEW_X;
-export const HUD_BOTTOM_Y = 1224;
-export const HUD_BOTTOM_HEIGHT = 92;
-export const THUMB_ZONE_Y = 1320;
-export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 280
+export const HUD_BOTTOM_Y = 1226;
+export const HUD_BOTTOM_HEIGHT = 58;
+export const THUMB_ZONE_Y = 1290;
+export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 310
 
 // Geometry & fixed-timestep physics invariants
 export const GRID_STEP = 2;
@@ -47,22 +47,22 @@ export const MAX_ACCUMULATOR = 0.05;
 // Authentic 1989 Arcade Gameplay & Mobile Ergonomic Tuning
 export const TARGET_CLAIM_PERCENT = 80.0;
 export const ENRAGE_CLAIM_PERCENT = 72.0;
-export const CORNER_BUFFER_DIST = 32; // 32px generous mobile corner magnet
-export const CORNER_BUFFER_TIME = 0.22; // 220ms early turn memory
+export const CORNER_BUFFER_DIST = 10; // 10px deterministic one-way corner snap assist
+export const CORNER_BUFFER_TIME = 0.16;
 
-// Tuned Mobile-Friendly Speed Rules:
-// - Fast & responsive player border/cut speeds
-// - 180-degree Line Backtrack speed: 1.38x current cut speed for quick safe retreats
-export const BASE_BORDER_SPEED = 380;
-export const BASE_CUT_SPEED = 345;
+// V6 Deterministic 2px-Grid Speed Rules:
+// - Exact multiples of 60 * 2px = 120 so every 60Hz tick steps an exact even grid distance
+// - 180-degree Line Backtrack speed: 1.15x current cut speed for crisp safe retreats
+export const BASE_BORDER_SPEED = 360;
+export const BASE_CUT_SPEED = 360;
 export const BASE_FUSE_SPEED = 360;
 export const BASE_FUSE_MULTIPLIER = BASE_FUSE_SPEED / BASE_CUT_SPEED;
 export const SPEED_BOOSTED_CUT_SPEED = 480;
 export const SPEED_UP_STEP = (SPEED_BOOSTED_CUT_SPEED - BASE_CUT_SPEED) / BASE_CUT_SPEED;
 export const MAX_SPEED_MULTIPLIER = 1.7;
-export const BACKTRACK_SPEED_MULTIPLIER = 1.38;
-export const SHIELD_ZERO_GRACE_SECONDS = 4.0;
-export const IDLE_FUSE_DELAY_SECONDS = 5.5;
+export const BACKTRACK_SPEED_MULTIPLIER = 1.2;
+export const SHIELD_ZERO_GRACE_SECONDS = 3.0;
+export const IDLE_FUSE_DELAY_SECONDS = 2.0;
 
 // Authentic 1989 Arcade Scoring (honest personal best starting from 0)
 export const DEFAULT_ARCADE_HIGH_SCORE = 0;
@@ -268,7 +268,7 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
     nameEn: 'EASY',
     shortTr: 'KOLAY',
     shortEn: 'EASY',
-    startingLives: 5,
+    startingLives: 4,
     shieldMultiplier: 1.35,
     enemySpeedMultiplier: 0.78,
     fuseSpeedMultiplier: 0.94,
@@ -278,15 +278,15 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
   },
   COMMANDER: {
     id: 'COMMANDER',
-    nameTr: 'NORMAL',
-    nameEn: 'NORMAL',
-    shortTr: 'NORMAL',
-    shortEn: 'NORMAL',
-    startingLives: 4,
-    shieldMultiplier: 1.15,
-    enemySpeedMultiplier: 0.88,
-    fuseSpeedMultiplier: 1.04,
-    scoreMultiplier: 1.0,
+    nameTr: 'ORTA',
+    nameEn: 'MEDIUM',
+    shortTr: 'ORTA',
+    shortEn: 'MEDIUM',
+    startingLives: 3,
+    shieldMultiplier: 1.0,
+    enemySpeedMultiplier: 1.0,
+    fuseSpeedMultiplier: 1.0,
+    scoreMultiplier: 1.25,
     unlockAllSectors: false,
     isHardMode: false
   },
@@ -296,11 +296,11 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
     nameEn: 'HARD',
     shortTr: 'ZOR',
     shortEn: 'HARD',
-    startingLives: 3,
-    shieldMultiplier: 0.92,
-    enemySpeedMultiplier: 1.08,
-    fuseSpeedMultiplier: 1.24,
-    scoreMultiplier: 1.35,
+    startingLives: 2,
+    shieldMultiplier: 0.74,
+    enemySpeedMultiplier: 1.28,
+    fuseSpeedMultiplier: 1.35,
+    scoreMultiplier: 1.6,
     unlockAllSectors: false,
     isHardMode: true
   }
@@ -314,6 +314,8 @@ export interface ShipSkinConfig {
   nameTr: string;
   nameEn: string;
   starsRequired: number;
+  waveRequired: number;
+  scoreRequired: number;
   elitePackUnlock?: boolean;
   hullLightHex: string;
   hullMidHex: string;
@@ -330,6 +332,8 @@ export const SHIP_SKINS: ShipSkinConfig[] = [
     nameTr: 'GÜMÜŞ',
     nameEn: 'SILVER',
     starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
     hullLightHex: '#E8F0FA',
     hullMidHex: '#AAB6CA',
     hullDarkHex: '#5C687C',
@@ -343,6 +347,8 @@ export const SHIP_SKINS: ShipSkinConfig[] = [
     nameTr: 'KIZIL',
     nameEn: 'CRIMSON',
     starsRequired: 4,
+    waveRequired: 4,
+    scoreRequired: 100_000,
     elitePackUnlock: true,
     hullLightHex: '#FF8A70',
     hullMidHex: '#D83824',
@@ -357,6 +363,8 @@ export const SHIP_SKINS: ShipSkinConfig[] = [
     nameTr: 'ALTIN',
     nameEn: 'GOLD',
     starsRequired: 12,
+    waveRequired: 9,
+    scoreRequired: 350_000,
     elitePackUnlock: true,
     hullLightHex: '#FFF098',
     hullMidHex: '#E0A828',
@@ -371,6 +379,8 @@ export const SHIP_SKINS: ShipSkinConfig[] = [
     nameTr: 'GÖLGE',
     nameEn: 'SHADOW',
     starsRequired: 24,
+    waveRequired: 15,
+    scoreRequired: 750_000,
     elitePackUnlock: true,
     hullLightHex: '#8898B8',
     hullMidHex: '#445068',

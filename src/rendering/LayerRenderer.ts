@@ -219,12 +219,15 @@ export class LayerRenderer {
 
   /**
    * Renders the uncut `Stage N` 16-bit pixel terrain clipped to `activePolygon`
-   * AND the signature bright green (`#28E038`) 2-arcade-pixel safe perimeter line!
+   * AND the authentic 1989 Yellow-Green (`#D8F028` / `#28E838`) active shield perimeter line
+   * (flashing Red-Yellow when shield drops below `150` units!).
    */
   public renderUncutSlab(
     ctx: CanvasRenderingContext2D,
     activePolygon: readonly Point[],
-    freezeRemaining = 0
+    freezeRemaining = 0,
+    shieldLowWarning = false,
+    timeSeconds = 0
   ): void {
     if (activePolygon.length < 3 || !this.topStageCanvas) return;
 
@@ -261,7 +264,7 @@ export class LayerRenderer {
     ctx.filter = 'none';
     ctx.restore();
 
-    // 3. Signature Bright Green Safe Border Line (`#28E038` + `#98FF70` core + `#080810` black outline!)
+    // 3. Authentic 1989 Yellow-Green Shield Line (`#28E838` + `#D8F028` core; Red-Yellow warning flash < 150!)
     ctx.beginPath();
     ctx.moveTo(activePolygon[0].x, activePolygon[0].y);
     for (let i = 1; i < activePolygon.length; i++) {
@@ -272,19 +275,20 @@ export class LayerRenderer {
     ctx.lineJoin = 'miter';
     ctx.lineCap = 'square';
 
-    // Outer 1px black pixel contour
-    ctx.strokeStyle = '#080810';
+    const flashAlt = shieldLowWarning && Math.floor(timeSeconds * 14) % 2 === 1;
+    const outerRail = shieldLowWarning ? (flashAlt ? '#FF2820' : '#E89018') : '#28E838';
+    const innerCore = shieldLowWarning ? (flashAlt ? '#FFF048' : '#FFFFFF') : '#D8F028';
+
+    ctx.strokeStyle = PALETTE.PIXEL_BLACK;
     ctx.lineWidth = 10;
     ctx.stroke();
 
-    // Main bright green safe rail (`#28E038`, 2 arcade pixels = 6px screen = 6.67 logical)
-    ctx.strokeStyle = PALETTE.SAFE_GREEN;
-    ctx.lineWidth = 6.6;
+    ctx.strokeStyle = outerRail;
+    ctx.lineWidth = 6.8;
     ctx.stroke();
 
-    // Crisp inner phosphor highlight
-    ctx.strokeStyle = PALETTE.SAFE_GREEN_LIGHT;
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = innerCore;
+    ctx.lineWidth = 2.4;
     ctx.stroke();
 
     ctx.restore();

@@ -5,10 +5,9 @@ import { getTwinHalfSprite } from '../../rendering/VolfiedSprites';
 import { BaseBoss, BossUpdateContext } from './BaseBoss';
 
 /**
- * 16-Bit Pixel-Art Docking & Splitting Twin Core (`TwinNexus` / `TWIN_SPLIT`).
- * Featured in Stage 06 (`6 HP` each) & Stage 14 (`8 HP` each).
- * Periodically locks together into one unified sphere (`DOCKED`) and splits apart
- * (`SEPARATED`) so skilled players can slice between the two halves for an instant split-crush!
+ * 16-Bit Pixel-Art Docking & Splitting Twin Core (`TwinNexus` / `TWIN_SPLIT` / `TWIN_SYMMETRY`).
+ * Periodically locks together (`DOCKED`) and splits apart (`SEPARATED`).
+ * Phase 2+: Electrifies the arc tether between `ALPHA` & `OMEGA` and fires `TETHER_VOLLEY`!
  */
 export class TwinNexus extends BaseBoss {
   public readonly archetype = 'TWIN_SPLIT' as const;
@@ -28,25 +27,27 @@ export class TwinNexus extends BaseBoss {
     );
     this.variant = variant;
     this.displayName = variant === 'ALPHA' ? 'IKIZ CEKIRDEK A' : 'IKIZ CEKIRDEK B';
-    this.pulseTimer = variant === 'ALPHA' ? 2.2 : 3.0;
+    this.pulseTimer = variant === 'ALPHA' ? 2.1 : 2.9;
   }
 
   public linkPartner(other: TwinNexus): void {
     this.partner = other;
   }
 
+  public getPartner(): TwinNexus | null {
+    return this.partner;
+  }
+
   public get isDocked(): boolean {
     if (!this.partner || !this.partner.alive) return false;
-    // 8.0s cycle: first 2.8s DOCKED, next 5.2s SEPARATED!
     return this.cycleTimer % 8.0 < 2.8;
   }
 
   protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
     this.cycleTimer += bctx.dt * speedScale;
-    const targetSpd = 192 * speedScale;
+    const targetSpd = 188 * speedScale;
 
     if (this.isDocked && this.partner && this.partner.alive) {
-      // Gently pull toward docked side-by-side formation (`ALPHA` on left, `OMEGA` on right)
       const midX = (this.x + this.partner.x) * 0.5;
       const midY = (this.y + this.partner.y) * 0.5;
       const offset = (this.variant === 'ALPHA' ? -20 : 20) * this.renderScale;
@@ -56,7 +57,6 @@ export class TwinNexus extends BaseBoss {
       this.x += (desiredX - this.x) * Math.min(1, bctx.dt * 7);
       this.y += (desiredY - this.y) * Math.min(1, bctx.dt * 7);
     } else if (this.partner && this.partner.alive) {
-      // Soft repulsion right when separating so they roam opposite sides of the arena!
       const dx = this.x - this.partner.x;
       const dy = this.y - this.partner.y;
       const dist = Math.hypot(dx, dy) || 1;
@@ -73,17 +73,13 @@ export class TwinNexus extends BaseBoss {
     this.x += this.vx * bctx.dt;
     this.y += this.vy * bctx.dt;
 
-    this.pulseTimer -= bctx.dt * speedScale;
+    this.pulseTimer -= bctx.dt;
     if (this.pulseTimer <= 0) {
-      this.pulseTimer = 2.75;
-      const aim = Math.atan2(bctx.playerPos.y - this.y, bctx.playerPos.x - this.x);
-      const spd = 255 * speedScale;
-      bctx.projectiles.spawnEnemyBullet(
-        { x: this.x, y: this.y },
-        Math.cos(aim) * spd,
-        Math.sin(aim) * spd,
-        this.variant === 'ALPHA' ? '#FFD040' : PALETTE.CUT_ORANGE,
-        5.5
+      this.pulseTimer = this.phaseBehavior?.fireIntervalSec ?? 2.6;
+      this.firePhasePattern(
+        bctx,
+        speedScale,
+        this.variant === 'ALPHA' ? '#FFD040' : PALETTE.CUT_ORANGE
       );
     }
   }
@@ -95,6 +91,8 @@ export class TwinNexus extends BaseBoss {
     bossCannonArmed = false
   ): void {
     const pos = this.getRenderPos(alpha);
+    this.renderPhaseAuraAndWings(ctx, pos.x, pos.y, timeSeconds);
+
     const pulseFrame: 0 | 1 = Math.floor(timeSeconds * 7) % 2 === 0 ? 0 : 1;
     const isRightHalf = this.variant === 'OMEGA';
 

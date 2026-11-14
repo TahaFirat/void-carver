@@ -19,10 +19,11 @@ function bootstrap(): void {
   }
 
   let cachedRect: DOMRect = canvas.getBoundingClientRect();
+  let engineRef: GameEngine | null = null;
 
   /**
-   * V5 universal responsive sizing: the canvas always covers the full visual viewport,
-   * the virtual coordinate space adapts to the device aspect ratio (`ResponsiveLayout.ts`).
+   * V6 universal responsive sizing: the canvas covers the full visual viewport,
+   * and physical CSS pixel bounds are synced directly to `TouchGestureEngine`.
    */
   const resizeCanvas = (): void => {
     const vv = window.visualViewport;
@@ -30,6 +31,7 @@ function bootstrap(): void {
     const cssH = Math.max(160, Math.round(vv?.height ?? window.innerHeight));
     const layout = computeLayout(cssW, cssH, readSafeAreaInsets(), getPreferredJoystickSide());
     setLayout(layout);
+    engineRef?.syncViewportLayout();
 
     // Clamp DPR to 2.5 for razor-sharp pixels on Retina while saving mobile GPU heat & battery
     const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -64,12 +66,21 @@ function bootstrap(): void {
   resizeCanvas();
 
   const engine = new GameEngine();
+  engineRef = engine;
+  engine.syncViewportLayout();
 
-  const toVirtualCoords = (clientX: number, clientY: number): { vx: number; vy: number } => {
+  const toCoords = (
+    clientX: number,
+    clientY: number
+  ): { cssX: number; cssY: number; vx: number; vy: number } => {
     const s = getLayout().cssScale || 1;
+    const cssX = clientX - cachedRect.left;
+    const cssY = clientY - cachedRect.top;
     return {
-      vx: (clientX - cachedRect.left) / s,
-      vy: (clientY - cachedRect.top) / s
+      cssX,
+      cssY,
+      vx: cssX / s,
+      vy: cssY / s
     };
   };
 
@@ -85,8 +96,8 @@ function bootstrap(): void {
       }
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
-        const { vx, vy } = toVirtualCoords(t.clientX, t.clientY);
-        engine.handlePointerDown(1000 + t.identifier, vx, vy);
+        const { cssX, cssY, vx, vy } = toCoords(t.clientX, t.clientY);
+        engine.handlePointerDown(1000 + t.identifier, vx, vy, cssX, cssY);
       }
     },
     { passive: false }
@@ -98,8 +109,8 @@ function bootstrap(): void {
       if (e.cancelable) e.preventDefault();
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
-        const { vx, vy } = toVirtualCoords(t.clientX, t.clientY);
-        engine.handlePointerMove(1000 + t.identifier, vx, vy);
+        const { cssX, cssY, vx, vy } = toCoords(t.clientX, t.clientY);
+        engine.handlePointerMove(1000 + t.identifier, vx, vy, cssX, cssY);
       }
     },
     { passive: false }
@@ -116,6 +127,7 @@ function bootstrap(): void {
   window.addEventListener('touchcancel', endTouches, { passive: false });
 
   // Desktop mouse / pen fallback (skips `touch` pointerType already handled above)
+  let mouseButtonHeld = false;
   window.addEventListener(
     'pointerdown',
     (e) => {
@@ -124,8 +136,9 @@ function bootstrap(): void {
       if (cachedRect.width === 0) {
         cachedRect = canvas.getBoundingClientRect();
       }
-      const { vx, vy } = toVirtualCoords(e.clientX, e.clientY);
-      engine.handlePointerDown(e.pointerId, vx, vy);
+      mouseButtonHeld = true;
+      const { cssX, cssY, vx, vy } = toCoords(e.clientX, e.clientY);
+      engine.handlePointerDown(e.pointerId, vx, vy, cssX, cssY);
     },
     { passive: false }
   );
@@ -134,8 +147,9 @@ function bootstrap(): void {
     'pointermove',
     (e) => {
       if (e.pointerType === 'touch') return;
-      const { vx, vy } = toVirtualCoords(e.clientX, e.clientY);
-      engine.handlePointerMove(e.pointerId, vx, vy);
+      if (!mouseButtonHeld) return;
+      const { cssX, cssY, vx, vy } = toCoords(e.clientX, e.clientY);
+      engine.handlePointerMove(e.pointerId, vx, vy, cssX, cssY);
     },
     { passive: false }
   );
@@ -144,6 +158,7 @@ function bootstrap(): void {
     'pointerup',
     (e) => {
       if (e.pointerType === 'touch') return;
+      mouseButtonHeld = false;
       engine.handlePointerUp(e.pointerId);
     },
     { passive: true }
@@ -152,13 +167,18 @@ function bootstrap(): void {
     'pointercancel',
     (e) => {
       if (e.pointerType === 'touch') return;
+      mouseButtonHeld = false;
       engine.handlePointerUp(e.pointerId);
     },
     { passive: true }
   );
-  window.addEventListener('blur', () => engine.resetPointerInputs());
+  window.addEventListener('blur', () => {
+    mouseButtonHeld = false;
+    engine.resetPointerInputs();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      mouseButtonHeld = false;
       engine.resetPointerInputs();
     }
   });

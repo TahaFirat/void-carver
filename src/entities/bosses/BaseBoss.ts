@@ -1,4 +1,4 @@
-import { ENRAGE_CLAIM_PERCENT } from '../../core/Config';
+import { ENRAGE_CLAIM_PERCENT, PALETTE } from '../../core/Config';
 import {
   computeArea,
   pointInPolygonStrict,
@@ -6,6 +6,15 @@ import {
   resolvePolygonPenetration
 } from '../../geometry/PolygonMath';
 import { Point } from '../../geometry/Types';
+import type { BossCombatPhase, BossPhaseBehavior } from '../../levels/EndlessBossDirector';
+import {
+  blitArenaPixelSprite,
+  commitPixelSurface,
+  createPixelSurface,
+  fillRectPx,
+  hexToU32,
+  setPx
+} from '../../rendering/PixelArtEngine';
 import { InteriorMinion } from '../enemies/BaseMinion';
 import { ProjectileManager } from '../Projectiles';
 
@@ -13,6 +22,9 @@ export type BossArchetype =
   | 'CENTIPEDE'
   | 'LOBSTER_MECHA'
   | 'BIO_WHEEL'
+  | 'PINCER_BEETLE'
+  | 'SNIPER_LADYBIRD'
+  | 'PINBALL_FROG'
   | 'MANTIS'
   | 'CRUISER_CORE'
   | 'TWIN_SPLIT'
@@ -23,17 +35,22 @@ export type BossArchetype =
   | 'TITAN_CORE'
   | 'TWIN_NEXUS';
 
+export type BossAimMode = 'FIXED_SPREAD' | 'DIRECT_AIM' | 'PREDICTIVE_LEAD_AIM';
+
 export interface BossUpdateContext {
   dt: number;
   timeSeconds: number;
   activePolygon: readonly Point[];
   claimedPercent: number;
   playerPos: Point;
+  playerVel?: Point;
   playerState: 'ON_BORDER' | 'CUTTING';
   activeTrail: readonly Point[];
   speedScale: number;
+  aimMode?: BossAimMode;
   projectiles: ProjectileManager;
   summonMinion: (minion: InteriorMinion) => void;
+  spawnSolidObstacle?: (pos: Point) => void;
   currentMinionCount: number;
 }
 
@@ -43,6 +60,56 @@ export interface HitCircle {
   radius: number;
 }
 
+const cachedMoltenWings: Record<string, HTMLCanvasElement> = {};
+
+function getMoltenPhaseWingsSprite(frame: 0 | 1, overdrive: boolean): HTMLCanvasElement {
+  const key = `${frame}_${overdrive ? 'p3' : 'p2'}`;
+  if (cachedMoltenWings[key]) return cachedMoltenWings[key];
+
+  const w = 96;
+  const h = 48;
+  const s = createPixelSurface(w, h);
+  const cOutline = hexToU32('#08060A');
+  const cRib = hexToU32(overdrive ? '#3C0C18' : '#2C140C');
+  const cMid = hexToU32(overdrive ? '#D81838' : '#E04810');
+  const cBright = hexToU32(overdrive ? '#FF5830' : '#FF9C18');
+  const cCore = hexToU32('#FFF088');
+
+  const flapLift = frame === 0 ? 0 : 4;
+  const cx = 48;
+
+  for (const dir of [-1, 1]) {
+    for (let xOff = 10; xOff <= 44; xOff++) {
+      const t = (xOff - 10) / 34;
+      const topY = Math.round(22 - t * (17 + flapLift) + Math.sin(t * Math.PI * 2) * 1.5);
+      const jag = ((xOff >> 2) % 3 === 0 ? 4 : 0) + Math.round((1 - t) * 5);
+      const botY = Math.round(32 - t * 8 + jag);
+      const px = cx + dir * xOff;
+
+      for (let py = topY - 1; py <= botY + 1; py++) {
+        if (py === topY - 1 || py === botY + 1 || xOff === 44) {
+          setPx(s, px, py, cOutline);
+        } else if (py <= topY + 2) {
+          setPx(s, px, py, cRib);
+        } else if (py <= topY + 5) {
+          setPx(s, px, py, cCore);
+        } else if (py <= (topY + botY) * 0.58) {
+          setPx(s, px, py, cBright);
+        } else {
+          setPx(s, px, py, cMid);
+        }
+      }
+    }
+    fillRectPx(s, cx + dir * 20 - 1, 8 - (flapLift >> 1), 3, 5, cCore);
+  }
+
+  cachedMoltenWings[key] = commitPixelSurface(s);
+  return cachedMoltenWings[key];
+}
+
+/**
+ * V7 Law 5 — Strict Circular Collision (`HitCircle`) + Pinball Shrink-Speedup (`0.45x` -> `1.63x` speed)!
+ */
 export abstract class BaseBoss {
   public x: number;
   public y: number;
@@ -53,18 +120,25 @@ export abstract class BaseBoss {
   public readonly baseRadius: number;
   public boundingRadius: number;
   public renderScale = 1.0;
+  public pinballSpeedBoost = 1.0;
   public readonly maxHp: number;
   public hp: number;
   public enraged = false;
   public hitFlash = 0;
   public alive = true;
   public crushedInPocket = false;
-  /** V5 double-boss stages: escorts never decide the stage outcome. */
   public isEscort = false;
+
+  public combatPhase: BossCombatPhase = 1;
+  public phaseBehavior: BossPhaseBehavior | null = null;
+  protected orbitBladeAngle = 0;
+  protected moltenTrailTimer = 1.1;
+  protected spiralPhaseAngle = 0;
+  private lastKnownPolygon: readonly Point[] = [];
+
   public abstract readonly archetype: BossArchetype;
   public abstract readonly displayName: string;
 
-  // Smooth 3-frame anti-stuck slide target when polygon shrinks close to hull
   private antiStuckTarget: Point | null = null;
   private antiStuckFramesLeft = 0;
   private pocketCrushTimer = 0;
@@ -80,6 +154,11 @@ export abstract class BaseBoss {
     this.boundingRadius = boundingRadius;
     this.maxHp = maxHp;
     this.hp = maxHp;
+  }
+
+  public applyPhaseBehavior(behavior: BossPhaseBehavior): void {
+    this.combatPhase = behavior.phase;
+    this.phaseBehavior = behavior;
   }
 
   public get position(): Point {
@@ -105,6 +184,7 @@ export abstract class BaseBoss {
   }
 
   public onPolygonShrunk(activePolygon: readonly Point[]): void {
+    this.lastKnownPolygon = activePolygon;
     this.updateCorridorScale(activePolygon, 1.0);
 
     const solved = resolvePolygonPenetration(
@@ -129,13 +209,26 @@ export abstract class BaseBoss {
   }
 
   public getHitCircles(): HitCircle[] {
-    return [{ x: this.x, y: this.y, radius: this.boundingRadius * 0.88 }];
+    const circles: HitCircle[] = [{ x: this.x, y: this.y, radius: this.boundingRadius * 0.88 }];
+    if (
+      this.phaseBehavior?.specialMechanic === 'ORBITING_SHIELD_BLADES' &&
+      this.lastKnownPolygon.length >= 3
+    ) {
+      const orbitDist = this.boundingRadius * 1.42;
+      for (let i = 0; i < 4; i++) {
+        const ang = this.orbitBladeAngle + (i * Math.PI) / 2;
+        const bx = this.x + Math.cos(ang) * orbitDist;
+        const by = this.y + Math.sin(ang) * orbitDist;
+        if (pointInPolygonStrict({ x: bx, y: by }, this.lastKnownPolygon)) {
+          circles.push({ x: bx, y: by, radius: 10 * this.renderScale });
+        }
+      }
+    }
+    return circles;
   }
 
   /**
-   * Dynamic Narrow-Corridor Shrinking (down to `0.62x`) so large pixel bosses
-   * glide smoothly through tight carved corridors without jittering, plus `1.8s`
-   * Pocket Crush detection when trapped in a micro-pocket!
+   * V7 Law 5 — Pinball Shrink-Speedup (`0.45x` minimum scale -> up to `1.63x` bounce velocity!).
    */
   private updateCorridorScale(activePolygon: readonly Point[], blend: number): number {
     const n = activePolygon.length;
@@ -168,7 +261,6 @@ export abstract class BaseBoss {
       const dy = this.y - res.point.y;
       const len = Math.hypot(dx, dy) || 1;
       const dot = (dx / len) * minNormalX + (dy / len) * minNormalY;
-      // Opposing wall has normal pointing roughly opposite (`dot < -0.35`)
       if (dot < -0.35 && res.distance < secondMinOppositeDist) {
         secondMinOppositeDist = res.distance;
       }
@@ -177,20 +269,22 @@ export abstract class BaseBoss {
     const corridorWidth =
       secondMinOppositeDist < Infinity ? minDist + secondMinOppositeDist : Infinity;
     let targetScale = 1.0;
-    if (corridorWidth < this.baseRadius * 2.3) {
-      targetScale = Math.max(0.62, Math.min(1.0, corridorWidth / (this.baseRadius * 2.3)));
+    if (corridorWidth < this.baseRadius * 2.35) {
+      targetScale = Math.max(0.45, Math.min(1.0, corridorWidth / (this.baseRadius * 2.35)));
     }
 
     this.renderScale += (targetScale - this.renderScale) * blend;
     this.boundingRadius = this.baseRadius * this.renderScale;
+    this.pinballSpeedBoost = 1 + (1 - this.renderScale) * 1.15;
     return corridorWidth;
   }
 
   public update(bctx: BossUpdateContext): void {
     this.prevX = this.x;
     this.prevY = this.y;
+    this.lastKnownPolygon = bctx.activePolygon;
 
-    this.enraged = bctx.claimedPercent >= ENRAGE_CLAIM_PERCENT;
+    this.enraged = bctx.claimedPercent >= ENRAGE_CLAIM_PERCENT || this.combatPhase >= 2;
     if (this.hitFlash > 0) {
       this.hitFlash = Math.max(0, this.hitFlash - bctx.dt);
     }
@@ -214,18 +308,46 @@ export abstract class BaseBoss {
       }
     }
 
-    const effectiveSpeedScale = bctx.speedScale * (this.enraged ? 1.12 : 1.0);
+    const phaseMult = this.phaseBehavior
+      ? this.phaseBehavior.speedMultiplier
+      : this.enraged
+        ? 1.12
+        : 1.0;
+    const effectiveSpeedScale = bctx.speedScale * phaseMult * this.pinballSpeedBoost;
+
+    this.orbitBladeAngle += bctx.dt * (this.combatPhase >= 3 ? 4.4 : 3.0);
+
+    if (this.phaseBehavior?.specialMechanic === 'MOLTEN_TRAIL_HAZARD') {
+      this.moltenTrailTimer -= bctx.dt * effectiveSpeedScale;
+      if (this.moltenTrailTimer <= 0) {
+        this.moltenTrailTimer = this.combatPhase >= 3 ? 0.85 : 1.15;
+        const dPlayer = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
+        if (dPlayer >= 96 && pointInPolygonStrict({ x: this.x, y: this.y }, bctx.activePolygon)) {
+          bctx.projectiles.spawnEnemyBullet(
+            { x: this.x, y: this.y },
+            0,
+            0,
+            '#FF5818',
+            7,
+            0,
+            2.1,
+            true
+          );
+        }
+      }
+    }
+
     this.updateBehavior(bctx, effectiveSpeedScale);
     this.enforceWallBounce(bctx.activePolygon);
 
-    // 1.8s Pocket Crush check (only when time is NOT frozen and boss is wedged in a tiny pocket!)
+    // 1.8s Pocket Crush failsafe if polygon shrinks smaller than 0.45x radius
     if (bctx.speedScale > 0.05) {
       const moved = Math.hypot(this.x - this.prevX, this.y - this.prevY);
       const polyArea = computeArea(bctx.activePolygon);
-      const pocketAreaThreshold = Math.PI * this.baseRadius * this.baseRadius * 2.6;
+      const pocketAreaThreshold = Math.PI * this.boundingRadius * this.boundingRadius * 2.2;
       const wedgedTight =
-        (corridorWidth < this.baseRadius * 1.32 && moved < 1.5) ||
-        (polyArea < pocketAreaThreshold && moved < 2.2);
+        (corridorWidth < this.boundingRadius * 1.25 && moved < 1.2) ||
+        (polyArea < pocketAreaThreshold && moved < 1.8);
 
       if (wedgedTight) {
         this.pocketCrushTimer += bctx.dt;
@@ -235,6 +357,136 @@ export abstract class BaseBoss {
         }
       } else {
         this.pocketCrushTimer = Math.max(0, this.pocketCrushTimer - bctx.dt * 2);
+      }
+    }
+  }
+
+  /**
+   * V7 Difficulty Aim (`FIXED_SPREAD` on `KOLAY`, `DIRECT_AIM` on `ORTA`, `PREDICTIVE_LEAD_AIM` on `ZOR`)!
+   */
+  protected resolveDifficultyAimAngle(bctx: BossUpdateContext, projSpeed: number): number {
+    const mode = bctx.aimMode ?? 'DIRECT_AIM';
+    const dx = bctx.playerPos.x - this.x;
+    const dy = bctx.playerPos.y - this.y;
+    const rawAim = Math.atan2(dy, dx);
+
+    if (mode === 'FIXED_SPREAD') {
+      const octant = Math.PI / 4;
+      return Math.round(rawAim / octant) * octant;
+    }
+
+    if (mode === 'PREDICTIVE_LEAD_AIM' && bctx.playerVel) {
+      const dist = Math.hypot(dx, dy);
+      const leadSec = Math.min(0.65, dist / Math.max(160, projSpeed));
+      const tx = bctx.playerPos.x + bctx.playerVel.x * leadSec;
+      const ty = bctx.playerPos.y + bctx.playerVel.y * leadSec;
+      return Math.atan2(ty - this.y, tx - this.x);
+    }
+
+    return rawAim;
+  }
+
+  protected spawnBossBullet(
+    bctx: BossUpdateContext,
+    vx: number,
+    vy: number,
+    color: string,
+    radius = 5.5,
+    homingTurnRate = 0,
+    lifeLeftSec = -1
+  ): void {
+    bctx.projectiles.spawnEnemyBullet(
+      { x: this.x, y: this.y },
+      vx,
+      vy,
+      color,
+      radius,
+      homingTurnRate,
+      lifeLeftSec,
+      true
+    );
+  }
+
+  protected firePhasePattern(
+    bctx: BossUpdateContext,
+    speedScale: number,
+    baseColor: string = PALETTE.CUT_ORANGE
+  ): void {
+    const distToPlayer = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
+    if (distToPlayer < 100 || !pointInPolygonStrict({ x: this.x, y: this.y }, bctx.activePolygon)) {
+      return;
+    }
+
+    const pattern = this.phaseBehavior?.projectilePattern ?? 'SPREAD_3';
+    const spdBase = 240 * Math.min(1.4, speedScale);
+    const aim = this.resolveDifficultyAimAngle(bctx, spdBase);
+    const color =
+      this.combatPhase >= 3 ? '#FF2838' : this.combatPhase === 2 ? '#FF9018' : baseColor;
+
+    switch (pattern) {
+      case 'SINGLE_AIMED': {
+        this.spawnBossBullet(bctx, Math.cos(aim) * spdBase, Math.sin(aim) * spdBase, color, 5.5);
+        break;
+      }
+      case 'SPREAD_3': {
+        for (const off of [-0.24, 0, 0.24]) {
+          const a = aim + off;
+          this.spawnBossBullet(bctx, Math.cos(a) * spdBase, Math.sin(a) * spdBase, color, 5.5);
+        }
+        break;
+      }
+      case 'SPREAD_5': {
+        for (const off of [-0.44, -0.22, 0, 0.22, 0.44]) {
+          const a = aim + off;
+          this.spawnBossBullet(bctx, Math.cos(a) * spdBase, Math.sin(a) * spdBase, color, 5.5);
+        }
+        break;
+      }
+      case 'SPIRAL_RING': {
+        this.spiralPhaseAngle += 0.38;
+        for (let i = 0; i < 8; i++) {
+          const a = this.spiralPhaseAngle + (i * Math.PI) / 4;
+          this.spawnBossBullet(
+            bctx,
+            Math.cos(a) * spdBase,
+            Math.sin(a) * spdBase,
+            i % 2 === 0 ? color : '#FFE068',
+            5.5
+          );
+        }
+        break;
+      }
+      case 'SWEEPING_BEAM': {
+        const sweep = Math.sin(bctx.timeSeconds * 3.8) * 0.28;
+        for (let k = 0; k < 3; k++) {
+          const a = aim + sweep + (k - 1) * 0.11;
+          const s = (250 + k * 24) * Math.min(1.4, speedScale);
+          this.spawnBossBullet(bctx, Math.cos(a) * s, Math.sin(a) * s, '#FF3828', 6);
+        }
+        break;
+      }
+      case 'TETHER_VOLLEY': {
+        for (const off of [-0.36, -0.12, 0.12, 0.36]) {
+          const a = aim + off;
+          this.spawnBossBullet(bctx, Math.cos(a) * spdBase, Math.sin(a) * spdBase, '#50E8FF', 5.5);
+        }
+        break;
+      }
+      case 'HOMING_SWARM': {
+        const hSpd = 205 * Math.min(1.3, speedScale);
+        for (const off of [-0.35, 0.35]) {
+          const a = aim + off;
+          this.spawnBossBullet(
+            bctx,
+            Math.cos(a) * hSpd,
+            Math.sin(a) * hSpd,
+            '#FF68D8',
+            6,
+            1.15,
+            4.2
+          );
+        }
+        break;
       }
     }
   }
@@ -259,19 +511,71 @@ export abstract class BaseBoss {
     }
   }
 
-  protected renderHitPixelFlash(ctx: CanvasRenderingContext2D, px: number, py: number, radius: number): void {
+  protected renderPhaseAuraAndWings(
+    ctx: CanvasRenderingContext2D,
+    px: number,
+    py: number,
+    timeSeconds: number
+  ): void {
+    if (this.combatPhase < 2) return;
+
+    const overdrive = this.combatPhase >= 3 || this.phaseBehavior?.visualTint === 'CRIMSON_OVERDRIVE';
+    const wingFrame: 0 | 1 = Math.floor(timeSeconds * (overdrive ? 10 : 7)) % 2 === 0 ? 0 : 1;
+    const wings = getMoltenPhaseWingsSprite(wingFrame, overdrive);
+    blitArenaPixelSprite(
+      ctx,
+      wings,
+      px,
+      py - this.boundingRadius * 0.22,
+      this.renderScale * 1.48,
+      0
+    );
+
+    ctx.save();
+    const pulseR = Math.round(this.boundingRadius * (0.95 + Math.sin(timeSeconds * 10) * 0.08));
+    ctx.strokeStyle = overdrive ? 'rgba(255, 48, 56, 0.65)' : 'rgba(255, 148, 24, 0.58)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(Math.round(px), Math.round(py), pulseR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (this.phaseBehavior?.specialMechanic === 'ORBITING_SHIELD_BLADES') {
+      const orbitDist = this.boundingRadius * 1.42;
+      for (let i = 0; i < 4; i++) {
+        const ang = this.orbitBladeAngle + (i * Math.PI) / 2;
+        const bx = Math.round(px + Math.cos(ang) * orbitDist);
+        const by = Math.round(py + Math.sin(ang) * orbitDist);
+        ctx.fillStyle = PALETTE.PIXEL_BLACK;
+        ctx.fillRect(bx - 10, by - 10, 20, 20);
+        ctx.fillStyle = overdrive ? '#FF3830' : '#FF9820';
+        ctx.fillRect(bx - 8, by - 8, 16, 16);
+        ctx.fillStyle = '#FFF498';
+        ctx.fillRect(bx - 4, by - 4, 8, 8);
+      }
+    }
+    ctx.restore();
+  }
+
+  protected renderHitPixelFlash(
+    ctx: CanvasRenderingContext2D,
+    px: number,
+    py: number,
+    radius: number
+  ): void {
     if (this.hitFlash <= 0) return;
     ctx.save();
     ctx.globalAlpha = 0.7;
     ctx.fillStyle = '#FFF8B8';
     const r = Math.round(radius);
-    ctx.fillRect(Math.round(px - r * 0.75), Math.round(py - r * 0.75), Math.round(r * 1.5), Math.round(r * 1.5));
+    ctx.fillRect(
+      Math.round(px - r * 0.75),
+      Math.round(py - r * 0.75),
+      Math.round(r * 1.5),
+      Math.round(r * 1.5)
+    );
     ctx.restore();
   }
 
-  /**
-   * Crisp 16-Bit Pixel Segmented Boss Energy Bar right above Boss when damaged or `★` Super Shot armed.
-   */
   protected renderHealthBar(
     ctx: CanvasRenderingContext2D,
     rx: number,

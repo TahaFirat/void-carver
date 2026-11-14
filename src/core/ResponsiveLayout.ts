@@ -4,16 +4,16 @@ import type { JoystickSide } from '../services/StorageService';
 export type { JoystickSide };
 
 /**
- * Universal Mobile-First Responsive Layout Engine.
+ * Universal Mobile-First Responsive Layout Engine (V6).
  *
- * Game physics always run in the fixed `900x1200` (3:4) logical arena, so stage layouts,
+ * Game physics always run in the fixed `900x1200` (3:4) logical arena, so wave layouts,
  * wall spacing and boss speeds are 100% fair on every device. Only the *screen shell*
  * around it adapts:
  *
  * - `PHONE_PORTRAIT`  (vw/vh < 0.72): 900-wide column, extra height absorbed by safe areas
- *   and a generous uncluttered control deck (`SAĞ`, `SOL`, or `ORTA`).
+ *   and a generous uncluttered control deck (`SOL`, `ORTA`, or `SAĞ`).
  * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; ergonomic controller docked to
- *   the player's chosen position (`SAĞ`, `SOL`, or `ORTA`).
+ *   the player's chosen position (`SOL`, `ORTA`, or `SAĞ`).
  * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet with side wings.
  */
 export type LayoutMode = 'PHONE_PORTRAIT' | 'TABLET_PORTRAIT' | 'LANDSCAPE_SPLIT';
@@ -42,6 +42,15 @@ export interface ColumnTransform {
 export interface GameLayout {
   mode: LayoutMode;
   joystickSide: JoystickSide;
+  /** Physical viewport dimensions in CSS pixels. */
+  cssWidth: number;
+  cssHeight: number;
+  /** Safe upper limit in CSS pixels below which the control pad may appear (never overlaps HUD/arena). */
+  statusStripBottomCssY: number;
+  /** Optional horizontal wing limits in CSS pixels for landscape split mode. */
+  landscapeLeftWingMaxCssX: number | null;
+  landscapeRightWingMinCssX: number | null;
+
   /** Virtual canvas size. */
   width: number;
   height: number;
@@ -58,7 +67,7 @@ export interface GameLayout {
 
   /** Portrait only: translation for the legacy top score bar (`y 0..86`). */
   topBarOffset: { x: number; y: number } | null;
-  /** Portrait only: translation for the legacy two-line status strip (`y 1224..1316`). */
+  /** Portrait only: translation for the single-line status strip (`y 1226..1284`). */
   statusOffset: { x: number; y: number } | null;
   /** Portrait only: control deck background rect. */
   deckRect: Rect | null;
@@ -69,13 +78,15 @@ export interface GameLayout {
   joystick: { cx: number; cy: number; radius: number };
   /** Generous touch capture region for thumb steering on the chosen side. */
   joystickZone: Rect;
-  /** Quick 1-tap `KONUM: SAĞ / SOL / ORTA` cycle pill on the auxiliary side of the deck. */
+  /** Minimal bottom-left pixel gear icon (`⚙`) opening Pause / Control Settings. */
+  gearButton: Rect;
+  /** Minimal bottom-right pixel hand icon (`✋`) cycling `SOL -> ORTA -> SAĞ`. */
   swapSideButton: Rect;
   pauseButton: Rect;
 
   /** Single-column transform for menus & modals. */
   menuColumn: ColumnTransform;
-  /** Landscape main menu: hero (logo + continue) and selector (tabs + grid) halves. */
+  /** Landscape main menu: hero (planet + ship + logo) and action/record halves. */
   menuHero: ColumnTransform | null;
   menuSelector: ColumnTransform | null;
 }
@@ -86,9 +97,9 @@ const FRAME_TOP = 92;
 const FRAME_BOTTOM = 1220;
 const FRAME_LEFT = 21;
 const FRAME_RIGHT = 879;
-const STATUS_BOTTOM = THUMB_ZONE_Y; // 1320
+const STATUS_BOTTOM = THUMB_ZONE_Y; // 1290
 
-let preferredJoystickSide: JoystickSide = 'RIGHT';
+let preferredJoystickSide: JoystickSide = 'CENTER';
 let lastCssW = LEGACY_W / 2;
 let lastCssH = LEGACY_H / 2;
 let lastInsetsCss: SafeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -171,28 +182,31 @@ export function computeLayout(
     };
 
     const stickWing = joystickSide === 'LEFT' ? leftWing : rightWing;
-    const auxWing = joystickSide === 'LEFT' ? rightWing : leftWing;
-
-    const joystickRadius = Math.round(Math.max(88, Math.min(122, stickWing.w * 0.36)));
+    const joystickRadius = Math.round(Math.max(88, Math.min(120, stickWing.w * 0.36)));
     const joystick = {
       cx: stickWing.x + stickWing.w * 0.5,
-      cy: stickWing.y + stickWing.h - joystickRadius - 52,
+      cy: stickWing.y + stickWing.h - joystickRadius - 96,
       radius: joystickRadius
     };
     const joystickZone: Rect = {
       x: stickWing.x,
-      y: stickWing.y + stickWing.h * 0.4,
+      y: stickWing.y + stickWing.h * 0.42,
       w: stickWing.w,
-      h: stickWing.h * 0.6
+      h: stickWing.h * 0.58
     };
 
-    const swapW = Math.min(auxWing.w - 28, 244);
-    const swapH = 58;
+    const iconSize = 80;
+    const gearButton: Rect = {
+      x: Math.round(leftWing.x + 14),
+      y: Math.round(leftWing.y + leftWing.h - iconSize - 12),
+      w: iconSize,
+      h: iconSize
+    };
     const swapSideButton: Rect = {
-      x: Math.round(auxWing.x + (auxWing.w - swapW) * 0.5),
-      y: Math.round(auxWing.y + auxWing.h - swapH - 22),
-      w: Math.round(swapW),
-      h: swapH
+      x: Math.round(rightWing.x + rightWing.w - iconSize - 14),
+      y: Math.round(rightWing.y + rightWing.h - iconSize - 12),
+      w: iconSize,
+      h: iconSize
     };
 
     const pauseSize = Math.round(
@@ -214,22 +228,31 @@ export function computeLayout(
 
     const halfW = (width - safe.left - safe.right) * 0.5;
     const availH = height - safe.top - safe.bottom;
-    const heroS = Math.min(halfW / LEGACY_W, (availH * 0.92) / 610);
-    const selS = Math.min(halfW / LEGACY_W, (availH * 0.96) / 830);
+    const heroS = Math.min(halfW / LEGACY_W, (availH * 0.92) / 620);
+    const selS = Math.min(halfW / LEGACY_W, (availH * 0.94) / 960);
     const menuHero: ColumnTransform = {
       tx: safe.left + (halfW - LEGACY_W * heroS) * 0.5,
-      ty: safe.top + (availH - 610 * heroS) * 0.5,
+      ty: safe.top + (availH - 620 * heroS) * 0.5,
       s: heroS
     };
     const menuSelector: ColumnTransform = {
       tx: safe.left + halfW + (halfW - LEGACY_W * selS) * 0.5,
-      ty: safe.top + (availH - 830 * selS) * 0.5 - 610 * selS,
+      ty: safe.top + (availH - 960 * selS) * 0.5 - 600 * selS,
       s: selS
     };
+
+    const statusStripBottomCssY = Math.round(
+      Math.min(cssH * 0.48, (stickWing.y + stickWing.h * 0.44) * fit.cssScale)
+    );
 
     return {
       mode,
       joystickSide,
+      cssWidth: cssW,
+      cssHeight: cssH,
+      statusStripBottomCssY,
+      landscapeLeftWingMaxCssX: (leftWing.x + leftWing.w) * fit.cssScale,
+      landscapeRightWingMinCssX: rightWing.x * fit.cssScale,
       width,
       height,
       cssScale: fit.cssScale,
@@ -244,6 +267,7 @@ export function computeLayout(
       rightWing,
       joystick,
       joystickZone,
+      gearButton,
       swapSideButton,
       pauseButton,
       menuColumn,
@@ -261,20 +285,20 @@ export function computeLayout(
   const topShift = safe.top + Math.min(extraH * 0.22, 54);
   const deckTop = topShift + STATUS_BOTTOM;
   const deckBottom = height - safe.bottom;
-  const deckH = Math.max(250, deckBottom - deckTop);
+  const deckH = Math.max(270, deckBottom - deckTop);
   const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckH };
 
   const isTablet = mode === 'TABLET_PORTRAIT' || width > LEGACY_W + 120;
   const joystickRadius = Math.round(
-    Math.max(94, Math.min(124, deckH * 0.36, deckH * 0.5 - 32))
+    Math.max(104, Math.min(132, deckH * 0.38, deckH * 0.5 - 24))
   );
 
   const leftCx = isTablet
-    ? safe.left + joystickRadius + 46
-    : columnX + Math.max(joystickRadius + 42, 236);
+    ? safe.left + joystickRadius + 54
+    : columnX + Math.max(joystickRadius + 46, 225);
   const rightCx = isTablet
-    ? width - safe.right - joystickRadius - 46
-    : columnX + LEGACY_W - Math.max(joystickRadius + 42, 236);
+    ? width - safe.right - joystickRadius - 54
+    : columnX + LEGACY_W - Math.max(joystickRadius + 46, 225);
   const centerCx = width * 0.5;
 
   const stickCx =
@@ -282,7 +306,7 @@ export function computeLayout(
 
   const joystick = {
     cx: stickCx,
-    cy: deckTop + Math.min(deckH * 0.47, deckH - joystickRadius - 34),
+    cy: deckTop + deckH * 0.5,
     radius: joystickRadius
   };
 
@@ -293,27 +317,20 @@ export function computeLayout(
         ? { x: 0, y: deckTop, w: width * 0.7, h: deckH }
         : { x: 0, y: deckTop, w: width, h: deckH };
 
-  let swapSideButton: Rect;
-  if (joystickSide === 'CENTER') {
-    const swapW = 196;
-    const swapH = 54;
-    swapSideButton = {
-      x: Math.round(Math.max(safe.left + 16, columnX + 20)),
-      y: Math.round(deckTop + 16),
-      w: swapW,
-      h: swapH
-    };
-  } else {
-    const auxCx = joystickSide === 'RIGHT' ? columnX + 164 : columnX + LEGACY_W - 164;
-    const swapW = 236;
-    const swapH = 60;
-    swapSideButton = {
-      x: Math.round(auxCx - swapW * 0.5),
-      y: Math.round(deckTop + Math.min(deckH * 0.56, deckH - swapH - 18)),
-      w: swapW,
-      h: swapH
-    };
-  }
+  const cornerBtnSize = 84;
+  const cornerBtnY = Math.round(Math.max(deckTop + 16, deckBottom - cornerBtnSize - 14));
+  const gearButton: Rect = {
+    x: Math.round(Math.max(safe.left + 16, columnX + 18)),
+    y: cornerBtnY,
+    w: cornerBtnSize,
+    h: cornerBtnSize
+  };
+  const swapSideButton: Rect = {
+    x: Math.round(Math.min(width - safe.right - cornerBtnSize - 16, columnX + LEGACY_W - cornerBtnSize - 18)),
+    y: cornerBtnY,
+    w: cornerBtnSize,
+    h: cornerBtnSize
+  };
 
   const pauseButton: Rect = { x: columnX + LEGACY_W - 128, y: topShift, w: 128, h: 88 };
 
@@ -323,9 +340,16 @@ export function computeLayout(
     s: 1
   };
 
+  const statusStripBottomCssY = Math.round(deckTop * fit.cssScale);
+
   return {
     mode,
     joystickSide,
+    cssWidth: cssW,
+    cssHeight: cssH,
+    statusStripBottomCssY,
+    landscapeLeftWingMaxCssX: null,
+    landscapeRightWingMinCssX: null,
     width,
     height,
     cssScale: fit.cssScale,
@@ -345,6 +369,7 @@ export function computeLayout(
     rightWing: null,
     joystick,
     joystickZone,
+    gearButton,
     swapSideButton,
     pauseButton,
     menuColumn,
@@ -380,7 +405,7 @@ let currentLayout: GameLayout = computeLayout(
   LEGACY_W / 2,
   LEGACY_H / 2,
   { top: 0, right: 0, bottom: 0, left: 0 },
-  'RIGHT'
+  'CENTER'
 );
 
 export function getLayout(): GameLayout {
