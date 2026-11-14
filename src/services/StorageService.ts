@@ -73,7 +73,7 @@ function isValidShipId(val: unknown): val is ShipSkinId {
 }
 
 function detectDefaultControlMode(): ControlMode {
-  return 'CLASSIC_ARCADE';
+  return 'JOYSTICK_KES';
 }
 
 export function createDefaultSaveData(): GameSaveData {
@@ -88,7 +88,7 @@ export function createDefaultSaveData(): GameSaveData {
   }
 
   return {
-    version: 7,
+    version: 8,
     difficulty: 'COMMANDER',
     selectedShip: 'TITAN',
     unlockedSector: 1,
@@ -210,10 +210,8 @@ class StorageServiceImpl {
           ...(parsed.settings ?? {})
         };
 
-        const rawMode = (parsed.settings as { controlMode?: string } | undefined)?.controlMode;
-        if (rawVersion < 7) {
-          mergedSettings.controlMode =
-            rawMode === 'JOYSTICK_KES' ? 'JOYSTICK_KES' : 'CLASSIC_ARCADE';
+        if (rawVersion < 8) {
+          mergedSettings.controlMode = 'JOYSTICK_KES';
           mergedSettings.joystickSide =
             mergedSettings.joystickSide === 'RIGHT' ? 'RIGHT' : 'LEFT';
           mergedSettings.autoCut = false;
@@ -223,7 +221,7 @@ class StorageServiceImpl {
             mergedSettings.controlMode !== 'JOYSTICK_KES' &&
             mergedSettings.controlMode !== 'SINGLE_HAND_DRAG'
           ) {
-            mergedSettings.controlMode = 'CLASSIC_ARCADE';
+            mergedSettings.controlMode = 'JOYSTICK_KES';
           }
           if (
             mergedSettings.joystickSide !== 'LEFT' &&

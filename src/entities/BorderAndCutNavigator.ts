@@ -35,10 +35,10 @@ export interface StepOutcome {
 }
 
 const GRID = 2;
-const CORNER_ASSIST_PX = 8;
+const CORNER_ASSIST_PX = 12;
 const MIN_TURN_SEGMENT_PX = 4;
 const CUT_LAUNCH_PROBE_PX = 6;
-const EXIT_SNAP_CLEARANCE_PX = 8;
+const EXIT_SNAP_CLEARANCE_PX = 18;
 const SELF_TRAIL_CUSHION_PX = 6;
 
 export function snapGrid(v: number): number {

@@ -1,4 +1,13 @@
-import { CANVAS_HEIGHT, CANVAS_WIDTH, THUMB_ZONE_Y } from './Config';
+import {
+  ARENA_VIEW_WIDTH,
+  ARENA_VIEW_X,
+  CANVAS_HEIGHT,
+  CANVAS_WIDTH,
+  FRAME_BEZEL_PX,
+  MIDDLE_ZONE_HEIGHT,
+  MIDDLE_ZONE_Y,
+  THUMB_ZONE_Y
+} from './Config';
 import type { JoystickSide } from '../services/StorageService';
 
 export type { JoystickSide };
@@ -92,12 +101,13 @@ export interface GameLayout {
 }
 
 const LEGACY_W = CANVAS_WIDTH; // 900
-const LEGACY_H = CANVAS_HEIGHT; // 1600
-const FRAME_TOP = 92;
-const FRAME_BOTTOM = 1220;
-const FRAME_LEFT = 21;
-const FRAME_RIGHT = 879;
-const STATUS_BOTTOM = THUMB_ZONE_Y; // 1290
+const LEGACY_H = CANVAS_HEIGHT; // 1600 (menu card space)
+const PORTRAIT_GAME_MIN_H = 1710; // Guarantees roomy thumb deck even on 16:9 while 19.5:9 phones scale 100% edge-to-edge
+const FRAME_TOP = MIDDLE_ZONE_Y;
+const FRAME_BOTTOM = MIDDLE_ZONE_Y + MIDDLE_ZONE_HEIGHT;
+const FRAME_LEFT = Math.max(0, ARENA_VIEW_X - FRAME_BEZEL_PX);
+const FRAME_RIGHT = ARENA_VIEW_X + ARENA_VIEW_WIDTH + FRAME_BEZEL_PX;
+const STATUS_BOTTOM = THUMB_ZONE_Y;
 
 let preferredJoystickSide: JoystickSide = 'CENTER';
 let lastCssW = LEGACY_W / 2;
@@ -277,28 +287,28 @@ export function computeLayout(
   }
 
   // ---------------- Portrait (phone & tablet) ----------------
-  const fit = fitVirtualCanvas(cssW, cssH, insetsCss, LEGACY_W, LEGACY_H);
+  const fit = fitVirtualCanvas(cssW, cssH, insetsCss, LEGACY_W, PORTRAIT_GAME_MIN_H);
   const { width, height, safe } = fit;
   const innerH = height - safe.top - safe.bottom;
-  const extraH = Math.max(0, innerH - LEGACY_H);
+  const extraH = Math.max(0, innerH - PORTRAIT_GAME_MIN_H);
   const columnX = (width - LEGACY_W) * 0.5;
-  const topShift = safe.top + Math.min(extraH * 0.22, 54);
+  const topShift = safe.top + Math.min(extraH * 0.08, 16);
   const deckTop = topShift + STATUS_BOTTOM;
   const deckBottom = height - safe.bottom;
-  const deckH = Math.max(270, deckBottom - deckTop);
+  const deckH = Math.max(280, deckBottom - deckTop);
   const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckH };
 
   const isTablet = mode === 'TABLET_PORTRAIT' || width > LEGACY_W + 120;
   const joystickRadius = Math.round(
-    Math.max(104, Math.min(132, deckH * 0.38, deckH * 0.5 - 24))
+    Math.max(114, Math.min(144, deckH * 0.4, deckH * 0.5 - 20))
   );
 
   const leftCx = isTablet
     ? safe.left + joystickRadius + 54
-    : columnX + Math.max(joystickRadius + 46, 225);
+    : columnX + Math.max(joystickRadius + 46, 228);
   const rightCx = isTablet
     ? width - safe.right - joystickRadius - 54
-    : columnX + LEGACY_W - Math.max(joystickRadius + 46, 225);
+    : columnX + LEGACY_W - Math.max(joystickRadius + 46, 228);
   const centerCx = width * 0.5;
 
   const stickCx =
@@ -306,7 +316,7 @@ export function computeLayout(
 
   const joystick = {
     cx: stickCx,
-    cy: deckTop + deckH * 0.5,
+    cy: deckTop + deckH * 0.48,
     radius: joystickRadius
   };
 
@@ -317,27 +327,28 @@ export function computeLayout(
         ? { x: 0, y: deckTop, w: width * 0.7, h: deckH }
         : { x: 0, y: deckTop, w: width, h: deckH };
 
-  const cornerBtnSize = 84;
-  const cornerBtnY = Math.round(Math.max(deckTop + 16, deckBottom - cornerBtnSize - 14));
+  const cornerBtnSize = 80;
+  const cornerBtnY = Math.round(Math.max(deckTop + 14, deckBottom - cornerBtnSize - 10));
   const gearButton: Rect = {
-    x: Math.round(Math.max(safe.left + 16, columnX + 18)),
+    x: Math.round(Math.max(safe.left + 12, columnX + 14)),
     y: cornerBtnY,
     w: cornerBtnSize,
     h: cornerBtnSize
   };
   const swapSideButton: Rect = {
-    x: Math.round(Math.min(width - safe.right - cornerBtnSize - 16, columnX + LEGACY_W - cornerBtnSize - 18)),
+    x: Math.round(Math.min(width - safe.right - cornerBtnSize - 12, columnX + LEGACY_W - cornerBtnSize - 14)),
     y: cornerBtnY,
     w: cornerBtnSize,
     h: cornerBtnSize
   };
 
-  const pauseButton: Rect = { x: columnX + LEGACY_W - 128, y: topShift, w: 128, h: 88 };
+  const pauseButton: Rect = { x: columnX + LEGACY_W - 108, y: topShift, w: 108, h: 74 };
 
+  const menuS = Math.min(1, (width - safe.left - safe.right) / LEGACY_W, innerH / LEGACY_H);
   const menuColumn: ColumnTransform = {
-    tx: columnX,
-    ty: safe.top + extraH * 0.5,
-    s: 1
+    tx: (width - LEGACY_W * menuS) * 0.5,
+    ty: safe.top + Math.max(0, (innerH - LEGACY_H * menuS) * 0.5),
+    s: menuS
   };
 
   const statusStripBottomCssY = Math.round(deckTop * fit.cssScale);
@@ -382,23 +393,51 @@ export function pointInRect(x: number, y: number, r: Rect, pad = 0): boolean {
   return x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
 }
 
-/** Measures `env(safe-area-inset-*)` via the hidden `#safe-area-probe` element (CSS px). */
+/**
+ * Measures `env(safe-area-inset-*)` via `#safe-area-probe` AND enforces hardware
+ * Notch / Dynamic Island top clearance on 19.5:9 iPhones even when `UIStatusBarHidden = true`
+ * makes WKWebView report `env(safe-area-inset-top) = 0px`.
+ */
 export function readSafeAreaInsets(): SafeInsets {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return { top: 0, right: 0, bottom: 0, left: 0 };
   }
-  const probe = document.getElementById('safe-area-probe');
-  if (!probe) return { top: 0, right: 0, bottom: 0, left: 0 };
-  const r = probe.getBoundingClientRect();
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const clamp = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.min(80, v)) : 0);
-  return {
-    top: clamp(r.top),
-    left: clamp(r.left),
-    right: clamp(vw - r.right),
-    bottom: clamp(vh - r.bottom)
-  };
+
+  let top = 0;
+  let left = 0;
+  let right = 0;
+  let bottom = 0;
+
+  const probe = document.getElementById('safe-area-probe');
+  if (probe) {
+    const r = probe.getBoundingClientRect();
+    top = clamp(r.top);
+    left = clamp(r.left);
+    right = clamp(vw - r.right);
+    bottom = clamp(vh - r.bottom);
+  }
+
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const isIPhoneDevice = /iPhone|iPod/i.test(ua);
+  const longSide = Math.max(vw, vh);
+  const shortSide = Math.max(1, Math.min(vw, vh));
+  const isModernTallIPhone = isIPhoneDevice && longSide / shortSide > 1.9;
+
+  if (isModernTallIPhone) {
+    if (vh >= vw) {
+      top = Math.max(top, 50);
+      bottom = Math.max(bottom, 20);
+    } else {
+      left = Math.max(left, 44);
+      right = Math.max(right, 44);
+      bottom = Math.max(bottom, 16);
+    }
+  }
+
+  return { top, right, bottom, left };
 }
 
 let currentLayout: GameLayout = computeLayout(

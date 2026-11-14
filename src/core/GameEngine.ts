@@ -89,6 +89,7 @@ import {
   INITIAL_ARENA_AREA,
   JUICE_HITSTOP_DURATION,
   JUICE_HITSTOP_THRESHOLD,
+  MIDDLE_ZONE_Y,
   PALETTE,
   PIXEL_SCALE,
   SHIP_SKINS,
@@ -2168,38 +2169,61 @@ export class GameEngine {
   }
 
   /**
-   * Renders the recessed Top-Bezel Territory Progress Bar & Top-of-Arena Boss Phase Bar
-   * (`FAZ I` / `FAZ II` / `FAZ III`) matching `02-hedef-faz2-boss-ve-temiz-kontrol.jpg`!
+   * Renders ONLY the recessed Top-Bezel Territory Progress Bar (`MIDDLE_ZONE_Y + 3`, strictly inside
+   * the outer Gold Bezel — 0px overlap with `ARENA_VIEW_Y`!) and brief Phase Awakening banner.
+   * The persistent Boss Vitality / Phase Bar now lives in the Top HUD Header ABOVE the arena frame
+   * so the entire top border of the playable arena is 100% unobstructed!
    */
   private renderArenaTopBars(ctx: CanvasRenderingContext2D): void {
     const target = Math.max(1, this.currentWaveSpec.targetPercent);
     const areaRatio = Math.max(0, Math.min(1, this.claimedPercent / target));
 
-    // 1. Recessed amber territory progress bar inside top gold bezel (`y = 97..111`)
-    const topSlotX = 212;
-    const topSlotY = 97;
-    const topSlotW = 476;
-    const topSlotH = 14;
+    // Recessed amber territory progress bar inside top gold bezel (strictly above ARENA_VIEW_Y!)
+    const topSlotX = 190;
+    const topSlotY = MIDDLE_ZONE_Y + 3;
+    const topSlotW = 520;
+    const topSlotH = 12;
     ctx.save();
     ctx.fillStyle = '#05070E';
-    ctx.fillRect(topSlotX - 2, topSlotY - 2, topSlotW + 4, topSlotH + 4);
+    ctx.fillRect(topSlotX - 2, topSlotY - 1, topSlotW + 4, topSlotH + 2);
     ctx.strokeStyle = '#6E4C0A';
     ctx.lineWidth = 2;
-    ctx.strokeRect(topSlotX - 1, topSlotY - 1, topSlotW + 2, topSlotH + 2);
+    ctx.strokeRect(topSlotX - 1, topSlotY, topSlotW + 2, topSlotH);
     if (areaRatio > 0.005) {
       const fillW = Math.round((topSlotW - 4) * areaRatio);
       ctx.fillStyle = '#F6B426';
       ctx.fillRect(topSlotX + 2, topSlotY + 2, fillW, topSlotH - 4);
       ctx.fillStyle = '#FFE884';
-      ctx.fillRect(topSlotX + 2, topSlotY + 2, fillW, 3);
+      ctx.fillRect(topSlotX + 2, topSlotY + 2, fillW, 2);
     }
 
-    // 2. Sleek Gold-Beveled Boss Vitality & Phase Bar (`FAZ I / FAZ II / FAZ III`) at top of arena
-    const barX = 208;
-    const barY = 123;
-    const barW = 484;
-    const barH = 34;
+    // Brief dramatic Phase Awakening callout banner (centered safely below top border)
+    if (this.phaseAwakeningLabel && this.phaseAwakeningTimer > 0) {
+      const flashAlt = Math.floor(this.timeSeconds * 18) % 2 === 0;
+      ctx.fillStyle = 'rgba(6, 8, 18, 0.92)';
+      ctx.fillRect(216, ARENA_VIEW_Y + 54, 468, 44);
+      ctx.strokeStyle = flashAlt ? '#FFF088' : '#FF5820';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(216, ARENA_VIEW_Y + 54, 468, 44);
+      drawPixelText(ctx, this.phaseAwakeningLabel, 450, ARENA_VIEW_Y + 76, {
+        scale: 2.8,
+        tone: flashAlt ? 'gold' : 'crimson',
+        align: 'center'
+      });
+    }
 
+    ctx.restore();
+  }
+
+  private renderBossVitalityStrip(
+    ctx: CanvasRenderingContext2D,
+    barX: number,
+    barY: number,
+    barW: number,
+    barH: number
+  ): void {
+    const target = Math.max(1, this.currentWaveSpec.targetPercent);
+    const areaRatio = Math.max(0, Math.min(1, this.claimedPercent / target));
     const hpRatio = this.getPrimaryBossHpRatio();
     const territoryRemaining = Math.max(0.04, 1 - areaRatio * 0.92);
     const bossVitality = Math.max(0, Math.min(1, Math.min(hpRatio, territoryRemaining)));
@@ -2214,26 +2238,24 @@ export class GameEngine {
           ? 'FAZ II'
           : 'BOSS';
 
-    // Outer dark shadow + gold bevel frame
     ctx.fillStyle = '#04060C';
-    ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
+    ctx.fillRect(barX - 2, barY - 2, barW + 4, barH + 4);
     ctx.fillStyle = '#C88E1A';
     ctx.fillRect(barX, barY, barW, barH);
     ctx.fillStyle = '#FFF094';
-    ctx.fillRect(barX, barY, barW, 3);
+    ctx.fillRect(barX, barY, barW, 2);
     ctx.fillStyle = '#6E4608';
-    ctx.fillRect(barX, barY + barH - 3, barW, 3);
+    ctx.fillRect(barX, barY + barH - 2, barW, 2);
 
-    // Inner dark trough
-    const innerX = barX + 5;
-    const innerY = barY + 5;
-    const innerW = barW - 10;
-    const innerH = barH - 10;
+    const innerX = barX + 4;
+    const innerY = barY + 4;
+    const innerW = barW - 8;
+    const innerH = barH - 8;
     ctx.fillStyle = '#070A14';
     ctx.fillRect(innerX, innerY, innerW, innerH);
 
-    // Molten vitality fill (leaves right-hand label slot crisp & legible)
-    const maxFillW = innerW - 122;
+    const labelSlotW = Math.min(168, Math.max(118, Math.round(barW * 0.24)));
+    const maxFillW = Math.max(24, innerW - labelSlotW);
     const vitW = Math.max(0, Math.round(maxFillW * bossVitality));
     if (vitW > 0) {
       const grad = ctx.createLinearGradient(innerX + 2, 0, innerX + 2 + maxFillW, 0);
@@ -2253,29 +2275,12 @@ export class GameEngine {
       ctx.fillRect(innerX + 2, innerY + 2, vitW, 3);
     }
 
-    drawPixelText(ctx, phaseText, barX + barW - 14, barY + barH * 0.5, {
+    drawPixelText(ctx, phaseText, barX + barW - 12, barY + barH * 0.5 + 1, {
       scale: 2.35,
       tone: this.activeCombatPhase === 3 ? 'crimson' : 'gold',
       align: 'right',
       letterGap: 0.5
     });
-
-    // Brief dramatic Phase Awakening callout banner
-    if (this.phaseAwakeningLabel && this.phaseAwakeningTimer > 0) {
-      const flashAlt = Math.floor(this.timeSeconds * 18) % 2 === 0;
-      ctx.fillStyle = 'rgba(6, 8, 18, 0.92)';
-      ctx.fillRect(216, 166, 468, 44);
-      ctx.strokeStyle = flashAlt ? '#FFF088' : '#FF5820';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(216, 166, 468, 44);
-      drawPixelText(ctx, this.phaseAwakeningLabel, 450, 188, {
-        scale: 2.8,
-        tone: flashAlt ? 'gold' : 'crimson',
-        align: 'center'
-      });
-    }
-
-    ctx.restore();
   }
 
   private renderPauseButton(ctx: CanvasRenderingContext2D): void {
@@ -2366,6 +2371,7 @@ export class GameEngine {
         Math.max(2, Math.round(panelScale * 0.9))
       );
     }
+    this.renderBossVitalityStrip(ctx, lw.x + 14, lw.y + 14 + lPanelH + 12, lw.w - 28, 30);
 
     const rs = Math.max(2.6, Math.min(4.2, rw.w / 84));
     const rPanelTop = layout.pauseButton.y + layout.pauseButton.h + 12;
@@ -2513,36 +2519,39 @@ export class GameEngine {
     ctx.fillStyle = '#03050A';
     ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
 
-    drawPixelText(ctx, 'SKOR', 26, 23, { scale: 3.6, tone: 'silver', align: 'left' });
-    drawPixelText(ctx, String(this.score).padStart(7, '0'), 26, 63, {
-      scale: 4.5,
+    drawPixelText(ctx, 'SKOR', 18, 18, { scale: 3.5, tone: 'silver', align: 'left' });
+    drawPixelText(ctx, String(this.score).padStart(7, '0'), 18, 54, {
+      scale: 4.55,
       tone: 'white',
       align: 'left'
     });
 
     const rec = StorageService.getDifficultyRecord(save.difficulty, save);
     const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rec.highScore, this.score);
-    drawPixelText(ctx, 'REKOR', 472, 23, { scale: 3.6, tone: 'gold', align: 'center' });
-    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 472, 63, {
-      scale: 4.5,
+    drawPixelText(ctx, 'REKOR', 456, 18, { scale: 3.5, tone: 'gold', align: 'center' });
+    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 456, 54, {
+      scale: 4.55,
       tone: 'gold',
       align: 'center'
     });
+
+    // Dedicated Boss Vitality & Phase Bar sits cleanly ABOVE the arena frame (y = 78..110)!
+    this.renderBossVitalityStrip(ctx, 14, 78, CANVAS_WIDTH - 28, 32);
     ctx.restore();
   }
 
   /**
-   * V6 Single-Row Clean Status Strip (`02-hedef-faz2-boss-ve-temiz-kontrol.jpg` 1:1 Match):
-   * `ZOR • DALGA 14 | mini ships | ALAN 54% / 85% | KALKAN 610`
-   * Zero overlap with the control deck (`y = 1226..1284`, `THUMB_ZONE_Y = 1290`).
+   * V8 Full-Width Single-Row Status Strip:
+   * `KOLAY • DALGA 2 | mini ships | ALAN 73% / 80% | KALKAN 645`
+   * Enlarged readable typography with zero overlap on the control deck (`y = 1310..1374`).
    */
   private renderBottomArcadeStatusBar(
     ctx: CanvasRenderingContext2D,
     save: ReturnType<typeof StorageService.getCurrent>
   ): void {
     ctx.save();
-    const stripX = 4;
-    const stripW = CANVAS_WIDTH - 8;
+    const stripX = 2;
+    const stripW = CANVAS_WIDTH - 4;
     ctx.fillStyle = '#040710';
     ctx.fillRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
     ctx.strokeStyle = '#384868';
@@ -2557,12 +2566,12 @@ export class GameEngine {
     const shownLives = Math.max(0, Math.min(this.lives, 5));
     const target = this.currentWaveSpec.targetPercent;
     const areaLabel = 'ALAN ';
-    const areaVal = `${Math.floor(this.claimedPercent)}% / ${target}%`;
+    const areaVal = `${Math.floor(this.claimedPercent)}%/${target}%`;
     const shieldLabel = 'KALKAN ';
     const shieldVal = String(this.ship.getShieldUnits()).padStart(3, '0');
 
     const gap = 0.4;
-    let sc = 2.45;
+    let sc = 2.68;
     const shipStep = 28;
     const shipsBlockW = Math.max(24, shownLives * shipStep);
     const measureTotal = (s: number): number =>
@@ -2573,19 +2582,19 @@ export class GameEngine {
       measurePixelText(areaVal, s, gap) +
       measurePixelText(shieldLabel, s, gap) +
       measurePixelText(shieldVal, s, gap) +
-      3 * 26;
+      3 * 22;
 
-    const maxInnerW = CANVAS_WIDTH - 54;
+    const maxInnerW = CANVAS_WIDTH - 36;
     const rawW = measureTotal(sc);
     if (rawW > maxInnerW) {
-      sc = Math.max(1.75, sc * (maxInnerW / rawW));
+      sc = Math.max(1.9, sc * (maxInnerW / rawW));
     }
     const finalW = measureTotal(sc);
     const extraSpace = Math.max(0, maxInnerW - finalW);
-    const sepPad = 12 + extraSpace / 6;
+    const sepPad = 10 + extraSpace / 6;
 
     const cy = HUD_BOTTOM_Y + HUD_BOTTOM_HEIGHT * 0.5 + 1;
-    let x = 16;
+    let x = 14;
 
     const drawDivider = (dx: number): void => {
       ctx.fillStyle = '#4A5C80';

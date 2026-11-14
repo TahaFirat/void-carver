@@ -414,6 +414,45 @@ export class PlayerShip {
       ctx.restore();
     }
 
+    // 1B. Subtle Pixel Laser Trajectory Guide when actively cutting forward or arming KES/SPACE
+    if (
+      activePolygon &&
+      ((this.state === 'CUTTING' && !this.isBacktracking) ||
+        (this.state === 'ON_BORDER' && carveArmed))
+    ) {
+      const aimDir =
+        this.state === 'CUTTING'
+          ? this.cutDirection
+          : this.getInwardBorderDirection(activePolygon);
+      if (aimDir) {
+        const { dx, dy } = DIR_VECTORS[aimDir];
+        const navBoxes = this.toNavigatorBoxes();
+        ctx.save();
+        ctx.fillStyle = this.state === 'CUTTING' ? 'rgba(255, 224, 128, 0.36)' : 'rgba(80, 240, 255, 0.42)';
+        for (let dist = 34; dist <= 1200; dist += 20) {
+          const px = Math.round(renderPos.x + dx * dist);
+          const py = Math.round(renderPos.y + dy * dist);
+          const blockedBox = navBoxes.some(
+            (b) =>
+              b.active &&
+              px >= b.x - (b.halfSize + 4) &&
+              px <= b.x + (b.halfSize + 4) &&
+              py >= b.y - (b.halfSize + 4) &&
+              py <= b.y + (b.halfSize + 4)
+          );
+          if (blockedBox) break;
+          if (isPointOnPolygonBoundary({ x: px, y: py }, activePolygon, 3)) {
+            ctx.fillStyle = '#FFF088';
+            ctx.fillRect(px - 4, py - 4, 8, 8);
+            break;
+          }
+          if (!pointInPolygonStrict({ x: px, y: py }, activePolygon)) break;
+          ctx.fillRect(px - 2, py - 2, 4, 4);
+        }
+        ctx.restore();
+      }
+    }
+
     // 2. Mobile Clarity Aid: small pixel chevron showing valid inward entry on safe border
     if (
       this.state === 'ON_BORDER' &&

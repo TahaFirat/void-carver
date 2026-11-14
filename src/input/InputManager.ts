@@ -53,7 +53,9 @@ export class InputManager {
 
     // Priority: active touch -> most recent keyboard direction (`Last-Key-Wins`) -> gamepad
     const direction: Direction | null = touchSnap.direction ?? kbDir ?? gpSnap.direction;
-    const secondaryDirection: Direction | null = usingTouch ? null : kbSecondaryDir;
+    const secondaryDirection: Direction | null = usingTouch
+      ? touchSnap.secondaryDirection
+      : kbSecondaryDir;
 
     // V7 Law 1 & PC Keyboard Purity:
     // Bare keyboard directional keys NEVER set `carveHeld`!

@@ -155,8 +155,8 @@ export class LayerRenderer {
       }
     }
 
-    // 4 Corner Joint Blocks (12x12 arcade px each, matching 01-hedef-oynanis.jpg corners!)
-    const cSize = 12;
+    // 4 Corner Joint Blocks (scaled cleanly to bezelNative so zero playfield pixels are covered!)
+    const cSize = Math.min(12, bezelNative + 3);
     const corners = [
       [0, 0],
       [fw - cSize, 0],
@@ -166,15 +166,16 @@ export class LayerRenderer {
     for (const [cx, cy] of corners) {
       fillRectPx(s, cx, cy, cSize, cSize, cGoldMid);
       strokeRectPx(s, cx, cy, cSize, cSize, cBlack);
-      fillRectPx(s, cx + 1, cy + 1, cSize - 2, 2, cGoldLight);
-      fillRectPx(s, cx + 1, cy + 1, 2, cSize - 2, cGoldLight);
-      fillRectPx(s, cx + 2, cy + cSize - 3, cSize - 3, 2, cGoldDeep);
-      fillRectPx(s, cx + cSize - 3, cy + 2, 2, cSize - 3, cGoldDeep);
+      fillRectPx(s, cx + 1, cy + 1, cSize - 2, 1, cGoldLight);
+      fillRectPx(s, cx + 1, cy + 1, 1, cSize - 2, cGoldLight);
+      fillRectPx(s, cx + 1, cy + cSize - 2, cSize - 2, 1, cGoldDeep);
+      fillRectPx(s, cx + cSize - 2, cy + 1, 1, cSize - 2, cGoldDeep);
       // Inner steel corner plate
-      fillRectPx(s, cx + 3, cy + 3, 6, 6, cSteelMid);
-      strokeRectPx(s, cx + 3, cy + 3, 6, 6, cBlack);
-      fillRectPx(s, cx + 4, cy + 4, 2, 2, cSteelLight);
-      fillRectPx(s, cx + 6, cy + 6, 2, 2, cSteelDark);
+      const pOff = Math.floor((cSize - 5) * 0.5);
+      fillRectPx(s, cx + pOff, cy + pOff, 5, 5, cSteelMid);
+      strokeRectPx(s, cx + pOff, cy + pOff, 5, 5, cBlack);
+      fillRectPx(s, cx + pOff + 1, cy + pOff + 1, 2, 2, cSteelLight);
+      fillRectPx(s, cx + pOff + 2, cy + pOff + 2, 2, 2, cSteelDark);
     }
 
     return commitPixelSurface(s);
@@ -316,15 +317,15 @@ export class LayerRenderer {
 
       ctx.save();
       if (isHoriz) {
-        const shiftY = yMin <= 2 ? -13 : 13;
+        const shiftY = yMin <= 2 ? -9 : 9;
         ctx.translate(xMin, yMin + shiftY);
       } else {
-        const shiftX = xMin <= 2 ? -13 : 13;
+        const shiftX = xMin <= 2 ? -9 : 9;
         ctx.translate(xMin + shiftX, yMin);
         ctx.rotate(Math.PI * 0.5);
       }
 
-      const barH = 22;
+      const barH = 16;
       ctx.fillStyle = '#080810';
       ctx.fillRect(-2, -barH * 0.5 - 2, len + 4, barH + 4);
 

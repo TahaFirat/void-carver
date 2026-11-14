@@ -14,6 +14,7 @@ import { TouchGestureEngine, TouchVisualState } from './TouchGestureEngine';
 
 export interface TouchSnapshot {
   direction: Direction | null;
+  secondaryDirection: Direction | null;
   /** True when the active scheme permits launching into the arena (`KES` pressed or `SINGLE_HAND_DRAG` active). */
   cutAllowed: boolean;
 }
@@ -30,7 +31,7 @@ export interface TouchSnapshot {
  */
 export class TouchControls {
   public readonly gesture = new TouchGestureEngine();
-  private controlMode: ControlMode = 'CLASSIC_ARCADE';
+  private controlMode: ControlMode = 'JOYSTICK_KES';
   private joystickSide: JoystickSide = 'LEFT';
   private onSwapSideCallback: (() => void) | null = null;
   private onGearTapCallback: (() => void) | null = null;
@@ -153,6 +154,7 @@ export class TouchControls {
     this.gesture.tick(nowMs);
     return {
       direction: this.gesture.getDirection(),
+      secondaryDirection: this.gesture.getSecondaryDirection(),
       cutAllowed: this.gesture.isCutAllowed(nowMs)
     };
   }
@@ -283,37 +285,84 @@ export class TouchControls {
   ): void {
     const cx = Math.round(vis.padCenterX / cssScale);
     const cy = Math.round(vis.padCenterY / cssScale);
-    const radius = Math.round(52 / cssScale);
+    const radius = Math.round(60 / cssScale);
     const thumbX = Math.round(vis.knobX / cssScale);
     const thumbY = Math.round(vis.knobY / cssScale);
 
+    // 1. Deep outer housing ring
     ctx.beginPath();
-    ctx.arc(cx, cy, radius + 8, 0, Math.PI * 2);
-    ctx.fillStyle = '#04060B';
+    ctx.arc(cx, cy, radius + 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#03050B';
     ctx.fill();
-    ctx.strokeStyle = vis.active ? '#4A6288' : '#30405C';
+    ctx.strokeStyle = vis.active ? '#5874A2' : '#30405C';
     ctx.lineWidth = 4;
     ctx.stroke();
+
+    // 2. Main 4-way magnetic track circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#0B1322';
+    ctx.fill();
+
+    // 3. Illuminated 90° active quadrant arc (`Sanwa 4-Way Gate` visual feedback)
+    if (vis.direction) {
+      let midAngle = 0;
+      if (vis.direction === 'UP') midAngle = -Math.PI * 0.5;
+      else if (vis.direction === 'DOWN') midAngle = Math.PI * 0.5;
+      else if (vis.direction === 'LEFT') midAngle = Math.PI;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius - 3, midAngle - Math.PI * 0.23, midAngle + Math.PI * 0.23);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255, 224, 104, 0.16)';
+      ctx.fill();
+      ctx.restore();
+    }
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#0E1728';
-    ctx.fill();
-    ctx.strokeStyle = vis.direction ? litColor : '#6C82A4';
-    ctx.lineWidth = 4;
+    ctx.strokeStyle = vis.direction ? litColor : '#6C84A8';
+    ctx.lineWidth = 4.5;
     ctx.stroke();
 
-    const knobRadius = Math.round(radius * 0.42);
+    // 4. Four cardinal notch arrows on outer ring (`▲ ▼ ◄ ►`)
+    const arrowOffset = Math.round(radius * 0.72);
+    const arrowU = Math.max(3, Math.round(radius * 0.036));
+    this.drawPixelBlockArrow(ctx, cx, cy - arrowOffset, 'UP', vis.direction === 'UP', arrowU, litColor);
+    this.drawPixelBlockArrow(ctx, cx, cy + arrowOffset, 'DOWN', vis.direction === 'DOWN', arrowU, litColor);
+    this.drawPixelBlockArrow(ctx, cx - arrowOffset, cy, 'LEFT', vis.direction === 'LEFT', arrowU, litColor);
+    this.drawPixelBlockArrow(ctx, cx + arrowOffset, cy, 'RIGHT', vis.direction === 'RIGHT', arrowU, litColor);
+
+    // 5. Center Neutral Brake Pocket (`0px` stop pocket)
+    const brakeR = Math.max(14, Math.round(radius * 0.24));
     ctx.beginPath();
-    ctx.arc(thumbX, thumbY + 5, knobRadius + 2, 0, Math.PI * 2);
+    ctx.arc(cx, cy, brakeR, 0, Math.PI * 2);
+    ctx.fillStyle = '#060A14';
+    ctx.fill();
+    ctx.strokeStyle = vis.active && !vis.direction ? '#50F0FF' : '#263650';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // 6. 3D Tactile Inner Ball (`Thumb Knob`)
+    const knobRadius = Math.round(radius * 0.36);
+    ctx.beginPath();
+    ctx.arc(thumbX, thumbY + 5, knobRadius + 3, 0, Math.PI * 2);
     ctx.fillStyle = '#03050A';
     ctx.fill();
 
     ctx.beginPath();
     ctx.arc(thumbX, thumbY, knobRadius, 0, Math.PI * 2);
-    ctx.fillStyle = vis.direction ? litColor : '#5E7494';
+    ctx.fillStyle = vis.direction ? litColor : vis.active ? '#7E96BA' : '#586E90';
     ctx.fill();
-    ctx.strokeStyle = '#EAF2FF';
+    ctx.strokeStyle = '#F4F8FF';
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+
+    // Specular highlight arc on inner ball
+    ctx.beginPath();
+    ctx.arc(thumbX, thumbY, Math.max(4, knobRadius - 6), -Math.PI * 0.78, -Math.PI * 0.22);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
     ctx.lineWidth = 3.5;
     ctx.stroke();
   }
@@ -385,31 +434,31 @@ export class TouchControls {
     if (vis.cutBtnCenterX < 0) return;
     const cx = Math.round(vis.cutBtnCenterX / cssScale);
     const cy = Math.round(vis.cutBtnCenterY / cssScale);
-    const r = Math.round(46 / cssScale);
+    const r = Math.round(52 / cssScale);
     const pressed = vis.cutPressed || shipCutting;
 
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 8, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r + 9, 0, Math.PI * 2);
     ctx.fillStyle = '#04060C';
     ctx.fill();
 
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = pressed ? '#EE2E1C' : '#9C1822';
+    ctx.fillStyle = pressed ? '#F2321E' : '#A81822';
     ctx.fill();
-    ctx.strokeStyle = pressed ? '#FFF290' : '#F0B030';
-    ctx.lineWidth = 5;
+    ctx.strokeStyle = pressed ? '#FFF498' : '#F4B632';
+    ctx.lineWidth = 5.5;
     ctx.stroke();
 
     // Crisp arcade highlight arc
     ctx.beginPath();
-    ctx.arc(cx, cy, r - 6, -Math.PI * 0.78, -Math.PI * 0.22);
-    ctx.strokeStyle = 'rgba(255, 232, 188, 0.48)';
+    ctx.arc(cx, cy, r - 7, -Math.PI * 0.78, -Math.PI * 0.22);
+    ctx.strokeStyle = 'rgba(255, 236, 196, 0.52)';
     ctx.lineWidth = 4;
     ctx.stroke();
 
     drawPixelText(ctx, 'KES', cx, cy, {
-      scale: 3.8,
+      scale: 4.1,
       tone: 'white',
       align: 'center'
     });

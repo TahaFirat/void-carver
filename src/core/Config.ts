@@ -17,26 +17,26 @@ export const PIXEL_SCALE = 3;
 export const NATIVE_PIXEL_W = 270;
 export const NATIVE_PIXEL_H = 360;
 
-// Clean V4 Screen Zones inside 900x1600 virtual canvas (matches 01-hedef-oynanis.jpg):
-// - Top Score Bar (`SKOR` / `REKOR` / `❚❚`): y = 0..86
-// - Gold-Silver 3D Pixel Frame Outer Bezel: x = 21..879, y = 92..1220 (24px frame)
-// - Inner Playfield (`810 x 1080` = `270 x 360` @ 3x): x = 45..855, y = 116..1196
-// - Two-Line Status Strip (level/lives + area/shield): y = 1224..1302
-// - Mobile Joystick Deck (drag joystick + automatic cut hint): y = 1308..1600
-export const HUD_TOP_HEIGHT = 86;
-export const FRAME_BEZEL_PX = 24;
-export const ARENA_VIEW_SCALE = 0.9;
-export const ARENA_VIEW_WIDTH = NATIVE_PIXEL_W * PIXEL_SCALE; // 810
-export const ARENA_VIEW_HEIGHT = NATIVE_PIXEL_H * PIXEL_SCALE; // 1080
-export const ARENA_VIEW_X = (CANVAS_WIDTH - ARENA_VIEW_WIDTH) / 2; // 45
-export const ARENA_VIEW_Y = 116;
-export const MIDDLE_ZONE_Y = ARENA_VIEW_Y - FRAME_BEZEL_PX; // 92
-export const MIDDLE_ZONE_HEIGHT = ARENA_VIEW_HEIGHT + FRAME_BEZEL_PX * 2; // 1128
+// Clean V8 Full-Width Screen Zones inside 900-wide virtual canvas:
+// - Top Score + Boss Vitality Header (`SKOR` / `REKOR` / `❚❚` + `BOSS` bar): y = 0..116 (0% arena occlusion!)
+// - Gold-Silver 3D Pixel Frame Outer Bezel: x = 0..900, y = 118..1306 (18px frame, 100% edge-to-edge width!)
+// - Inner Playfield (`864 x 1152` = `0.96x` of `900 x 1200`): x = 18..882, y = 136..1288
+// - Single-Line Bold Status Strip (`KOLAY • DALGA` | ships | `ALAN` | `KALKAN`): y = 1310..1374
+// - Ergonomic Mobile Control Deck (Magnetic Follow-Joystick + `KES`): y = 1380..bottom
+export const HUD_TOP_HEIGHT = 116;
+export const FRAME_BEZEL_PX = 18;
+export const ARENA_VIEW_SCALE = 0.96;
+export const ARENA_VIEW_WIDTH = Math.round(ARENA_WIDTH * ARENA_VIEW_SCALE); // 864
+export const ARENA_VIEW_HEIGHT = Math.round(ARENA_HEIGHT * ARENA_VIEW_SCALE); // 1152
+export const ARENA_VIEW_X = (CANVAS_WIDTH - ARENA_VIEW_WIDTH) / 2; // 18
+export const ARENA_VIEW_Y = 136;
+export const MIDDLE_ZONE_Y = ARENA_VIEW_Y - FRAME_BEZEL_PX; // 118
+export const MIDDLE_ZONE_HEIGHT = ARENA_VIEW_HEIGHT + FRAME_BEZEL_PX * 2; // 1188
 export const ARENA_PADDING = ARENA_VIEW_X;
-export const HUD_BOTTOM_Y = 1226;
-export const HUD_BOTTOM_HEIGHT = 58;
-export const THUMB_ZONE_Y = 1290;
-export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 310
+export const HUD_BOTTOM_Y = 1310;
+export const HUD_BOTTOM_HEIGHT = 64;
+export const THUMB_ZONE_Y = 1380;
+export const THUMB_ZONE_HEIGHT = Math.max(220, CANVAS_HEIGHT - THUMB_ZONE_Y);
 
 // Geometry & fixed-timestep physics invariants
 export const GRID_STEP = 2;

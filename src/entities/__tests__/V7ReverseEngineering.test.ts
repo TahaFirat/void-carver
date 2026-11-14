@@ -407,4 +407,41 @@ describe('V7 1989 Arcade Reverse-Engineering Acceptance Suite', () => {
     expect(blinkingBox.isFlickeringWarning(3.6)).toBe(true);
     expect(blinkingBox.isMaterialized(4.5)).toBe(false);
   });
+
+  it('RULE 6 (Mastered Magnetic Circle+Ball Joystick + KES): Zero-Jump origin, Dynamic Follow Leash instant turn, Hysteresis anti-wobble & Diagonal Border Glide', () => {
+    const gesture = new TouchGestureEngine();
+    gesture.configure('JOYSTICK_KES', 'LEFT');
+    gesture.updateViewportBounds(393, 852, 620);
+
+    // 1. Touch-Origin Centering: landing off-center in left half causes ZERO random initial jump!
+    gesture.handleTouchStart(10, 74, 710, 100);
+    expect(gesture.getDirection()).toBeNull();
+
+    // 2. Slide 50px RIGHT -> Follow Leash caps pivot 26px behind thumb & locks RIGHT
+    gesture.handleTouchMove(10, 124, 710, 116);
+    expect(gesture.getDirection()).toBe('RIGHT');
+
+    // 3. Slight vertical thumb wobble (+14px = ~28°) stays locked to RIGHT thanks to Magnetic Hysteresis!
+    gesture.handleTouchMove(10, 124, 696, 132);
+    expect(gesture.getDirection()).toBe('RIGHT');
+    // Yet secondary axis is exposed so safe-border corners glide like PC W+D!
+    expect(gesture.getSecondaryDirection()).toBe('UP');
+
+    // 4. Intentional 90° UP turn from full-right extension requires zero 44px backtrack!
+    gesture.handleTouchMove(10, 116, 672, 148);
+    expect(gesture.getDirection()).toBe('UP');
+
+    // 5. Blind right-thumb tap anywhere in right half of deck latches KES (`Mobile SPACE`)!
+    gesture.handleTouchStart(11, 310, 735, 150);
+    expect(gesture.isCutAllowed(160)).toBe(true);
+    gesture.handleTouchEnd(11);
+    // Pre-press buffer keeps cut ready briefly (~360ms) so simultaneous/slightly-early taps never miss!
+    expect(gesture.isCutAllowed(260)).toBe(true);
+    expect(gesture.isCutAllowed(600)).toBe(false);
+
+    // 6. Release thumb -> 0ms instant stop!
+    gesture.handleTouchEnd(10);
+    expect(gesture.getDirection()).toBeNull();
+    expect(gesture.getSecondaryDirection()).toBeNull();
+  });
 });
