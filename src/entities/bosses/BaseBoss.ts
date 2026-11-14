@@ -6,6 +6,7 @@ import {
   resolvePolygonPenetration
 } from '../../geometry/PolygonMath';
 import { Point } from '../../geometry/Types';
+import type { BossSpeciesId, EliteMutationAffix } from '../../levels/EncounterDeck';
 import type { BossCombatPhase, BossPhaseBehavior } from '../../levels/EndlessBossDirector';
 import {
   blitArenaPixelSprite,
@@ -15,6 +16,7 @@ import {
   hexToU32,
   setPx
 } from '../../rendering/PixelArtEngine';
+import type { ArenaHazardManager } from '../ArenaHazards';
 import { InteriorMinion } from '../enemies/BaseMinion';
 import { ProjectileManager } from '../Projectiles';
 
@@ -33,7 +35,19 @@ export type BossArchetype =
   | 'OPTIC_NERVE'
   | 'ALIEN_BRAIN'
   | 'TITAN_CORE'
-  | 'TWIN_NEXUS';
+  | 'TWIN_NEXUS'
+  | 'IRON_CRUSTACEAN'
+  | 'SNIPER_SCARAB'
+  | 'SPIRAL_NAUTILUS'
+  | 'MAGMA_SERPENT'
+  | 'MECHA_TARANTULA'
+  | 'HIVE_CARRIER'
+  | 'MIRROR_PRISM'
+  | 'ELECTRIC_MEDUSA'
+  | 'GRAVITY_GOLEM'
+  | 'HYDRA_BIO_HEAD'
+  | 'SAWBLADE_JUGGERNAUT'
+  | 'CHRONO_SPHINX';
 
 export type BossAimMode = 'FIXED_SPREAD' | 'DIRECT_AIM' | 'PREDICTIVE_LEAD_AIM';
 
@@ -51,6 +65,8 @@ export interface BossUpdateContext {
   projectiles: ProjectileManager;
   summonMinion: (minion: InteriorMinion) => void;
   spawnSolidObstacle?: (pos: Point) => void;
+  spawnEscortBoss?: (escort: BaseBoss) => void;
+  hazards?: ArenaHazardManager;
   currentMinionCount: number;
 }
 
@@ -128,12 +144,18 @@ export abstract class BaseBoss {
   public alive = true;
   public crushedInPocket = false;
   public isEscort = false;
+  public speciesId?: BossSpeciesId;
+  public eliteMutation: EliteMutationAffix = 'NONE';
+  public armorDamageReduction = 0;
+  public cloneVisualScale = 1.0;
 
   public combatPhase: BossCombatPhase = 1;
   public phaseBehavior: BossPhaseBehavior | null = null;
   protected orbitBladeAngle = 0;
   protected moltenTrailTimer = 1.1;
   protected spiralPhaseAngle = 0;
+  protected eliteWakeTimer = 1.35;
+  protected eliteFrenzyTimer = 0;
   private lastKnownPolygon: readonly Point[] = [];
 
   public abstract readonly archetype: BossArchetype;
@@ -174,9 +196,11 @@ export abstract class BaseBoss {
 
   public takeCannonHit(): boolean {
     if (!this.alive) return false;
-    this.hp = Math.max(0, this.hp - 1);
+    const dmg = Math.max(0.15, 1 - this.armorDamageReduction);
+    this.hp = Math.max(0, +(this.hp - dmg).toFixed(2));
     this.hitFlash = 0.09;
-    if (this.hp <= 0) {
+    if (this.hp <= 0.01) {
+      this.hp = 0;
       this.alive = false;
       return true;
     }
@@ -274,7 +298,7 @@ export abstract class BaseBoss {
     }
 
     this.renderScale += (targetScale - this.renderScale) * blend;
-    this.boundingRadius = this.baseRadius * this.renderScale;
+    this.boundingRadius = this.baseRadius * this.renderScale * this.cloneVisualScale;
     this.pinballSpeedBoost = 1 + (1 - this.renderScale) * 1.15;
     return corridorWidth;
   }
@@ -313,7 +337,25 @@ export abstract class BaseBoss {
       : this.enraged
         ? 1.12
         : 1.0;
-    const effectiveSpeedScale = bctx.speedScale * phaseMult * this.pinballSpeedBoost;
+    let frenzyMult = 1.0;
+    if (this.eliteMutation === 'FRENZY_PULSE') {
+      this.eliteFrenzyTimer = (this.eliteFrenzyTimer + bctx.dt) % 5.0;
+      if (this.eliteFrenzyTimer >= 3.4) {
+        frenzyMult = 1.45;
+      }
+    }
+    const effectiveSpeedScale = bctx.speedScale * phaseMult * this.pinballSpeedBoost * frenzyMult;
+
+    if (this.eliteMutation === 'MAGMA_WAKE') {
+      this.eliteWakeTimer -= bctx.dt;
+      if (this.eliteWakeTimer <= 0) {
+        this.eliteWakeTimer = 1.35;
+        const dPlayer = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
+        if (dPlayer >= 90 && pointInPolygonStrict({ x: this.x, y: this.y }, bctx.activePolygon)) {
+          bctx.hazards?.spawnMagmaPool({ x: this.x, y: this.y }, 2.6, 20);
+        }
+      }
+    }
 
     this.orbitBladeAngle += bctx.dt * (this.combatPhase >= 3 ? 4.4 : 3.0);
 
@@ -393,17 +435,20 @@ export abstract class BaseBoss {
     color: string,
     radius = 5.5,
     homingTurnRate = 0,
-    lifeLeftSec = -1
+    lifeLeftSec = -1,
+    bouncesLeft = 0
   ): void {
+    const overclock = this.eliteMutation === 'SNIPER_OVERCLOCK' ? 1.28 : 1.0;
     bctx.projectiles.spawnEnemyBullet(
       { x: this.x, y: this.y },
-      vx,
-      vy,
+      vx * overclock,
+      vy * overclock,
       color,
       radius,
       homingTurnRate,
       lifeLeftSec,
-      true
+      true,
+      bouncesLeft
     );
   }
 
@@ -600,7 +645,8 @@ export abstract class BaseBoss {
     const ratio = this.hp / this.maxHp;
     const fillCol = ratio > 0.5 ? '#28E038' : ratio > 0.25 ? '#FFD030' : '#FF3020';
     ctx.fillStyle = fillCol;
-    for (let i = 0; i < this.hp; i++) {
+    const visibleSegs = Math.ceil(this.hp);
+    for (let i = 0; i < visibleSegs; i++) {
       ctx.fillRect(Math.round(bx + i * (segW + segGap)), by, Math.max(1, Math.round(segW)), barH);
     }
     ctx.restore();

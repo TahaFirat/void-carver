@@ -1,5 +1,8 @@
 import { projectPointToPolyline, resolvePolygonPenetration } from '../../geometry/PolygonMath';
+import { SolidRect } from '../../geometry/SolidBoxes';
 import { Point } from '../../geometry/Types';
+import type { MinionSpeciesId } from '../../levels/EncounterDeck';
+import type { ArenaHazardManager } from '../ArenaHazards';
 import { ProjectileManager } from '../Projectiles';
 
 export type MinionKind =
@@ -9,7 +12,16 @@ export type MinionKind =
   | 'SHARD'
   | 'SWARMER'
   | 'MISSILE'
-  | 'SAWBLADE';
+  | 'SAWBLADE'
+  | 'TURRET'
+  | 'SPARK_CRAB'
+  | 'SHIELD_SAPPER'
+  | 'MINE_DRONE'
+  | 'CHARGER'
+  | 'GHOST'
+  | 'SATELLITE'
+  | 'BARNACLE'
+  | 'SPORE';
 
 export interface MinionContext {
   dt: number;
@@ -28,6 +40,11 @@ export interface MinionContext {
   projectiles: ProjectileManager;
   spawnChildMinion: (child: InteriorMinion) => void;
   currentMinionCount: number;
+  bossCenter?: Point;
+  hazards?: ArenaHazardManager;
+  solidBoxes?: readonly SolidRect[];
+  waveElapsedSec?: number;
+  crawlerDelaySec?: number;
 }
 
 export abstract class InteriorMinion {
@@ -41,6 +58,12 @@ export abstract class InteriorMinion {
   public alive = true;
   public isSwarmAggro = false;
   public currentSpeed = 0;
+  public speciesId?: MinionSpeciesId;
+  public ignoresSolidBoxes = false;
+  public isLatchedToBorder = false;
+  public isBorderSparkActive = false;
+  public isPetrifiedObstacle = false;
+  public explodedOnWall = false;
   public abstract readonly kind: MinionKind;
 
   constructor(pos: Point, vx: number, vy: number, radius: number) {

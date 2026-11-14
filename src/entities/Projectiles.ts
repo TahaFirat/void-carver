@@ -1,5 +1,5 @@
 import { PALETTE } from '../core/Config';
-import { pointInPolygonStrict } from '../geometry/PolygonMath';
+import { pointInPolygonStrict, resolvePolygonPenetration } from '../geometry/PolygonMath';
 import { Direction, DIR_VECTORS, Point } from '../geometry/Types';
 
 export interface PlayerBolt {
@@ -26,6 +26,7 @@ export interface EnemyBullet {
   color: string;
   piercesBorderCheck: boolean;
   ricochets: number;
+  bouncesLeft: number;
   homingTurnRate: number;
   lifeLeftSec: number;
   /** V7 Law 4: True when fired by the Stage Boss (`ZOR` Boss bullets detonate cut lines in `0ms`!). */
@@ -63,6 +64,7 @@ export class ProjectileManager {
         color: PALETTE.CUT_ORANGE,
         piercesBorderCheck: false,
         ricochets: 0,
+        bouncesLeft: 0,
         homingTurnRate: 0,
         lifeLeftSec: -1,
         fromBoss: false
@@ -145,7 +147,8 @@ export class ProjectileManager {
     radius = 6,
     homingTurnRate = 0,
     lifeLeftSec = -1,
-    fromBoss = false
+    fromBoss = false,
+    bouncesLeft = 0
   ): void {
     for (const b of this.enemyBullets) {
       if (!b.active) {
@@ -160,10 +163,29 @@ export class ProjectileManager {
         b.radius = radius;
         b.piercesBorderCheck = false;
         b.ricochets = 0;
+        b.bouncesLeft = bouncesLeft;
         b.homingTurnRate = homingTurnRate;
         b.lifeLeftSec = lifeLeftSec;
         b.fromBoss = fromBoss;
         return;
+      }
+    }
+  }
+
+  public applyGravityCurve(origin: Point, accel: number, dt: number): void {
+    for (const eb of this.enemyBullets) {
+      if (!eb.active) continue;
+      const spd = Math.hypot(eb.vx, eb.vy);
+      if (spd < 20) continue;
+      const dx = origin.x - eb.x;
+      const dy = origin.y - eb.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > 48 && d < 520) {
+        eb.vx += (dx / d) * accel * dt;
+        eb.vy += (dy / d) * accel * dt;
+        const n = Math.hypot(eb.vx, eb.vy) || 1;
+        eb.vx = (eb.vx / n) * spd;
+        eb.vy = (eb.vy / n) * spd;
       }
     }
   }
@@ -215,7 +237,32 @@ export class ProjectileManager {
       eb.x += eb.vx * dt;
       eb.y += eb.vy * dt;
       if (!pointInPolygonStrict({ x: eb.x, y: eb.y }, activePolygon)) {
-        if (eb.piercesBorderCheck) {
+        if (eb.bouncesLeft > 0) {
+          const solved = resolvePolygonPenetration(
+            { x: eb.x, y: eb.y },
+            Math.max(4, eb.radius),
+            activePolygon
+          );
+          if (solved.collidedNormal) {
+            const nx = solved.collidedNormal.x;
+            const ny = solved.collidedNormal.y;
+            const dot = eb.vx * nx + eb.vy * ny;
+            if (dot < 0) {
+              eb.vx -= 2 * dot * nx;
+              eb.vy -= 2 * dot * ny;
+            } else {
+              eb.vx = -eb.vx;
+              eb.vy = -eb.vy;
+            }
+          } else {
+            eb.vx = -eb.vx;
+            eb.vy = -eb.vy;
+          }
+          eb.x = solved.position.x;
+          eb.y = solved.position.y;
+          eb.bouncesLeft -= 1;
+          eb.piercesBorderCheck = false;
+        } else if (eb.piercesBorderCheck) {
           eb.active = false;
         } else {
           eb.piercesBorderCheck = true;

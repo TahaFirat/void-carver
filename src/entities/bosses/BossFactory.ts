@@ -1,6 +1,27 @@
+import { Point } from '../../geometry/Types';
 import { ESCORT_SPAWN } from '../../levels/CampaignGenerator';
-import { EndlessBossArchetype, WaveEncounterSpec } from '../../levels/EndlessBossDirector';
+import { BossSpeciesId, WaveEncounterPlan } from '../../levels/EncounterDeck';
+import {
+  BossPhaseBehavior,
+  EndlessBossArchetype,
+  WaveEncounterSpec
+} from '../../levels/EndlessBossDirector';
 import { BaseBoss, BossArchetype } from './BaseBoss';
+import {
+  ChronoSphinxBoss,
+  ElectricMedusaBoss,
+  GravityGolemBoss,
+  HiveCarrierBoss,
+  HydraBioHeadBoss,
+  IronCrustaceanBoss,
+  MagmaSerpentBoss,
+  MechaTarantulaBoss,
+  MirrorPrismBoss,
+  PhantomMantisBoss,
+  SawbladeJuggernautBoss,
+  SniperScarabBoss,
+  SpiralNautilusBoss
+} from './BestiaryBosses';
 import { CentipedeBoss } from './CentipedeBoss';
 import { TitanCore } from './TitanCore';
 import { TwinNexus } from './TwinNexus';
@@ -16,6 +37,120 @@ import {
   PincerBeetleBoss,
   SniperLadybirdBoss
 } from './VolfiedBosses';
+
+export function instantiateBossBySpeciesId(
+  bossId: BossSpeciesId,
+  spawn: Point,
+  hp: number,
+  hasLateStageEvolution = false
+): BaseBoss[] {
+  switch (bossId) {
+    case 'CENTIPEDE_WYRM': {
+      const variant = hasLateStageEvolution ? 'GOLD' : 'YELLOW_GREEN';
+      const b = new CentipedeBoss(spawn, 12, variant, hp, hasLateStageEvolution);
+      b.speciesId = bossId;
+      return [b];
+    }
+    case 'IRON_CRUSTACEAN':
+      return [new IronCrustaceanBoss(spawn, hp, hasLateStageEvolution)];
+    case 'ALL_DIR_BIO_WHEEL': {
+      const b = new BioWheelBoss(spawn, hp);
+      b.speciesId = bossId;
+      return [b];
+    }
+    case 'SNIPER_SCARAB':
+      return [new SniperScarabBoss(spawn, hp)];
+    case 'PHANTOM_MANTIS':
+      return [new PhantomMantisBoss(spawn, hp)];
+    case 'SEPARATION_TWIN_CORE': {
+      const halfHp = Math.max(4, Math.round(hp * 0.55));
+      const alpha = new TwinNexus({ x: spawn.x - 42, y: spawn.y }, 'ALPHA', halfHp);
+      const omega = new TwinNexus({ x: spawn.x + 42, y: spawn.y }, 'OMEGA', halfHp);
+      alpha.speciesId = bossId;
+      omega.speciesId = bossId;
+      alpha.linkPartner(omega);
+      omega.linkPartner(alpha);
+      return [alpha, omega];
+    }
+    case 'SPIRAL_NAUTILUS':
+      return [new SpiralNautilusBoss(spawn, hp)];
+    case 'MAGMA_SERPENT':
+      return [new MagmaSerpentBoss(spawn, hp)];
+    case 'MECHA_TARANTULA':
+      return [new MechaTarantulaBoss(spawn, hp)];
+    case 'HIVE_CARRIER':
+      return [new HiveCarrierBoss(spawn, hp + 2)];
+    case 'MIRROR_PRISM':
+      return [new MirrorPrismBoss(spawn, hp + 1)];
+    case 'ELECTRIC_MEDUSA':
+      return [new ElectricMedusaBoss(spawn, hp + 1)];
+    case 'GRAVITY_GOLEM':
+      return [new GravityGolemBoss(spawn, hp + 2)];
+    case 'CYBER_TITAN_SKULL': {
+      const b = new CyberSkullBoss(spawn, hp + 2, hasLateStageEvolution);
+      b.speciesId = bossId;
+      return [b];
+    }
+    case 'HYDRA_BIO_HEAD':
+      return [new HydraBioHeadBoss(spawn, hp + 3)];
+    case 'SAWBLADE_JUGGERNAUT':
+      return [new SawbladeJuggernautBoss(spawn, hp + 3)];
+    case 'CHRONO_SPHINX':
+      return [new ChronoSphinxBoss(spawn, hp + 3)];
+    case 'ABYSSAL_OVERMIND': {
+      const b = new AlienBrainBoss(spawn, hp + 4, true);
+      b.speciesId = bossId;
+      return [b];
+    }
+  }
+}
+
+export function createBossesForEncounterPlan(
+  plan: WaveEncounterPlan,
+  phase1Behavior?: BossPhaseBehavior
+): BaseBoss[] {
+  const diffHpBonus = plan.difficulty === 'HARD' ? 3 : plan.difficulty === 'MEDIUM' ? 1 : 0;
+  const hp = Math.max(6, Math.round(6 + plan.waveNumber * 0.65 + diffHpBonus));
+  const primary = instantiateBossBySpeciesId(
+    plan.bossId,
+    { x: 450, y: 500 },
+    hp,
+    plan.hasLateStageEvolution
+  );
+
+  for (const b of primary) {
+    b.eliteMutation = plan.eliteMutation;
+    if (phase1Behavior) {
+      b.applyPhaseBehavior(phase1Behavior);
+    }
+  }
+
+  // Elite Mutation `TWIN_CLONE`: spawn a 0.78x clone escort of the same species!
+  if (
+    plan.eliteMutation === 'TWIN_CLONE' &&
+    plan.bossId !== 'SEPARATION_TWIN_CORE' &&
+    plan.bossId !== 'HYDRA_BIO_HEAD'
+  ) {
+    const clones = instantiateBossBySpeciesId(
+      plan.bossId,
+      { x: ESCORT_SPAWN.x, y: ESCORT_SPAWN.y },
+      Math.max(4, Math.round(hp * 0.6)),
+      false
+    );
+    for (const c of clones) {
+      c.isEscort = true;
+      c.cloneVisualScale = 0.78;
+      c.boundingRadius = c.baseRadius * c.cloneVisualScale;
+      c.eliteMutation = plan.eliteMutation;
+      if (phase1Behavior) {
+        c.applyPhaseBehavior(phase1Behavior);
+      }
+      primary.push(c);
+    }
+  }
+
+  return primary;
+}
 
 export function mapEndlessArchetypeToLegacy(arch: EndlessBossArchetype): BossArchetype {
   switch (arch) {
@@ -91,7 +226,10 @@ export function createBossesForEndlessWave(spec: WaveEncounterSpec): BaseBoss[] 
   }
 
   if (spec.isDualBossEncounter && spec.bossArchetype !== 'SEPARATION_TWIN') {
-    const escort = new PinballFrogBoss({ x: ESCORT_SPAWN.x, y: ESCORT_SPAWN.y }, Math.max(4, Math.round(hp * 0.55)));
+    const escort = new PinballFrogBoss(
+      { x: ESCORT_SPAWN.x, y: ESCORT_SPAWN.y },
+      Math.max(4, Math.round(hp * 0.55))
+    );
     escort.isEscort = true;
     escort.applyPhaseBehavior(spec.phases[1]);
     primary.push(escort);
@@ -130,6 +268,9 @@ export function createBossesForLevel(
     case 'LOBSTER_MECHA':
       return [new LobsterMechaBoss({ x: 450, y: 500 }, bossHpOverride ?? 8, tierIndex >= 1)];
 
+    case 'IRON_CRUSTACEAN':
+      return [new IronCrustaceanBoss({ x: 450, y: 500 }, bossHpOverride ?? 8, tierIndex >= 1)];
+
     case 'BIO_WHEEL':
       return [new BioWheelBoss({ x: 450, y: 510 }, bossHpOverride ?? 8)];
 
@@ -139,11 +280,35 @@ export function createBossesForLevel(
     case 'SNIPER_LADYBIRD':
       return [new SniperLadybirdBoss({ x: 450, y: 680 }, bossHpOverride ?? 8)];
 
+    case 'SNIPER_SCARAB':
+      return [new SniperScarabBoss({ x: 450, y: 620 }, bossHpOverride ?? 8)];
+
     case 'PINBALL_FROG':
       return [new PinballFrogBoss({ x: 450, y: 500 }, bossHpOverride ?? 7)];
 
     case 'MANTIS':
       return [new MantisBoss({ x: 450, y: 500 }, bossHpOverride ?? 8, tierIndex >= 2)];
+
+    case 'SPIRAL_NAUTILUS':
+      return [new SpiralNautilusBoss({ x: 450, y: 500 }, bossHpOverride ?? 10)];
+
+    case 'MAGMA_SERPENT':
+      return [new MagmaSerpentBoss({ x: 450, y: 500 }, bossHpOverride ?? 10)];
+
+    case 'MECHA_TARANTULA':
+      return [new MechaTarantulaBoss({ x: 450, y: 500 }, bossHpOverride ?? 10)];
+
+    case 'HIVE_CARRIER':
+      return [new HiveCarrierBoss({ x: 450, y: 500 }, bossHpOverride ?? 12)];
+
+    case 'MIRROR_PRISM':
+      return [new MirrorPrismBoss({ x: 450, y: 500 }, bossHpOverride ?? 11)];
+
+    case 'ELECTRIC_MEDUSA':
+      return [new ElectricMedusaBoss({ x: 450, y: 500 }, bossHpOverride ?? 11)];
+
+    case 'GRAVITY_GOLEM':
+      return [new GravityGolemBoss({ x: 450, y: 500 }, bossHpOverride ?? 12)];
 
     case 'CRUISER_CORE':
     case 'TITAN_CORE':
@@ -166,6 +331,15 @@ export function createBossesForLevel(
 
     case 'CYBER_SKULL':
       return [new CyberSkullBoss({ x: 450, y: 490 }, bossHpOverride ?? 12, tierIndex >= 2)];
+
+    case 'HYDRA_BIO_HEAD':
+      return [new HydraBioHeadBoss({ x: 450, y: 500 }, bossHpOverride ?? 14)];
+
+    case 'SAWBLADE_JUGGERNAUT':
+      return [new SawbladeJuggernautBoss({ x: 450, y: 500 }, bossHpOverride ?? 14)];
+
+    case 'CHRONO_SPHINX':
+      return [new ChronoSphinxBoss({ x: 450, y: 500 }, bossHpOverride ?? 14)];
 
     case 'OPTIC_NERVE':
       return [new OpticNerveBoss({ x: 450, y: 510 }, bossHpOverride ?? 13)];

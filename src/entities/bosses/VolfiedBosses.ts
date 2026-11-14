@@ -162,7 +162,8 @@ export class BioWheelBoss extends BaseBoss {
   }
 
   protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
-    const spd = 182 * speedScale;
+    const pausing = this.ringTimer > 0 && this.ringTimer < 0.38;
+    const spd = (pausing ? 26 : 182) * speedScale;
     const norm = Math.hypot(this.vx, this.vy) || 1;
     this.vx = (this.vx / norm) * spd;
     this.vy = (this.vy / norm) * spd;
@@ -809,7 +810,7 @@ export class AlienBrainBoss extends BaseBoss {
 
     if (
       !this.platesDetached &&
-      (this.combatPhase >= 2 || (this.canDetachPlates && bctx.claimedPercent >= 60))
+      (this.combatPhase >= 2 || (this.canDetachPlates && bctx.claimedPercent >= 55))
     ) {
       this.detachArmorSawBlades(bctx);
     }

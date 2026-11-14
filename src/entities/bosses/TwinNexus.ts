@@ -40,7 +40,7 @@ export class TwinNexus extends BaseBoss {
 
   public get isDocked(): boolean {
     if (!this.partner || !this.partner.alive) return false;
-    return this.cycleTimer % 8.0 < 2.8;
+    return this.cycleTimer % 6.0 < 2.2;
   }
 
   protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
