@@ -145,6 +145,8 @@ export class GameEngine {
   private renderTargetCtx: CanvasRenderingContext2D | null = null;
   private dirHoldDir: InputState['direction'] = null;
   private dirHoldTime = 0;
+  private autoCutArmDir: InputState['direction'] = null;
+  private autoCutArmTimer = 0;
   private boxContactSfxCooldown = 0;
 
   constructor() {
@@ -691,6 +693,9 @@ export class GameEngine {
     if (input.pauseJustPressed) {
       if (this.screen === 'PLAYING') {
         this.screen = 'PAUSED';
+        this.autoCutArmDir = null;
+        this.autoCutArmTimer = 0;
+        this.input.touch.setCutArmProgress(0);
         SoundEngine.stopLaserCutLoop();
         return;
       } else if (this.screen === 'PAUSED') {
@@ -717,6 +722,39 @@ export class GameEngine {
       this.dirHoldDir = input.direction;
       this.dirHoldTime = 0;
     }
+
+    // Require a deliberate inward hold before touch steering starts carving.
+    // The joystick can be touched anywhere in the left dock, so its first drag
+    // direction must never launch a cut immediately.
+    const touchAutoCutRequested = input.autoCarveSwipe;
+    input.autoCarveSwipe = false;
+    if (
+      touchAutoCutRequested &&
+      this.ship.state === 'ON_BORDER' &&
+      input.direction !== null &&
+      input.direction === this.ship.getInwardBorderDirection(this.activePolygon)
+    ) {
+      if (this.autoCutArmDir === input.direction) {
+        this.autoCutArmTimer += dt;
+      } else {
+        this.autoCutArmDir = input.direction;
+        this.autoCutArmTimer = dt;
+      }
+      this.input.touch.setCutArmProgress(this.autoCutArmTimer / 0.26);
+      if (this.autoCutArmTimer < 0.26) {
+        input.direction = null;
+      } else {
+        input.carveHeld = true;
+        this.autoCutArmDir = null;
+        this.autoCutArmTimer = 0;
+        this.input.touch.setCutArmProgress(0);
+      }
+    } else {
+      this.autoCutArmDir = null;
+      this.autoCutArmTimer = 0;
+      this.input.touch.setCutArmProgress(0);
+    }
+
     if (
       save.settings.autoCut &&
       !input.carveHeld &&

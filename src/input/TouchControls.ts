@@ -7,7 +7,7 @@ import { ControlMode } from '../services/StorageService';
 
 export interface TouchSnapshot {
   direction: Direction | null;
-  /** Touch movement always starts a cut when the selected direction points into the arena. */
+  /** Set while a touch pointer is actively steering and can request an automatic cut. */
   carveActive: boolean;
   autoCarveSwipe: boolean;
 }
@@ -15,8 +15,8 @@ export interface TouchSnapshot {
 const HYSTERESIS = 1.18;
 
 /**
- * Mobile-first fixed virtual joystick. Dragging inward from the perimeter automatically
- * starts a cut; no separate carve button or simultaneous thumb is needed. The same
+ * Mobile-first fixed virtual joystick. Deliberately holding inward from the perimeter
+ * automatically starts a cut; no separate carve button or simultaneous thumb is needed. The same
  * orthogonal steering can also be used with a direct arena swipe or keyboard/gamepad.
  */
 export class TouchControls {
@@ -26,6 +26,10 @@ export class TouchControls {
   private joystickDirection: Direction | null = null;
   private joystickThumbX = 0;
   private joystickThumbY = 0;
+  private joystickAnchorX = 0;
+  private joystickAnchorY = 0;
+  private joystickMoved = false;
+  private cutArmProgress = 0;
 
   private swipePointerId: number | null = null;
   private swipeAnchorX = 0;
@@ -33,7 +37,6 @@ export class TouchControls {
   private swipeCurrentX = 0;
   private swipeCurrentY = 0;
   private swipeDirection: Direction | null = null;
-  private swipeMoved = false;
 
   public configure(mode: ControlMode): void {
     if (this.controlMode !== mode) this.reset();
@@ -45,9 +48,12 @@ export class TouchControls {
     this.joystickDirection = null;
     this.joystickThumbX = 0;
     this.joystickThumbY = 0;
+    this.joystickAnchorX = 0;
+    this.joystickAnchorY = 0;
+    this.joystickMoved = false;
+    this.cutArmProgress = 0;
     this.swipePointerId = null;
     this.swipeDirection = null;
-    this.swipeMoved = false;
   }
 
   public handlePointerDown(pointerId: number, vx: number, vy: number, gameplayActive: boolean): boolean {
@@ -55,12 +61,15 @@ export class TouchControls {
     const layout = getLayout();
     const stick = layout.joystick;
     const inStick = Math.hypot(vx - stick.cx, vy - stick.cy) <= stick.radius * 1.45;
-    const inLeftDock = this.isInLeftDock(vx, vy, layout);
 
-    if (this.joystickPointerId === null && (inStick || inLeftDock)) {
+    if (this.joystickPointerId === null && inStick) {
       this.joystickPointerId = pointerId;
-      this.updateJoystickFromPointer(vx, vy, layout);
-      if (this.joystickDirection) NativeBridge.hapticCornerTurn();
+      this.joystickAnchorX = vx;
+      this.joystickAnchorY = vy;
+      this.joystickMoved = false;
+      this.joystickDirection = null;
+      this.joystickThumbX = 0;
+      this.joystickThumbY = 0;
       return true;
     }
 
@@ -72,7 +81,6 @@ export class TouchControls {
       this.swipeAnchorY = vy;
       this.swipeCurrentX = vx;
       this.swipeCurrentY = vy;
-      this.swipeMoved = false;
       if (this.controlMode !== 'SWIPE') this.swipeDirection = null;
       return true;
     }
@@ -82,7 +90,11 @@ export class TouchControls {
 
   public handlePointerMove(pointerId: number, vx: number, vy: number): void {
     if (pointerId === this.joystickPointerId) {
-      this.updateJoystickFromPointer(vx, vy, getLayout());
+      const layout = getLayout();
+      const startDistance = Math.hypot(vx - this.joystickAnchorX, vy - this.joystickAnchorY);
+      if (!this.joystickMoved && startDistance < Math.max(10, layout.joystick.radius * 0.12)) return;
+      this.joystickMoved = true;
+      this.updateJoystickFromPointer(vx, vy, layout);
       return;
     }
 
@@ -97,7 +109,6 @@ export class TouchControls {
           this.swipeDirection = next;
           NativeBridge.hapticCornerTurn();
         }
-        this.swipeMoved = true;
         this.swipeAnchorX = vx;
         this.swipeAnchorY = vy;
       }
@@ -110,12 +121,12 @@ export class TouchControls {
       this.joystickDirection = null;
       this.joystickThumbX = 0;
       this.joystickThumbY = 0;
+      this.joystickMoved = false;
     }
 
     if (pointerId === this.swipePointerId) {
       this.swipePointerId = null;
-      if (this.controlMode !== 'SWIPE' || !this.swipeMoved) this.swipeDirection = null;
-      this.swipeMoved = false;
+      this.swipeDirection = null;
     }
   }
 
@@ -123,36 +134,32 @@ export class TouchControls {
     return this.joystickDirection !== null || this.swipeDirection !== null;
   }
 
+  public setCutArmProgress(progress: number): void {
+    this.cutArmProgress = Math.max(0, Math.min(1, progress));
+  }
+
   public getSnapshot(): TouchSnapshot {
     const direction = this.joystickDirection ?? this.swipeDirection;
     return {
       direction,
-      carveActive: direction !== null,
-      autoCarveSwipe: false
+      carveActive: false,
+      autoCarveSwipe:
+        (this.joystickPointerId !== null && this.joystickDirection !== null) ||
+        (this.swipePointerId !== null && this.swipeDirection !== null)
     };
   }
 
-  private isInLeftDock(x: number, y: number, layout: GameLayout): boolean {
-    if (layout.deckRect && pointInRect(x, y, layout.deckRect)) {
-      return x <= layout.joystick.cx + layout.joystick.radius * 0.8;
-    }
-    if (layout.leftWing && pointInRect(x, y, layout.leftWing)) {
-      return y >= layout.leftWing.y + layout.leftWing.h * 0.35;
-    }
-    return false;
-  }
-
   private updateJoystickFromPointer(vx: number, vy: number, layout: GameLayout): void {
-    const { cx, cy, radius } = layout.joystick;
-    const dx = vx - cx;
-    const dy = vy - cy;
+    const { radius } = layout.joystick;
+    const dx = vx - layout.joystick.cx;
+    const dy = vy - layout.joystick.cy;
     const distance = Math.hypot(dx, dy);
     const travel = radius * 0.54;
     const clamp = distance > travel ? travel / distance : 1;
     this.joystickThumbX = dx * clamp;
     this.joystickThumbY = dy * clamp;
 
-    if (distance < radius * 0.19) {
+    if (distance < Math.max(26, radius * 0.27)) {
       this.joystickDirection = null;
       return;
     }
@@ -218,6 +225,15 @@ export class TouchControls {
     ctx.lineWidth = 3;
     ctx.stroke();
 
+    if (this.cutArmProgress > 0) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius + 17, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * this.cutArmProgress);
+      ctx.strokeStyle = '#FFD76A';
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
     this.drawDirectionTicks(ctx, cx, cy, radius * 0.78, litColor);
 
     const thumbX = cx + (this.joystickPointerId === null ? 0 : this.joystickThumbX);
@@ -240,7 +256,7 @@ export class TouchControls {
     ctx.lineWidth = 5;
     ctx.stroke();
 
-    const hint = this.getAutoCutHint(layout, cy);
+    const hint = this.getAutoCutHint(layout, cy, this.cutArmProgress > 0, shipCutting);
     const hintScale = hint.scale;
     drawPixelText(ctx, hint.top, hint.x, hint.y - hintScale * 7, {
       scale: hintScale,
@@ -278,15 +294,20 @@ export class TouchControls {
     ctx.restore();
   }
 
-  private getAutoCutHint(layout: GameLayout, fallbackY: number): { x: number; y: number; scale: number; top: string; bottom: string } {
+  private getAutoCutHint(
+    layout: GameLayout,
+    fallbackY: number,
+    arming: boolean,
+    cutting: boolean
+  ): { x: number; y: number; scale: number; top: string; bottom: string } {
     if (layout.rightWing) {
       const wing = layout.rightWing;
       return {
         x: wing.x + wing.w * 0.5,
         y: wing.y + wing.h - 105,
         scale: Math.max(1.8, Math.min(2.3, wing.w / 145)),
-        top: 'İÇERİ SÜRÜKLE',
-        bottom: 'KESİM OTOMATİK'
+        top: arming ? 'KESİME HAZIRLAN' : cutting ? 'KESİMDE' : 'İÇERİ SÜRÜKLE',
+        bottom: arming ? 'BIRAK: İPTAL' : cutting ? 'SÜRÜKLE: YÖN' : 'KESİM OTOMATİK'
       };
     }
     const deck = layout.deckRect;
@@ -294,8 +315,8 @@ export class TouchControls {
       x: deck ? deck.x + deck.w * 0.72 : layout.width * 0.72,
       y: fallbackY,
       scale: 2.7,
-      top: 'İÇERİ SÜRÜKLE',
-      bottom: 'KESİM OTOMATİK'
+      top: arming ? 'KESİME HAZIRLAN' : cutting ? 'KESİMDE' : 'İÇERİ SÜRÜKLE',
+      bottom: arming ? 'BIRAK: İPTAL' : cutting ? 'SÜRÜKLE: YÖN' : 'KESİM OTOMATİK'
     };
   }
 
