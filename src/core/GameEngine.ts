@@ -161,10 +161,6 @@ export class GameEngine {
     this.applySavedSettings();
     this.menuRenderer.setSelectedSector(save.unlockedSector);
 
-    this.input.touch.onAutoCutToggle = () => {
-      void this.handleUiAction('TOGGLE_AUTO_CUT');
-    };
-
     SoundEngine.bindAutoUnlock();
     await MonetizationService.prepareAdsIfEnabled();
 
@@ -351,15 +347,12 @@ export class GameEngine {
 
     if (actionId === 'CYCLE_CONTROL_MODE') {
       await StorageService.save((d) => {
-        if (d.settings.controlMode === 'DPAD' && d.settings.carveButtonMode === 'HOLD') {
-          d.settings.controlMode = 'DPAD';
-          d.settings.carveButtonMode = 'TOGGLE';
-        } else if (d.settings.controlMode === 'DPAD' && d.settings.carveButtonMode === 'TOGGLE') {
+        if (d.settings.controlMode === 'DPAD') {
           d.settings.controlMode = 'SWIPE';
-          d.settings.carveButtonMode = 'HOLD';
+        } else if (d.settings.controlMode === 'SWIPE') {
+          d.settings.controlMode = 'KEYBOARD';
         } else {
           d.settings.controlMode = 'DPAD';
-          d.settings.carveButtonMode = 'HOLD';
         }
       });
       this.applySavedSettings();
@@ -1601,7 +1594,7 @@ export class GameEngine {
       ctx.lineWidth = 3;
       ctx.strokeRect(x + 2, y + 2, w - 4, 44);
       drawPixelText(ctx, this.statusToast, x + w * 0.5, y + 24, {
-        scale: 2.5,
+        scale: 3.1,
         tone: 'gold',
         align: 'center'
       });
@@ -1692,7 +1685,7 @@ export class GameEngine {
     const rw = layout.rightWing;
     if (!lw || !rw) return;
 
-    const panelScale = Math.max(2.2, Math.min(4, lw.w / 95));
+    const panelScale = Math.max(2.8, Math.min(4.4, lw.w / 82));
 
     // Left wing info panel
     ctx.save();
@@ -1727,7 +1720,7 @@ export class GameEngine {
     }
 
     // Right wing stats panel
-    const rs = Math.max(2.2, Math.min(4, rw.w / 95));
+    const rs = Math.max(2.8, Math.min(4.4, rw.w / 82));
     const rPanelTop = layout.pauseButton.y + layout.pauseButton.h + 12;
     const rPanelH = rs * 96;
     ctx.fillStyle = '#05070C';
@@ -1850,7 +1843,7 @@ export class GameEngine {
       ctx.lineWidth = 4;
       ctx.strokeRect(250, 535, 400, 96);
       drawPixelText(ctx, stageLabel, 450, 583, {
-        scale: ARENA_PIXEL_SCALE * 1.35,
+        scale: ARENA_PIXEL_SCALE * 1.55,
         tone: 'gold',
         align: 'center'
       });
@@ -1871,18 +1864,18 @@ export class GameEngine {
     ctx.fillStyle = '#03050A';
     ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
 
-    drawPixelText(ctx, 'SKOR', 38, 24, { scale: 2.5, tone: 'silver', align: 'left' });
+    drawPixelText(ctx, 'SKOR', 38, 24, { scale: 3, tone: 'silver', align: 'left' });
     drawPixelText(ctx, String(this.score).padStart(7, '0'), 38, 60, {
-      scale: 3.4,
+      scale: 3.8,
       tone: 'white',
       align: 'left'
     });
 
     const rawBest = this.isEndlessMode ? save.highScoreEndless : save.highScoreCampaign;
     const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rawBest, this.score);
-    drawPixelText(ctx, 'REKOR', CANVAS_WIDTH * 0.5, 24, { scale: 2.5, tone: 'gold', align: 'center' });
+    drawPixelText(ctx, 'REKOR', CANVAS_WIDTH * 0.5, 24, { scale: 3, tone: 'gold', align: 'center' });
     drawPixelText(ctx, String(displayHi).padStart(7, '0'), CANVAS_WIDTH * 0.5, 60, {
-      scale: 3.4,
+      scale: 3.8,
       tone: 'gold',
       align: 'center'
     });
@@ -1890,15 +1883,12 @@ export class GameEngine {
   }
 
   /**
-   * Portrait single-row status strip (legacy `y: 1230..1288`):
-   * `ORTA • BÖLÜM 034` | ships | `68.5% / 82%` | `KALKAN 760`
+   * Portrait two-row status strip: level and lives above area progress and shield.
    */
   private renderBottomArcadeStatusBar(ctx: CanvasRenderingContext2D): void {
     ctx.save();
     const stripX = 18;
     const stripW = CANVAS_WIDTH - 36;
-    const cy = HUD_BOTTOM_Y + HUD_BOTTOM_HEIGHT * 0.5;
-
     ctx.fillStyle = '#04060D';
     ctx.fillRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
     ctx.strokeStyle = '#364460';
@@ -1908,25 +1898,31 @@ export class GameEngine {
     const stage = this.isEndlessMode
       ? this.getStageLabel()
       : `${this.currentLevel.tier} • ${this.getStageLabel()}`;
-    drawPixelText(ctx, stage, 32, cy, { scale: 2.1, tone: 'white', align: 'left' });
+    const stageY = HUD_BOTTOM_Y + 21;
+    const statsY = HUD_BOTTOM_Y + 58;
+    drawPixelText(ctx, stage, 32, stageY, { scale: 2.5, tone: 'white', align: 'left' });
 
     const miniShip = getMiniShipHudSprite();
-    const shownLives = Math.max(0, Math.min(this.lives, 4));
+    const shownLives = Math.max(0, Math.min(this.lives, 5));
     for (let i = 0; i < shownLives; i++) {
-      blitPixelSprite(ctx, miniShip, 312 + i * 26, cy, PIXEL_SCALE);
+      blitPixelSprite(ctx, miniShip, 408 + i * 29, stageY, PIXEL_SCALE);
     }
 
     const target = this.currentLevel.targetPercent;
-    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}%`, 508, cy, {
-      scale: 2.7,
-      tone: this.claimedPercent >= target ? 'green' : 'gold',
-      align: 'center'
+    drawPixelText(ctx, 'ALAN', 32, statsY, {
+      scale: 2.6,
+      tone: 'silver',
+      align: 'left'
     });
-    drawPixelText(ctx, `/ ${target}%`, 612, cy, { scale: 2.0, tone: 'silver', align: 'center' });
+    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}% / ${target}%`, 128, statsY, {
+      scale: 2.8,
+      tone: this.claimedPercent >= target ? 'green' : 'gold',
+      align: 'left'
+    });
 
     const shieldStr = String(this.ship.getShieldUnits()).padStart(3, '0');
-    drawPixelText(ctx, `KALKAN ${shieldStr}`, CANVAS_WIDTH - 30, cy, {
-      scale: 2.1,
+    drawPixelText(ctx, `KALKAN ${shieldStr}`, CANVAS_WIDTH - 30, statsY, {
+      scale: 2.6,
       tone: this.getShieldTone(),
       align: 'right'
     });

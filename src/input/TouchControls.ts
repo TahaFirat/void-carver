@@ -1,48 +1,32 @@
 import { PALETTE } from '../core/Config';
-import { getLayout, GameLayout, pointInRect, Rect } from '../core/ResponsiveLayout';
+import { GameLayout, getLayout, pointInRect } from '../core/ResponsiveLayout';
 import { Direction } from '../geometry/Types';
 import { NativeBridge } from '../native/NativeBridge';
 import { drawPixelText } from '../rendering/PixelArtEngine';
-import { CarveButtonMode, ControlMode } from '../services/StorageService';
+import { ControlMode } from '../services/StorageService';
 
 export interface TouchSnapshot {
   direction: Direction | null;
+  /** Touch movement always starts a cut when the selected direction points into the arena. */
   carveActive: boolean;
   autoCarveSwipe: boolean;
 }
 
-const SWIPE_THRESHOLD = 15;
-const DPAD_DRAG_THRESHOLD = 10;
 const HYSTERESIS = 1.18;
 
 /**
- * V5 phone & tablet controls (`01-hedef-duvar-kutu-ve-yeni-kontrol.jpg`):
- * - Left: 4 large separated pixel arrow keys (`▲ ▼ ◀ ▶`) in a `+` layout with thumb-slide
- *   support (slide from one key to another without lifting) and a center drag zone.
- *   The pressed key glows GREEN while walking the safe border and ORANGE while cutting.
- * - Right: big `KES` button (hold or toggle) + small `[OTOMATİK]` one-hand switch.
- * - Arena: direct swipe steering is always available.
+ * Mobile-first fixed virtual joystick. Dragging inward from the perimeter automatically
+ * starts a cut; no separate carve button or simultaneous thumb is needed. The same
+ * orthogonal steering can also be used with a direct arena swipe or keyboard/gamepad.
  */
 export class TouchControls {
   private controlMode: ControlMode = 'DPAD';
-  private carveButtonMode: CarveButtonMode = 'HOLD';
-  private autoCut = false;
 
-  // D-Pad state
-  private dpadPointerId: number | null = null;
-  private dpadStartX = 0;
-  private dpadStartY = 0;
-  private dpadDirection: Direction | null = null;
-  private dirHoldTime = 0;
-  private lastReportedDir: Direction | null = null;
+  private joystickPointerId: number | null = null;
+  private joystickDirection: Direction | null = null;
+  private joystickThumbX = 0;
+  private joystickThumbY = 0;
 
-  // `KES` button state
-  private carvePointerId: number | null = null;
-  private carveHeld = false;
-  private carveToggledOn = false;
-  private carveGraceTimer = 0;
-
-  // Direct playfield swipe
   private swipePointerId: number | null = null;
   private swipeAnchorX = 0;
   private swipeAnchorY = 0;
@@ -51,111 +35,36 @@ export class TouchControls {
   private swipeDirection: Direction | null = null;
   private swipeMoved = false;
 
-  /** Engine callback fired when the `[OTOMATİK]` switch is tapped. */
-  public onAutoCutToggle: (() => void) | null = null;
-
-  public configure(mode: ControlMode, carveMode: CarveButtonMode, autoCut = false): void {
-    if (this.controlMode !== mode) {
-      this.reset();
-    }
+  public configure(mode: ControlMode): void {
+    if (this.controlMode !== mode) this.reset();
     this.controlMode = mode;
-    this.carveButtonMode = carveMode;
-    this.autoCut = autoCut;
-    if (carveMode === 'HOLD') {
-      this.carveToggledOn = false;
-    }
   }
 
   public reset(): void {
-    this.dpadPointerId = null;
-    this.dpadDirection = null;
-    this.dirHoldTime = 0;
-    this.lastReportedDir = null;
-    this.carvePointerId = null;
-    this.carveHeld = false;
-    this.carveToggledOn = false;
-    this.carveGraceTimer = 0;
+    this.joystickPointerId = null;
+    this.joystickDirection = null;
+    this.joystickThumbX = 0;
+    this.joystickThumbY = 0;
     this.swipePointerId = null;
     this.swipeDirection = null;
     this.swipeMoved = false;
   }
 
-  public update(dt: number): void {
-    if (this.carveGraceTimer > 0) {
-      this.carveGraceTimer = Math.max(0, this.carveGraceTimer - dt);
-    }
-    const dir = this.dpadDirection ?? this.swipeDirection;
-    if (dir !== null && dir === this.lastReportedDir) {
-      this.dirHoldTime += dt;
-    } else {
-      this.dirHoldTime = 0;
-    }
-    this.lastReportedDir = dir;
-  }
-
-  /** Seconds the current touch direction has been held continuously (for `[OTOMATİK]`). */
-  public getDirectionHoldTime(): number {
-    return this.dirHoldTime;
-  }
-
-  private dpadBounds(layout: GameLayout): Rect {
-    const { cx, cy, button, gap } = layout.dpad;
-    const span = button * 3 + gap * 2;
-    return { x: cx - span * 0.5, y: cy - span * 0.5, w: span, h: span };
-  }
-
   public handlePointerDown(pointerId: number, vx: number, vy: number, gameplayActive: boolean): boolean {
     if (!gameplayActive) return false;
     const layout = getLayout();
+    const stick = layout.joystick;
+    const inStick = Math.hypot(vx - stick.cx, vy - stick.cy) <= stick.radius * 1.45;
+    const inLeftDock = this.isInLeftDock(vx, vy, layout);
 
-    // 1. `[OTOMATİK]` switch
-    if (pointInRect(vx, vy, layout.autoToggle, 12)) {
-      this.onAutoCutToggle?.();
-      NativeBridge.hapticCornerTurn();
+    if (this.joystickPointerId === null && (inStick || inLeftDock)) {
+      this.joystickPointerId = pointerId;
+      this.updateJoystickFromPointer(vx, vy, layout);
+      if (this.joystickDirection) NativeBridge.hapticCornerTurn();
       return true;
     }
 
-    // 2. `KES` button (generous hit area)
-    const inCut = pointInRect(vx, vy, layout.cutButton, 26);
-    const inRightDeck =
-      layout.mode === 'LANDSCAPE_SPLIT'
-        ? layout.rightWing !== null &&
-          pointInRect(vx, vy, layout.rightWing) &&
-          vy > layout.rightWing.y + layout.rightWing.h * 0.5
-        : layout.deckRect !== null &&
-          vy >= layout.deckRect.y &&
-          vx > layout.dpad.cx + (layout.dpad.button * 1.5 + layout.dpad.gap) + 40;
-    if (inCut || inRightDeck) {
-      this.carvePointerId = pointerId;
-      if (this.carveButtonMode === 'TOGGLE') {
-        this.carveToggledOn = !this.carveToggledOn;
-      } else {
-        this.carveHeld = true;
-        this.carveGraceTimer = 0.32;
-      }
-      NativeBridge.hapticCornerTurn();
-      return true;
-    }
-
-    // 3. D-Pad (generous: whole left part of the deck / lower left wing)
-    const bounds = this.dpadBounds(layout);
-    const inDpad = pointInRect(vx, vy, bounds, 30);
-    const inLeftDeck =
-      layout.mode === 'LANDSCAPE_SPLIT'
-        ? layout.leftWing !== null &&
-          pointInRect(vx, vy, layout.leftWing) &&
-          vy > layout.leftWing.y + layout.leftWing.h * 0.35
-        : layout.deckRect !== null && vy >= layout.deckRect.y;
-    if (inDpad || inLeftDeck) {
-      this.dpadPointerId = pointerId;
-      this.dpadStartX = vx;
-      this.dpadStartY = vy;
-      this.dpadDirection = this.resolveDpadDirection(vx, vy, layout, null);
-      if (this.dpadDirection) NativeBridge.hapticCornerTurn();
-      return true;
-    }
-
-    // 4. Direct arena swipe (or full-screen swipe in `KAYDIR` mode)
+    // Optional one-finger arena swipe remains available alongside the joystick.
     const inArena = pointInRect(vx, vy, layout.arenaFrame, 10);
     if ((inArena || this.controlMode === 'SWIPE') && this.swipePointerId === null) {
       this.swipePointerId = pointerId;
@@ -164,9 +73,7 @@ export class TouchControls {
       this.swipeCurrentX = vx;
       this.swipeCurrentY = vy;
       this.swipeMoved = false;
-      if (this.controlMode !== 'SWIPE') {
-        this.swipeDirection = null;
-      }
+      if (this.controlMode !== 'SWIPE') this.swipeDirection = null;
       return true;
     }
 
@@ -174,12 +81,8 @@ export class TouchControls {
   }
 
   public handlePointerMove(pointerId: number, vx: number, vy: number): void {
-    if (pointerId === this.dpadPointerId) {
-      const next = this.resolveDpadDirection(vx, vy, getLayout(), this.dpadDirection);
-      if (next !== this.dpadDirection) {
-        this.dpadDirection = next;
-        if (next) NativeBridge.hapticCornerTurn();
-      }
+    if (pointerId === this.joystickPointerId) {
+      this.updateJoystickFromPointer(vx, vy, getLayout());
       return;
     }
 
@@ -188,10 +91,10 @@ export class TouchControls {
       this.swipeCurrentY = vy;
       const dx = vx - this.swipeAnchorX;
       const dy = vy - this.swipeAnchorY;
-      if (Math.hypot(dx, dy) >= SWIPE_THRESHOLD) {
-        const newDir = this.resolveHysteresisDirection(dx, dy, this.swipeDirection);
-        if (newDir !== this.swipeDirection) {
-          this.swipeDirection = newDir;
+      if (Math.hypot(dx, dy) >= 15) {
+        const next = this.resolveDirection(dx, dy, this.swipeDirection);
+        if (next !== this.swipeDirection) {
+          this.swipeDirection = next;
           NativeBridge.hapticCornerTurn();
         }
         this.swipeMoved = true;
@@ -202,76 +105,66 @@ export class TouchControls {
   }
 
   public handlePointerUp(pointerId: number): void {
-    if (pointerId === this.dpadPointerId) {
-      this.dpadPointerId = null;
-      this.dpadDirection = null;
+    if (pointerId === this.joystickPointerId) {
+      this.joystickPointerId = null;
+      this.joystickDirection = null;
+      this.joystickThumbX = 0;
+      this.joystickThumbY = 0;
     }
-    if (pointerId === this.carvePointerId) {
-      this.carvePointerId = null;
-      if (this.carveHeld) {
-        // 0.24s grace after releasing `KES` so simultaneous thumb flicks still launch a cut
-        this.carveGraceTimer = 0.24;
-      }
-      this.carveHeld = false;
-    }
+
     if (pointerId === this.swipePointerId) {
       this.swipePointerId = null;
-      if (this.controlMode === 'SWIPE') {
-        if (!this.swipeMoved) {
-          this.swipeDirection = null;
-        }
-      } else {
-        this.swipeDirection = null;
-      }
+      if (this.controlMode !== 'SWIPE' || !this.swipeMoved) this.swipeDirection = null;
       this.swipeMoved = false;
     }
   }
 
   public isCarveVisuallyPressed(): boolean {
-    return this.carveButtonMode === 'TOGGLE' ? this.carveToggledOn : this.carveHeld;
+    return this.joystickDirection !== null || this.swipeDirection !== null;
   }
 
   public getSnapshot(): TouchSnapshot {
-    const carveBtnActive =
-      this.carveButtonMode === 'TOGGLE'
-        ? this.carveToggledOn
-        : this.carveHeld || this.carveGraceTimer > 0;
-
-    if (this.dpadDirection !== null) {
-      return { direction: this.dpadDirection, carveActive: carveBtnActive, autoCarveSwipe: false };
-    }
-    if (this.swipeDirection !== null) {
-      return { direction: this.swipeDirection, carveActive: true, autoCarveSwipe: true };
-    }
-    return { direction: null, carveActive: carveBtnActive, autoCarveSwipe: false };
+    const direction = this.joystickDirection ?? this.swipeDirection;
+    return {
+      direction,
+      carveActive: direction !== null,
+      autoCarveSwipe: false
+    };
   }
 
-  /**
-   * Thumb on a key -> that key. Thumb in the center hub -> direction of the drag vector
-   * (>= 10px). Sliding between keys switches instantly; hysteresis prevents diagonal flicker.
-   */
-  private resolveDpadDirection(
-    vx: number,
-    vy: number,
-    layout: GameLayout,
-    current: Direction | null
-  ): Direction | null {
-    const { cx, cy, button } = layout.dpad;
+  private isInLeftDock(x: number, y: number, layout: GameLayout): boolean {
+    if (layout.deckRect && pointInRect(x, y, layout.deckRect)) {
+      return x <= layout.joystick.cx + layout.joystick.radius * 0.8;
+    }
+    if (layout.leftWing && pointInRect(x, y, layout.leftWing)) {
+      return y >= layout.leftWing.y + layout.leftWing.h * 0.35;
+    }
+    return false;
+  }
+
+  private updateJoystickFromPointer(vx: number, vy: number, layout: GameLayout): void {
+    const { cx, cy, radius } = layout.joystick;
     const dx = vx - cx;
     const dy = vy - cy;
-    const hub = button * 0.5;
-    if (Math.abs(dx) <= hub && Math.abs(dy) <= hub) {
-      const ddx = vx - this.dpadStartX;
-      const ddy = vy - this.dpadStartY;
-      if (Math.hypot(ddx, ddy) < DPAD_DRAG_THRESHOLD) {
-        return current;
-      }
-      return this.resolveHysteresisDirection(ddx, ddy, current);
+    const distance = Math.hypot(dx, dy);
+    const travel = radius * 0.54;
+    const clamp = distance > travel ? travel / distance : 1;
+    this.joystickThumbX = dx * clamp;
+    this.joystickThumbY = dy * clamp;
+
+    if (distance < radius * 0.19) {
+      this.joystickDirection = null;
+      return;
     }
-    return this.resolveHysteresisDirection(dx, dy, current);
+
+    const next = this.resolveDirection(dx, dy, this.joystickDirection);
+    if (next !== this.joystickDirection) {
+      this.joystickDirection = next;
+      NativeBridge.hapticCornerTurn();
+    }
   }
 
-  private resolveHysteresisDirection(dx: number, dy: number, current: Direction | null): Direction {
+  private resolveDirection(dx: number, dy: number, current: Direction | null): Direction {
     const ax = Math.abs(dx);
     const ay = Math.abs(dy);
     if (current === 'LEFT' || current === 'RIGHT') {
@@ -285,13 +178,15 @@ export class TouchControls {
     return ax >= ay ? (dx > 0 ? 'RIGHT' : 'LEFT') : dy > 0 ? 'DOWN' : 'UP';
   }
 
-  // ==========================================================================
-  // RENDERING
-  // ==========================================================================
+  // ---------------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------------
   public renderControls(ctx: CanvasRenderingContext2D, shipCutting: boolean): void {
     const layout = getLayout();
-    ctx.save();
+    const { cx, cy, radius } = layout.joystick;
+    const litColor = shipCutting ? PALETTE.CUT_ORANGE : PALETTE.SAFE_GREEN;
 
+    ctx.save();
     if (layout.deckRect) {
       const d = layout.deckRect;
       ctx.fillStyle = '#0A0D16';
@@ -300,138 +195,139 @@ export class TouchControls {
       ctx.fillRect(d.x, d.y, d.w, 3);
     }
 
-    const activeDir = this.dpadDirection ?? this.swipeDirection;
-    const litColor = shipCutting ? '#FF8818' : PALETTE.SAFE_GREEN;
-    const { cx, cy, button, gap } = layout.dpad;
-    const step = button + gap;
-
-    // D-pad cross backplate
+    // Recessed circular base and directional ticks.
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius + 9, 0, Math.PI * 2);
     ctx.fillStyle = '#05070C';
-    const plate = button + 16;
-    ctx.fillRect(cx - plate * 0.5, cy - step * 1.5 - 8 + gap * 0.5, plate, step * 3 + 16 - gap);
-    ctx.fillRect(cx - step * 1.5 - 8 + gap * 0.5, cy - plate * 0.5, step * 3 + 16 - gap, plate);
+    ctx.fill();
+    ctx.strokeStyle = '#34445F';
+    ctx.lineWidth = 5;
+    ctx.stroke();
 
-    const keys: Array<[Direction, number, number]> = [
-      ['UP', cx, cy - step],
-      ['DOWN', cx, cy + step],
-      ['LEFT', cx - step, cy],
-      ['RIGHT', cx + step, cy]
-    ];
-    for (const [dir, kx, ky] of keys) {
-      this.drawArrowKey(ctx, kx, ky, button, dir, activeDir === dir, litColor);
-    }
-    // Center hub
-    ctx.fillStyle = '#20283A';
-    ctx.fillRect(cx - button * 0.32, cy - button * 0.32, button * 0.64, button * 0.64);
-    ctx.fillStyle = '#2E384E';
-    ctx.fillRect(cx - button * 0.2, cy - button * 0.2, button * 0.4, button * 0.4);
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#111A2A';
+    ctx.fill();
+    ctx.strokeStyle = this.joystickDirection ? litColor : '#687993';
+    ctx.lineWidth = 4;
+    ctx.stroke();
 
-    this.drawCutButton(ctx, layout.cutButton, this.isCarveVisuallyPressed());
-    this.drawAutoToggle(ctx, layout.autoToggle, this.autoCut);
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.73, 0, Math.PI * 2);
+    ctx.strokeStyle = '#2B3A52';
+    ctx.lineWidth = 3;
+    ctx.stroke();
 
-    // Direct arena drag feedback
+    this.drawDirectionTicks(ctx, cx, cy, radius * 0.78, litColor);
+
+    const thumbX = cx + (this.joystickPointerId === null ? 0 : this.joystickThumbX);
+    const thumbY = cy + (this.joystickPointerId === null ? 0 : this.joystickThumbY);
+    const knobRadius = radius * 0.39;
+    ctx.beginPath();
+    ctx.arc(thumbX, thumbY + 4, knobRadius + 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#03050A';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(thumbX, thumbY, knobRadius, 0, Math.PI * 2);
+    ctx.fillStyle = this.joystickDirection ? litColor : '#54647D';
+    ctx.fill();
+    ctx.strokeStyle = '#D8E5F8';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(thumbX - knobRadius * 0.18, thumbY - knobRadius * 0.2, knobRadius * 0.62, Math.PI * 1.08, Math.PI * 1.92);
+    ctx.strokeStyle = 'rgba(255,255,255,0.58)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    const hint = this.getAutoCutHint(layout, cy);
+    const hintScale = hint.scale;
+    drawPixelText(ctx, hint.top, hint.x, hint.y - hintScale * 7, {
+      scale: hintScale,
+      tone: 'gold',
+      align: 'center'
+    });
+    drawPixelText(ctx, hint.bottom, hint.x, hint.y + hintScale * 8, {
+      scale: hintScale,
+      tone: 'green',
+      align: 'center'
+    });
+
+    drawPixelText(ctx, 'JOYSTICK', cx, cy + radius + 25, {
+      scale: Math.max(2.4, Math.min(3.2, radius / 34)),
+      tone: this.joystickDirection ? 'green' : 'silver',
+      align: 'center'
+    });
+
+    // Direct arena drag feedback for the optional swipe mode.
     if (this.swipePointerId !== null && this.swipeDirection !== null) {
       const sx = Math.round(this.swipeCurrentX);
       const sy = Math.round(this.swipeCurrentY);
       if (pointInRect(sx, sy, layout.arenaFrame)) {
-        ctx.fillStyle = PALETTE.CUT_ORANGE;
-        ctx.fillRect(sx - 6, sy - 6, 12, 12);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 11, 0, Math.PI * 2);
+        ctx.fillStyle = litColor;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(sx - 3, sy - 3, 6, 6);
+        ctx.fill();
       }
     }
 
     ctx.restore();
   }
 
-  private drawArrowKey(
-    ctx: CanvasRenderingContext2D,
-    cx: number,
-    cy: number,
-    size: number,
-    dir: Direction,
-    lit: boolean,
-    litColor: string
-  ): void {
-    const x = Math.round(cx - size * 0.5);
-    const y = Math.round(cy - size * 0.5);
-    const s = Math.round(size);
-    const bevel = Math.max(4, Math.round(s * 0.07));
-
-    ctx.fillStyle = PALETTE.PIXEL_BLACK;
-    ctx.fillRect(x - 3, y - 3, s + 6, s + 6);
-    ctx.fillStyle = lit ? '#FFF2B0' : '#5A6478';
-    ctx.fillRect(x, y, s, s);
-    ctx.fillStyle = lit ? '#8A3C08' : '#1C2230';
-    ctx.fillRect(x + bevel, y + bevel, s - bevel, s - bevel);
-    ctx.fillStyle = lit ? litColor : '#343C50';
-    ctx.fillRect(x + bevel, y + bevel, s - bevel * 2, s - bevel * 2);
-
-    // Pixel chevron arrow
-    const u = Math.max(3, Math.round(s / 16));
-    ctx.fillStyle = lit ? '#FFFFFF' : '#C8D2E4';
-    for (let i = 0; i < 4; i++) {
-      const len = (i * 2 + 1) * u;
-      if (dir === 'UP') {
-        ctx.fillRect(Math.round(cx - len * 0.5), Math.round(cy - 2 * u + i * u), len, u);
-      } else if (dir === 'DOWN') {
-        ctx.fillRect(Math.round(cx - len * 0.5), Math.round(cy + 2 * u - i * u - u), len, u);
-      } else if (dir === 'LEFT') {
-        ctx.fillRect(Math.round(cx - 2 * u + i * u), Math.round(cy - len * 0.5), u, len);
-      } else {
-        ctx.fillRect(Math.round(cx + 2 * u - i * u - u), Math.round(cy - len * 0.5), u, len);
-      }
+  private getAutoCutHint(layout: GameLayout, fallbackY: number): { x: number; y: number; scale: number; top: string; bottom: string } {
+    if (layout.rightWing) {
+      const wing = layout.rightWing;
+      return {
+        x: wing.x + wing.w * 0.5,
+        y: wing.y + wing.h - 105,
+        scale: Math.max(1.8, Math.min(2.3, wing.w / 145)),
+        top: 'İÇERİ SÜRÜKLE',
+        bottom: 'KESİM OTOMATİK'
+      };
     }
+    const deck = layout.deckRect;
+    return {
+      x: deck ? deck.x + deck.w * 0.72 : layout.width * 0.72,
+      y: fallbackY,
+      scale: 2.7,
+      top: 'İÇERİ SÜRÜKLE',
+      bottom: 'KESİM OTOMATİK'
+    };
   }
 
-  private drawCutButton(ctx: CanvasRenderingContext2D, r: Rect, pressed: boolean): void {
-    const x = Math.round(r.x);
-    const y = Math.round(r.y);
-    const w = Math.round(r.w);
-    const h = Math.round(r.h);
-    const press = pressed ? 4 : 0;
-
-    ctx.fillStyle = PALETTE.PIXEL_BLACK;
-    ctx.fillRect(x - 4, y - 4, w + 8, h + 8);
-    // Orange outer frame
-    ctx.fillStyle = pressed ? '#C85A10' : '#FF8818';
-    ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = '#7A3008';
-    ctx.fillRect(x + 8, y + h - 10, w - 8, 10);
-    // Green inner face
-    ctx.fillStyle = PALETTE.PIXEL_BLACK;
-    ctx.fillRect(x + 12, y + 12 + press, w - 24, h - 26);
-    ctx.fillStyle = pressed ? '#148C24' : '#22B834';
-    ctx.fillRect(x + 15, y + 15 + press, w - 30, h - 32);
-    ctx.fillStyle = pressed ? '#1EA830' : '#4CE05C';
-    ctx.fillRect(x + 15, y + 15 + press, w - 30, 8);
-
-    drawPixelText(ctx, 'KES', x + w * 0.5, y + h * 0.5 + press - 2, {
-      scale: Math.max(3, Math.round(h / 28)),
-      tone: 'gold',
-      align: 'center'
-    });
-  }
-
-  private drawAutoToggle(ctx: CanvasRenderingContext2D, r: Rect, on: boolean): void {
-    const x = Math.round(r.x);
-    const y = Math.round(r.y);
-    const h = Math.round(r.h);
-    const pillW = Math.round(h * 1.5);
-
-    ctx.fillStyle = PALETTE.PIXEL_BLACK;
-    ctx.fillRect(x - 2, y - 2, pillW + 4, h + 4);
-    ctx.fillStyle = on ? '#1E8C2C' : '#2A3244';
-    ctx.fillRect(x, y, pillW, h);
-    const knob = h - 10;
-    ctx.fillStyle = on ? '#B8FF98' : '#9AA4B8';
-    ctx.fillRect(on ? x + pillW - knob - 5 : x + 5, y + 5, knob, knob);
-
-    const label = '[OTOMATİK]';
-    drawPixelText(ctx, label, x + pillW + 12, y + h * 0.5, {
-      scale: Math.max(2, Math.round(h / 22)),
-      tone: on ? 'green' : 'silver',
-      align: 'left'
-    });
+  private drawDirectionTicks(ctx: CanvasRenderingContext2D, cx: number, cy: number, distance: number, color: string): void {
+    const ticks: Array<[Direction, number, number]> = [
+      ['UP', 0, -1],
+      ['DOWN', 0, 1],
+      ['LEFT', -1, 0],
+      ['RIGHT', 1, 0]
+    ];
+    for (const [dir, dx, dy] of ticks) {
+      const x = cx + dx * distance;
+      const y = cy + dy * distance;
+      const active = this.joystickDirection === dir;
+      const s = Math.max(7, distance * 0.12);
+      ctx.beginPath();
+      if (dir === 'UP') {
+        ctx.moveTo(x - s, y + s * 0.45); ctx.lineTo(x, y - s * 0.45); ctx.lineTo(x + s, y + s * 0.45);
+      } else if (dir === 'DOWN') {
+        ctx.moveTo(x - s, y - s * 0.45); ctx.lineTo(x, y + s * 0.45); ctx.lineTo(x + s, y - s * 0.45);
+      } else if (dir === 'LEFT') {
+        ctx.moveTo(x + s * 0.45, y - s); ctx.lineTo(x - s * 0.45, y); ctx.lineTo(x + s * 0.45, y + s);
+      } else {
+        ctx.moveTo(x - s * 0.45, y - s); ctx.lineTo(x + s * 0.45, y); ctx.lineTo(x - s * 0.45, y + s);
+      }
+      ctx.strokeStyle = active ? '#FFFFFF' : color;
+      ctx.globalAlpha = active ? 1 : 0.7;
+      ctx.lineWidth = active ? 6 : 4;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 }

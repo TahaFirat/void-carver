@@ -813,6 +813,10 @@ export class MenuRenderer {
     const rowH = 112;
     const startY = 196;
     const gapY = 22;
+    const touchPrimary =
+      typeof window !== 'undefined' &&
+      ((window.matchMedia?.('(pointer: coarse)').matches ?? false) ||
+        (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
 
     // 1. ZORLUK: NORMAL / ZOR
     const isHard = save.difficulty === 'LEGEND';
@@ -830,32 +834,39 @@ export class MenuRenderer {
     );
     this.addButton('CYCLE_DIFFICULTY', rowX, startY, rowW, rowH);
 
-    // 2. KONTROL: TUŞ+KES / KES KİLİT / KAYDIR
+    // 2. KONTROL: JOYSTICK / KAYDIR / KLAVYE
     const y2 = startY + (rowH + gapY);
-    const ctrlLabel =
-      save.settings.controlMode === 'SWIPE'
+    const ctrlLabel = touchPrimary
+      ? 'JOYSTICK'
+      : save.settings.controlMode === 'SWIPE'
         ? 'KAYDIR'
-        : save.settings.carveButtonMode === 'TOGGLE'
-          ? 'KES KİLİT'
-          : 'TUŞ+KES';
+        : save.settings.controlMode === 'KEYBOARD'
+          ? 'KLAVYE / GAMEPAD'
+          : 'JOYSTICK';
     this.drawPixelPanel(ctx, rowX, y2, rowW, rowH, 'steel');
     drawPixelText(ctx, `KONTROL: ${ctrlLabel}`, CANVAS_WIDTH * 0.5, y2 + rowH * 0.5, {
       scale: 3.4,
       tone: 'cyan',
       align: 'center'
     });
-    this.addButton('CYCLE_CONTROL_MODE', rowX, y2, rowW, rowH);
+    if (!touchPrimary) this.addButton('CYCLE_CONTROL_MODE', rowX, y2, rowW, rowH);
 
-    // 2b. [OTOMATİK] one-hand cut mode
+    // 2b. Mobile joystick carving is always automatic; desktop can toggle auto-cut.
     const y2b = startY + (rowH + gapY) * 2;
-    const autoOn = save.settings.autoCut;
+    const autoOn = touchPrimary || save.settings.autoCut;
     this.drawPixelPanel(ctx, rowX, y2b, rowW, rowH, 'steel');
-    drawPixelText(ctx, `OTOMATİK: ${autoOn ? 'AÇIK' : 'KAPALI'}`, CANVAS_WIDTH * 0.5, y2b + rowH * 0.5, {
-      scale: 3.4,
-      tone: autoOn ? 'green' : 'muted',
-      align: 'center'
-    });
-    this.addButton('TOGGLE_AUTO_CUT', rowX, y2b, rowW, rowH);
+    drawPixelText(
+      ctx,
+      touchPrimary ? 'MOBİL KESİM: OTOMATİK' : `OTOMATİK: ${autoOn ? 'AÇIK' : 'KAPALI'}`,
+      CANVAS_WIDTH * 0.5,
+      y2b + rowH * 0.5,
+      {
+        scale: 3.4,
+        tone: autoOn ? 'green' : 'muted',
+        align: 'center'
+      }
+    );
+    if (!touchPrimary) this.addButton('TOGGLE_AUTO_CUT', rowX, y2b, rowW, rowH);
 
     // 3. SES: AÇIK / KAPALI
     const y3 = startY + (rowH + gapY) * 3;

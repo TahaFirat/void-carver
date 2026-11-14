@@ -9,10 +9,10 @@ import { CANVAS_HEIGHT, CANVAS_WIDTH } from './Config';
  *
  * - `PHONE_PORTRAIT`  (vw/vh < 0.72): legacy 900-wide column, extra height absorbed by
  *   safe areas and a taller control deck (zero letterboxing on tall/notched phones).
- * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; D-Pad and `KES` docked to the
- *   bottom-left / bottom-right corners for natural thumb reach.
- * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet (left wing: stage + lives + D-Pad,
- *   center: full-height arena, right wing: score/target/shield/pause + `KES` + `[OTOMATİK]`).
+ * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; circular joystick docked to the
+ *   bottom-left with automatic inward carving for natural thumb play.
+ * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet (left wing: stage + lives + joystick,
+ *   center: full-height arena, right wing: score/target/shield/pause + automatic-cut hint).
  *
  * All values are expressed in *virtual canvas units*; the canvas backing store is sized to
  * `virtualWidth x virtualHeight` times the device pixel ratio.
@@ -66,9 +66,7 @@ export interface GameLayout {
   leftWing: Rect | null;
   rightWing: Rect | null;
 
-  dpad: { cx: number; cy: number; button: number; gap: number };
-  cutButton: Rect;
-  autoToggle: Rect;
+  joystick: { cx: number; cy: number; radius: number };
   pauseButton: Rect;
 
   /** Single-column transform for menus & modals. */
@@ -84,7 +82,7 @@ const FRAME_TOP = 92;
 const FRAME_BOTTOM = 1220;
 const FRAME_LEFT = 21;
 const FRAME_RIGHT = 879;
-const STATUS_BOTTOM = 1290;
+const STATUS_BOTTOM = 1308;
 
 export function classifyLayoutMode(cssW: number, cssH: number): LayoutMode {
   const aspect = cssW / Math.max(1, cssH);
@@ -158,34 +156,13 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
       h: innerH - wingPad * 2
     };
 
-    const ctrlScale = Math.max(0.62, Math.min(1.25, Math.min(leftWing.w, rightWing.w) / 330));
-    const button = Math.round(96 * ctrlScale);
-    const gap = Math.round(8 * ctrlScale);
-    const dpadSpan = button * 3 + gap * 2;
-    const dpad = {
+    const joystickRadius = Math.round(Math.max(82, Math.min(116, leftWing.w * 0.34)));
+    const joystick = {
       cx: leftWing.x + leftWing.w * 0.5,
-      cy: leftWing.y + leftWing.h - dpadSpan * 0.5 - 10,
-      button,
-      gap
+      cy: leftWing.y + leftWing.h - joystickRadius - 48,
+      radius: joystickRadius
     };
-
-    const cutW = Math.round(Math.min(rightWing.w - 20, 260 * ctrlScale));
-    const cutH = Math.round(cutW * 0.62);
-    const cutButton: Rect = {
-      x: rightWing.x + (rightWing.w - cutW) * 0.5,
-      y: rightWing.y + rightWing.h - cutH - 30,
-      w: cutW,
-      h: cutH
-    };
-    const toggleW = Math.round(Math.min(rightWing.w - 20, 250 * ctrlScale));
-    const toggleH = Math.round(54 * ctrlScale);
-    const autoToggle: Rect = {
-      x: rightWing.x + (rightWing.w - toggleW) * 0.5,
-      y: cutButton.y - toggleH - 26,
-      w: toggleW,
-      h: toggleH
-    };
-    const pauseSize = Math.round(84 * ctrlScale);
+    const pauseSize = Math.round(Math.max(56, Math.min(84, Math.min(leftWing.w, rightWing.w) * 0.24)));
     const pauseButton: Rect = {
       x: rightWing.x + rightWing.w - pauseSize,
       y: rightWing.y,
@@ -230,9 +207,7 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
       deckRect: null,
       leftWing,
       rightWing,
-      dpad,
-      cutButton,
-      autoToggle,
+      joystick,
       pauseButton,
       menuColumn,
       menuHero,
@@ -250,33 +225,20 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
   const topShift = safe.top + Math.min(extraH * 0.25, 60);
   const deckTop = topShift + STATUS_BOTTOM;
   const deckBottom = height - safe.bottom;
-  const deckRect: Rect = { x: 0, y: deckTop, w: width, h: height - deckTop };
+  const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckBottom - deckTop };
 
   const isTablet = mode === 'TABLET_PORTRAIT' || width > LEGACY_W + 120;
   const deckH = deckBottom - deckTop;
-  const button = Math.round(Math.min(104, Math.max(80, deckH * 0.3)));
-  const gap = 8;
-  const dpadSpan = button * 3 + gap * 2;
-  const dpadCy = deckTop + Math.max(dpadSpan * 0.5 + 8, deckH * 0.5);
-
-  const dpadCx = isTablet
-    ? safe.left + 28 + dpadSpan * 0.5
-    : columnX + Math.max(dpadSpan * 0.5 + 18, 170);
-
-  const cutW = 290;
-  const cutH = 150;
-  const cutCx = isTablet ? width - safe.right - 28 - cutW * 0.5 : columnX + LEGACY_W - 40 - cutW * 0.5;
-  const cutButton: Rect = {
-    x: cutCx - cutW * 0.5,
-    y: dpadCy - cutH * 0.5 - 30,
-    w: cutW,
-    h: cutH
-  };
-  const autoToggle: Rect = {
-    x: cutButton.x + cutButton.w - 250,
-    y: cutButton.y + cutButton.h + 22,
-    w: 250,
-    h: 54
+  const joystickRadius = Math.round(
+    Math.max(82, Math.min(124, deckH * 0.34, deckH * 0.5 - 38))
+  );
+  const joystickCx = isTablet
+    ? safe.left + joystickRadius + 32
+    : columnX + Math.max(joystickRadius + 28, 170);
+  const joystick = {
+    cx: joystickCx,
+    cy: deckTop + deckH * 0.5,
+    radius: joystickRadius
   };
 
   const pauseButton: Rect = { x: columnX + LEGACY_W - 120, y: topShift, w: 120, h: 86 };
@@ -306,9 +268,7 @@ export function computeLayout(cssW: number, cssH: number, insetsCss: SafeInsets)
     deckRect,
     leftWing: null,
     rightWing: null,
-    dpad: { cx: dpadCx, cy: dpadCy, button, gap },
-    cutButton,
-    autoToggle,
+    joystick,
     pauseButton,
     menuColumn,
     menuHero: null,

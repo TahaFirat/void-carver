@@ -21,8 +21,8 @@ export const NATIVE_PIXEL_H = 360;
 // - Top Score Bar (`SKOR` / `REKOR` / `❚❚`): y = 0..86
 // - Gold-Silver 3D Pixel Frame Outer Bezel: x = 21..879, y = 92..1220 (24px frame)
 // - Inner Playfield (`810 x 1080` = `270 x 360` @ 3x): x = 45..855, y = 116..1196
-// - Single-Line Status Strip (`BÖLÜM 01` | ships | `64.5% / 80%` | `KALKAN 942`): y = 1230..1288
-// - Clean Arcade Control Deck (Left Red Joystick + Right Red `KES` Button): y = 1294..1600
+// - Two-Line Status Strip (level/lives + area/shield): y = 1224..1302
+// - Mobile Joystick Deck (drag joystick + automatic cut hint): y = 1308..1600
 export const HUD_TOP_HEIGHT = 86;
 export const FRAME_BEZEL_PX = 24;
 export const ARENA_VIEW_SCALE = 0.9;
@@ -33,10 +33,10 @@ export const ARENA_VIEW_Y = 116;
 export const MIDDLE_ZONE_Y = ARENA_VIEW_Y - FRAME_BEZEL_PX; // 92
 export const MIDDLE_ZONE_HEIGHT = ARENA_VIEW_HEIGHT + FRAME_BEZEL_PX * 2; // 1128
 export const ARENA_PADDING = ARENA_VIEW_X;
-export const HUD_BOTTOM_Y = 1230;
-export const HUD_BOTTOM_HEIGHT = 58;
-export const THUMB_ZONE_Y = 1294;
-export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 306
+export const HUD_BOTTOM_Y = 1224;
+export const HUD_BOTTOM_HEIGHT = 78;
+export const THUMB_ZONE_Y = 1308;
+export const THUMB_ZONE_HEIGHT = CANVAS_HEIGHT - THUMB_ZONE_Y; // 292
 
 // Geometry & fixed-timestep physics invariants
 export const GRID_STEP = 2;

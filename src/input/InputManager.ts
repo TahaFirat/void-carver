@@ -23,8 +23,8 @@ export class InputManager {
     this.bindKeyboard();
   }
 
-  public configure(mode: ControlMode, carveMode: CarveButtonMode, autoCut = false): void {
-    this.touch.configure(mode, carveMode, autoCut);
+  public configure(mode: ControlMode, _carveMode: CarveButtonMode, _autoCut = false): void {
+    this.touch.configure(mode);
   }
 
   public resetActiveInputs(): void {
@@ -33,8 +33,7 @@ export class InputManager {
     this.touch.reset();
   }
 
-  public poll(dt: number): InputState {
-    this.touch.update(dt);
+  public poll(_dt: number): InputState {
     const touchSnap = this.touch.getSnapshot();
     const gpSnap = this.pollGamepad();
 
