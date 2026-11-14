@@ -1,7 +1,9 @@
 import { SoundEngine } from '../audio/SoundEngine';
 import { BaseBoss } from '../entities/bosses/BaseBoss';
 import { createBossesForLevel } from '../entities/bosses/BossFactory';
+import { CentipedeBoss } from '../entities/bosses/CentipedeBoss';
 import { TwinNexus } from '../entities/bosses/TwinNexus';
+import { OpticNerveBoss } from '../entities/bosses/VolfiedBosses';
 import { InteriorMinion } from '../entities/enemies/BaseMinion';
 import { BorderCrawler } from '../entities/enemies/BorderCrawler';
 import { DroneBouncer } from '../entities/enemies/DroneBouncer';
@@ -118,6 +120,9 @@ export class GameEngine {
   private score = 0;
   private nextExtraLifeScore = EXTRA_LIFE_SCORE_STEP;
   private lives = 3;
+  private stageStartScore = 0;
+  private stageStartNextExtraLife = EXTRA_LIFE_SCORE_STEP;
+  private stageStartLives = 3;
   private timeFreezeTimer = 0;
   private crawlerSpawnTimer = 45;
   private dynamicPodTimer = 24;
@@ -176,6 +181,7 @@ export class GameEngine {
           this.screen = 'PAUSED';
           this.input.resetActiveInputs();
         }
+        void StorageService.save();
         SoundEngine.suspend();
       },
       onAppResume: () => {
@@ -316,13 +322,15 @@ export class GameEngine {
 
   private async toggleJoystickSide(): Promise<void> {
     await StorageService.save((d) => {
-      d.settings.joystickSide = d.settings.joystickSide === 'LEFT' ? 'RIGHT' : 'LEFT';
+      const cur = d.settings.joystickSide;
+      d.settings.joystickSide = cur === 'RIGHT' ? 'LEFT' : cur === 'LEFT' ? 'CENTER' : 'RIGHT';
     });
     this.applySavedSettings();
     SoundEngine.playUiClick();
     NativeBridge.hapticPowerUp();
     const side = StorageService.getCurrent().settings.joystickSide;
-    this.showToast(side === 'RIGHT' ? 'JOYSTICK: SAĞ EL' : 'JOYSTICK: SOL EL');
+    const label = side === 'RIGHT' ? 'SAĞ' : side === 'LEFT' ? 'SOL' : 'ORTA';
+    this.showToast(`KONTROL YERİ: ${label}`);
   }
 
   private showToast(msgTr: string): void {
@@ -348,6 +356,7 @@ export class GameEngine {
     }
     if (actionId === 'GOTO_CAMPAIGN' || actionId === 'BACK_MAIN' || actionId === 'QUIT_TO_MENU') {
       SoundEngine.stopLaserCutLoop();
+      void StorageService.save();
       this.screen = 'MAIN_MENU';
       return;
     }
@@ -370,6 +379,12 @@ export class GameEngine {
       await StorageService.save((d) => {
         d.difficulty = nextDiff;
       });
+      const newShieldDur = resolveLevelShieldDuration(this.currentLevel, nextDiff);
+      const ratio =
+        this.ship.maxShieldDuration > 0 ? this.ship.shieldTimer / this.ship.maxShieldDuration : 1;
+      this.ship.maxShieldDuration = Math.max(10, newShieldDur);
+      this.ship.shieldTimer = Math.min(this.ship.maxShieldDuration, ratio * this.ship.maxShieldDuration);
+      this.showToast(`ZORLUK: ${DIFFICULTIES[nextDiff].nameTr}`);
       return;
     }
 
@@ -380,15 +395,20 @@ export class GameEngine {
 
     if (actionId === 'CYCLE_CONTROL_MODE') {
       await StorageService.save((d) => {
-        if (d.settings.controlMode === 'DPAD') {
-          d.settings.controlMode = 'SWIPE';
-        } else if (d.settings.controlMode === 'SWIPE') {
-          d.settings.controlMode = 'KEYBOARD';
-        } else {
+        if (d.settings.controlMode === 'JOYSTICK') {
           d.settings.controlMode = 'DPAD';
+        } else if (d.settings.controlMode === 'DPAD') {
+          d.settings.controlMode = 'SWIPE';
+        } else {
+          d.settings.controlMode = 'JOYSTICK';
         }
       });
       this.applySavedSettings();
+      NativeBridge.hapticPowerUp();
+      const m = StorageService.getCurrent().settings.controlMode;
+      const mLabel =
+        m === 'DPAD' ? 'YÖN TUŞLARI' : m === 'SWIPE' ? 'SERBEST SÜRÜKLE' : 'YÜZEN JOYSTICK';
+      this.showToast(`KONTROL: ${mLabel}`);
       return;
     }
 
@@ -482,7 +502,11 @@ export class GameEngine {
       if (this.lives <= 0) {
         this.startNewRun(this.currentLevel.id, this.isEndlessMode);
       } else {
-        this.loadLevel(this.currentLevel.id, this.isEndlessMode);
+        // Restore stage-start snapshot so restarting neither farms score nor drains extra lives
+        this.score = this.stageStartScore;
+        this.nextExtraLifeScore = this.stageStartNextExtraLife;
+        this.lives = this.stageStartLives;
+        this.loadLevel(this.currentLevel.id, this.isEndlessMode, false);
         this.screen = 'PLAYING';
       }
       return;
@@ -539,19 +563,24 @@ export class GameEngine {
     this.score = 0;
     this.nextExtraLifeScore = EXTRA_LIFE_SCORE_STEP;
     const firstLevel = endless ? generateEndlessWaveConfig(startSector) : getCampaignLevel(startSector);
-    // V5 tier lives (KOLAY 4, others 3); the easy difficulty preset adds one bonus ship
-    this.lives = firstLevel.startingLives + (diff.startingLives > 3 ? 1 : 0);
+    const diffBonusLives = diff.id === 'EXPLORER' ? 1 : diff.id === 'LEGEND' ? -1 : 0;
+    this.lives = Math.max(3, firstLevel.startingLives + diffBonusLives);
 
     void StorageService.save((d) => {
       d.stats.gamesPlayed += 1;
     });
 
-    this.loadLevel(startSector, endless);
+    this.loadLevel(startSector, endless, true);
     this.screen = 'PLAYING';
   }
 
-  private loadLevel(sectorOrWave: number, endless: boolean): void {
+  private loadLevel(sectorOrWave: number, endless: boolean, snapshotStageStart = true): void {
     const save = StorageService.getCurrent();
+    if (snapshotStageStart) {
+      this.stageStartScore = this.score;
+      this.stageStartNextExtraLife = this.nextExtraLifeScore;
+      this.stageStartLives = this.lives;
+    }
 
     this.currentLevel = endless
       ? generateEndlessWaveConfig(sectorOrWave)
@@ -596,17 +625,24 @@ export class GameEngine {
       this.currentLevel.shieldUnits
     );
 
-    // Spawn 16-bit Pixel Bosses (+ V5 escort boss on double-boss stages)
+    // Spawn solid wall blocks FIRST so bosses & minions never spawn embedded inside a wall!
+    const boxDefs = resolveLevelBoxes(this.currentLevel, save.difficulty);
+    this.powerBoxes = boxDefs.map((cfg) => new PowerUpBox(cfg));
+    this.syncSolidBoxes();
+
+    // Spawn 16-bit Pixel Bosses (+ escort boss on double-boss stages)
     this.bosses = createBossesForLevel(
       this.currentLevel.id,
       this.currentLevel.bossType,
-      this.currentLevel.bossHp
+      this.currentLevel.bossHp,
+      this.currentLevel.tierIndex
     );
     if (this.currentLevel.escortBossType) {
       const escorts = createBossesForLevel(
         this.currentLevel.id,
         this.currentLevel.escortBossType,
-        Math.max(4, Math.round(this.currentLevel.bossHp * 0.7))
+        Math.max(4, Math.round(this.currentLevel.bossHp * 0.7)),
+        this.currentLevel.tierIndex
       );
       escorts.forEach((e, idx) => {
         e.isEscort = true;
@@ -618,33 +654,48 @@ export class GameEngine {
       this.bosses.push(...escorts);
     }
 
-    // Spawn 16-bit Pixel Minions
+    // Spawn 16-bit Pixel Minions at verified collision-free coordinates away from solid boxes & player
     this.minions = [];
+    const pickSafeMinionPos = (baseX: number, baseY: number, seedIdx: number): Point => {
+      for (let attempt = 0; attempt < 36; attempt++) {
+        const px =
+          attempt === 0
+            ? baseX
+            : 150 + ((baseX + attempt * 137 + seedIdx * 89) % 600);
+        const py =
+          attempt === 0
+            ? baseY
+            : 180 + ((baseY + attempt * 149 + seedIdx * 73) % 720);
+        const pt = { x: px, y: py };
+        if (!pointInPolygonStrict(pt, this.activePolygon)) continue;
+        if (Math.hypot(px - 450, py - ARENA_HEIGHT) < 230) continue;
+        if (this.powerBoxes.some((b) => Math.hypot(b.x - px, b.y - py) < SOLID_BOX_HALF + 58)) {
+          continue;
+        }
+        if (this.bosses.some((b) => Math.hypot(b.x - px, b.y - py) < b.boundingRadius + 50)) {
+          continue;
+        }
+        return pt;
+      }
+      return { x: baseX, y: baseY };
+    };
+
     const ms = this.currentLevel.minionSetup;
     for (let i = 0; i < ms.drones; i++) {
+      const pos = pickSafeMinionPos(185 + ((i * 235) % 540), 265 + ((i * 195) % 480), i);
       this.minions.push(
-        new DroneBouncer(
-          { x: 185 + ((i * 235) % 540), y: 265 + ((i * 195) % 510) },
-          180,
-          Math.PI * 0.25 + (i % 4) * (Math.PI * 0.5)
-        )
+        new DroneBouncer(pos, 174, Math.PI * 0.25 + (i % 4) * (Math.PI * 0.5))
       );
     }
     for (let i = 0; i < ms.hunters; i++) {
-      this.minions.push(
-        new LineHunter({ x: 240 + ((i * 285) % 440), y: 340 + ((i * 175) % 420) }, 168)
-      );
+      const pos = pickSafeMinionPos(240 + ((i * 285) % 440), 320 + ((i * 175) % 400), 10 + i);
+      this.minions.push(new LineHunter(pos, 162));
     }
     for (let i = 0; i < ms.prisms; i++) {
-      this.minions.push(
-        new PrismSplitter({ x: 320 + ((i * 260) % 300), y: 380 + ((i * 210) % 320) }, false, 138)
-      );
+      const pos = pickSafeMinionPos(320 + ((i * 260) % 300), 360 + ((i * 210) % 300), 20 + i);
+      this.minions.push(new PrismSplitter(pos, false, 134));
     }
 
-    // Spawn V5 solid wall blocks (power-up walls + blind armor pillars)
-    const boxDefs = resolveLevelBoxes(this.currentLevel, save.difficulty);
-    this.powerBoxes = boxDefs.map((cfg) => new PowerUpBox(cfg));
-    this.syncSolidBoxes();
     this.dirHoldDir = null;
     this.dirHoldTime = 0;
 
@@ -775,14 +826,16 @@ export class GameEngine {
       this.ship.state === 'ON_BORDER' &&
       this.ship.isAutoCutSuppressedAfterExit(input.direction);
 
-    const autoCutHoldSeconds = 0.17;
-    if (
-      touchAutoCutRequested &&
+    const autoCutHoldSeconds = 0.12;
+    const autoCutEligible =
+      (touchAutoCutRequested || save.settings.autoCut) &&
+      !input.carveHeld &&
       this.ship.state === 'ON_BORDER' &&
       input.direction !== null &&
       !canMoveOnBorder &&
-      inwardDirs.includes(input.direction)
-    ) {
+      inwardDirs.includes(input.direction);
+
+    if (autoCutEligible) {
       if (postExitSuppressed) {
         this.autoCutArmDir = null;
         this.autoCutArmTimer = 0;
@@ -806,19 +859,6 @@ export class GameEngine {
       this.autoCutArmDir = null;
       this.autoCutArmTimer = 0;
       this.input.touch.setCutArmProgress(0);
-    }
-
-    if (
-      save.settings.autoCut &&
-      !input.carveHeld &&
-      this.ship.state === 'ON_BORDER' &&
-      input.direction !== null &&
-      !canMoveOnBorder &&
-      !postExitSuppressed &&
-      this.dirHoldTime >= 0.12 &&
-      inwardDirs.includes(input.direction)
-    ) {
-      input.carveHeld = true;
     }
 
     // 1. Update Twin-Prong Fighter & Check Cut Completion
@@ -865,10 +905,13 @@ export class GameEngine {
         this.cutStallTimer = 0;
       } else {
         SoundEngine.stopLaserCutLoop();
-        this.cutStallTimer += dt;
+        // Do not punish player with a hesitation fuse while resting flush against a solid wall block
+        if (!this.ship.boxContactThisStep) {
+          this.cutStallTimer += dt;
+        }
       }
 
-      // Authentic `3.5s` Hesitation Spark when stationary on own incomplete cut line!
+      // Authentic Hesitation Spark when stationary on own incomplete cut line!
       const activeTrailNow = this.ship.getActiveTrail();
       if (
         !this.hesitationFuseLit &&
@@ -901,7 +944,8 @@ export class GameEngine {
     }
 
     if (completedCut) {
-      this.processCompletedCut(completedCut.trail, diff.scoreMultiplier);
+      const stageScoreMult = diff.scoreMultiplier * (1 + this.currentLevel.tierIndex * 0.25);
+      this.processCompletedCut(completedCut.trail, stageScoreMult);
       if (this.screen !== 'PLAYING') {
         return;
       }
@@ -961,8 +1005,9 @@ export class GameEngine {
           currentMinionCount: this.minions.length + spawnedMinions.length
         });
 
-        // V5: bosses bounce elastically off solid wall blocks (re-clamp inside activePolygon if pushed)
-        if (bounceCircleOffSolidBoxes(boss, boss.boundingRadius * 0.8, this.getActiveSolidBoxes())) {
+        // Bosses & trailing segments bounce elastically off solid wall blocks
+        const solidBoxesNow = this.getActiveSolidBoxes();
+        if (bounceCircleOffSolidBoxes(boss, boss.boundingRadius * 0.8, solidBoxesNow)) {
           const clamped = resolvePolygonPenetration(
             { x: boss.x, y: boss.y },
             boss.boundingRadius * 0.75,
@@ -970,6 +1015,11 @@ export class GameEngine {
           );
           boss.x = clamped.position.x;
           boss.y = clamped.position.y;
+        }
+        if (boss instanceof CentipedeBoss) {
+          boss.bounceSegmentsOffBoxes(solidBoxesNow, this.activePolygon);
+        } else if (boss instanceof OpticNerveBoss) {
+          boss.bounceTailOffBoxes(solidBoxesNow, this.activePolygon);
         }
 
         if (!boss.alive && boss.crushedInPocket) {
@@ -1404,12 +1454,14 @@ export class GameEngine {
     // 2. Enemy Trail Touch -> Ignite Plasma Spark Fuse!
     const activeTrail = this.ship.getActiveTrail();
     if (this.ship.state === 'CUTTING' && activeTrail.length >= 2 && this.timeFreezeTimer <= 0) {
+      const totalTrailLen = this.ship.getActiveTrailLength();
       const checkTrailIgnite = (ex: number, ey: number, er: number): void => {
         const proj = projectPointToPolyline({ x: ex, y: ey }, activeTrail);
         if (proj.distance <= er + 1) {
-          const alreadyLit = this.fuses.some((f) => f.arcDistance >= proj.arcLength - 36);
+          const safeInitialArc = Math.min(proj.arcLength, Math.max(0, totalTrailLen - 54));
+          const alreadyLit = this.fuses.some((f) => f.arcDistance >= safeInitialArc - 36);
           if (!alreadyLit) {
-            this.fuses.push(new TrailFuse(proj.arcLength, activeTrail));
+            this.fuses.push(new TrailFuse(safeInitialArc, activeTrail));
             SoundEngine.playFuseAlarm();
             this.particles.spawnBurst(
               proj.point.x,
@@ -1457,31 +1509,23 @@ export class GameEngine {
       }
     }
 
-    // 3b. Bosses & Minions vs Player Ship
-    for (const boss of this.bosses) {
-      if (!boss.alive) continue;
-      for (const hc of boss.getHitCircles()) {
-        if (Math.hypot(hc.x - this.ship.x, hc.y - this.ship.y) <= shipRadius + hc.radius) {
-          if (this.ship.isPerimeterShieldActive()) {
-            this.ship.shieldHitFlash = 0.24;
-            SoundEngine.playShieldDeflect();
-          } else {
+    // 3b. Bosses & Minions vs Player Ship:
+    // Authentic 1989 arcade rule: interior Bosses & Minions live strictly inside the uncut field,
+    // so their bodies only destroy the player during `CUTTING` (never through the green border!).
+    if (this.ship.state === 'CUTTING') {
+      for (const boss of this.bosses) {
+        if (!boss.alive) continue;
+        for (const hc of boss.getHitCircles()) {
+          if (Math.hypot(hc.x - this.ship.x, hc.y - this.ship.y) <= shipRadius + hc.radius) {
             this.killPlayerShip();
             return;
           }
         }
       }
-    }
 
-    for (const m of this.minions) {
-      if (!m.alive) continue;
-      if (Math.hypot(m.x - this.ship.x, m.y - this.ship.y) <= shipRadius + m.radius) {
-        if (this.ship.isPerimeterShieldActive()) {
-          this.ship.shieldHitFlash = 0.24;
-          SoundEngine.playShieldDeflect();
-          m.vx = -m.vx;
-          m.vy = -m.vy;
-        } else {
+      for (const m of this.minions) {
+        if (!m.alive) continue;
+        if (Math.hypot(m.x - this.ship.x, m.y - this.ship.y) <= shipRadius + m.radius) {
           this.killPlayerShip();
           return;
         }
@@ -1678,7 +1722,11 @@ export class GameEngine {
         this.renderLandscapeHud(ctx, save);
       }
 
-      this.input.touch.renderControls(ctx, this.ship.state === 'CUTTING');
+      this.input.touch.renderControls(
+        ctx,
+        this.ship.state === 'CUTTING',
+        this.ship.isBacktracking
+      );
       this.renderPauseButton(ctx);
     }
 
@@ -1973,18 +2021,18 @@ export class GameEngine {
     ctx.fillStyle = '#03050A';
     ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
 
-    drawPixelText(ctx, 'SKOR', 34, 23, { scale: 3.4, tone: 'silver', align: 'left' });
-    drawPixelText(ctx, String(this.score).padStart(7, '0'), 34, 62, {
-      scale: 4.3,
+    drawPixelText(ctx, 'SKOR', 34, 23, { scale: 3.6, tone: 'silver', align: 'left' });
+    drawPixelText(ctx, String(this.score).padStart(7, '0'), 34, 63, {
+      scale: 4.5,
       tone: 'white',
       align: 'left'
     });
 
     const rawBest = this.isEndlessMode ? save.highScoreEndless : save.highScoreCampaign;
     const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rawBest, this.score);
-    drawPixelText(ctx, 'REKOR', 475, 23, { scale: 3.4, tone: 'gold', align: 'center' });
-    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 475, 62, {
-      scale: 4.3,
+    drawPixelText(ctx, 'REKOR', 475, 23, { scale: 3.6, tone: 'gold', align: 'center' });
+    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 475, 63, {
+      scale: 4.5,
       tone: 'gold',
       align: 'center'
     });
@@ -2008,8 +2056,8 @@ export class GameEngine {
       ? this.getStageLabel()
       : `${this.currentLevel.tier} • ${this.getStageLabel()}`;
     const stageY = HUD_BOTTOM_Y + 26;
-    const statsY = HUD_BOTTOM_Y + 68;
-    drawPixelText(ctx, stage, 34, stageY, { scale: 3.1, tone: 'white', align: 'left' });
+    const statsY = HUD_BOTTOM_Y + 69;
+    drawPixelText(ctx, stage, 34, stageY, { scale: 3.4, tone: 'white', align: 'left' });
 
     const miniShip = getMiniShipHudSprite();
     const shownLives = Math.max(0, Math.min(this.lives, 6));
@@ -2017,27 +2065,27 @@ export class GameEngine {
       blitPixelSprite(
         ctx,
         miniShip,
-        CANVAS_WIDTH - 48 - i * 33,
+        CANVAS_WIDTH - 48 - i * 34,
         stageY,
-        PIXEL_SCALE * 1.1
+        PIXEL_SCALE * 1.15
       );
     }
 
     const target = this.currentLevel.targetPercent;
     drawPixelText(ctx, 'ALAN', 34, statsY, {
-      scale: 3.1,
+      scale: 3.3,
       tone: 'silver',
       align: 'left'
     });
-    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}% / ${target}%`, 148, statsY, {
-      scale: 3.3,
+    drawPixelText(ctx, `${this.claimedPercent.toFixed(1)}% / ${target}%`, 156, statsY, {
+      scale: 3.6,
       tone: this.claimedPercent >= target ? 'green' : 'gold',
       align: 'left'
     });
 
     const shieldStr = String(this.ship.getShieldUnits()).padStart(3, '0');
     drawPixelText(ctx, `KALKAN ${shieldStr}`, CANVAS_WIDTH - 34, statsY, {
-      scale: 3.1,
+      scale: 3.3,
       tone: this.getShieldTone(),
       align: 'right'
     });

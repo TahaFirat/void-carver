@@ -449,7 +449,7 @@ export class PlayerShip {
       return;
     }
 
-    // 4. Corner Turn Magnet / Buffering Assist within `CORNER_BUFFER_DIST` (`18px`) of corner
+    // 4. Corner Turn Magnet / Buffering Assist within `CORNER_BUFFER_DIST` of corner
     const desiredTurn = input.direction ?? this.turnBufferDir;
     if (desiredTurn && !validBorderDirs.includes(desiredTurn)) {
       const approachDir = this.findCornerApproachDirection(
@@ -462,7 +462,26 @@ export class PlayerShip {
         this.facing = approachDir;
         this.x += DIR_VECTORS[approachDir].dx * GRID_STEP;
         this.y += DIR_VECTORS[approachDir].dy * GRID_STEP;
+        return;
       }
+    }
+
+    // 5. Diagonal Outer-Wall Glide: if primary direction points outside the arena (not an inward
+    // cut entry), glide along any valid secondary border axis so exits & corners never stall!
+    const secDir = input.secondaryDirection ?? null;
+    if (
+      secDir &&
+      validBorderDirs.includes(secDir) &&
+      input.direction &&
+      !this.getInwardBorderDirections(activePolygon, activeBarriers).includes(input.direction)
+    ) {
+      if (this.facing !== secDir) {
+        this.turnedCornerThisStep = true;
+        NativeBridge.hapticCornerTurn();
+      }
+      this.facing = secDir;
+      this.x += DIR_VECTORS[secDir].dx * GRID_STEP;
+      this.y += DIR_VECTORS[secDir].dy * GRID_STEP;
     }
   }
 
@@ -578,26 +597,28 @@ export class PlayerShip {
 
     this.isBacktracking = false;
 
-    // 2. If player centered joystick (`input.direction === null` and no buffered turn),
-    // pause cleanly on the tip of the laser line for surgical mobile precision!
-    if (!input.direction && !this.turnBufferDir) {
-      return null;
-    }
-
     // If holding the latched post-backtrack direction right at a popped corner, pause briefly
+    // until player releases or steers a new direction
     if (input.direction && input.direction === this.backtrackCornerLatchDir) {
       return null;
     }
 
-    // 3. 90-degree orthogonal turn during cut (with Border Exit Magnet & Anti-Deadlock!)
+    // 2. Continuous Cruise While Cutting + 90-degree orthogonal turn (with generous Border Exit Magnet!)
+    // Once CUTTING, the ship glides forward automatically along `cutDirection` even if the thumb
+    // lifts or crosses center deadzone, eliminating mid-exit stalls inside the danger zone.
     const canGoStraight = this.canAdvanceInCutDirection(
       this.cutDirection,
       activePolygon,
       activeBarriers
     );
+    const lastCornerForExit = this.trailCorners[this.trailCorners.length - 1];
+    const currentSegForExit = lastCornerForExit
+      ? manhattanDist(lastCornerForExit, { x: this.x, y: this.y })
+      : 0;
+    const exitMagnetDist = currentSegForExit >= 36 ? 34 : 16;
     const nearSafeExit =
       canGoStraight &&
-      this.isSafeCutExitAhead(this.cutDirection, 14, activePolygon, activeBarriers);
+      this.isSafeCutExitAhead(this.cutDirection, exitMagnetDist, activePolygon, activeBarriers);
 
     const requestedDir = input.direction ?? this.turnBufferDir;
     if (

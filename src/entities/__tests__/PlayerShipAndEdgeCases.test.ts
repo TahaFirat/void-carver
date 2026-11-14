@@ -204,10 +204,11 @@ describe('PlayerShip, 180-Degree Line Backtrack, Barrier Physics & Corner Buffer
     expect(inward).toContain('UP');
     expect(inward).toContain('RIGHT');
 
-    // Verify Right vs Left configurable joystick layout & dynamic follow-thumb reversal
+    // Verify JOYSTICK mode (comfortable 68px throw — slight thumb relax never flips 180°!),
+    // DPAD mode (immediate direction on tap!), SWIPE mode, and RIGHT / LEFT / CENTER positions!
     setLayout(computeLayout(390, 844, { top: 0, right: 0, bottom: 0, left: 0 }, 'RIGHT'));
     const touch = new TouchControls();
-    touch.configure('DPAD', 'RIGHT');
+    touch.configure('JOYSTICK', 'RIGHT');
     const rightCx = getLayout().joystick.cx;
     const rightCy = getLayout().joystick.cy;
     expect(rightCx).toBeGreaterThan(450);
@@ -217,15 +218,72 @@ describe('PlayerShip, 180-Degree Line Backtrack, Barrier Physics & Corner Buffer
     touch.handlePointerMove(1, rightCx + 17, rightCy);
     expect(touch.getSnapshot().direction).toBe('LEFT');
 
-    // Drag far RIGHT (+120px), then pull 18px LEFT -> dynamic follow-thumb reverses immediately!
+    // Drag far RIGHT (+120px): relaxing thumb slightly by 20px (~3mm) MUST STAY 'RIGHT',
+    // while deliberately pulling 85px LEFT cleanly reverses to 'LEFT'!
     touch.handlePointerMove(1, rightCx + 155, rightCy);
     expect(touch.getSnapshot().direction).toBe('RIGHT');
-    touch.handlePointerMove(1, rightCx + 155 - 55, rightCy);
+    touch.handlePointerMove(1, rightCx + 135, rightCy);
+    expect(touch.getSnapshot().direction).toBe('RIGHT');
+    touch.handlePointerMove(1, rightCx + 70, rightCy);
     expect(touch.getSnapshot().direction).toBe('LEFT');
     touch.handlePointerUp(1);
 
-    // Switch joystick to LEFT side
+    // Switch to DPAD mode on LEFT side -> tapping right wedge fires 'RIGHT' immediately with 0px drag!
     touch.configure('DPAD', 'LEFT');
-    expect(getLayout().joystick.cx).toBeLessThan(450);
+    const leftStick = getLayout().joystick;
+    expect(leftStick.cx).toBeLessThan(450);
+    touch.handlePointerDown(2, leftStick.cx + 48, leftStick.cy, true);
+    expect(touch.getSnapshot().direction).toBe('RIGHT');
+    touch.handlePointerUp(2);
+
+    // Switch to CENTER position & SWIPE mode
+    touch.configure('SWIPE', 'CENTER');
+    expect(Math.round(getLayout().joystick.cx)).toBe(450);
+    touch.handlePointerDown(3, 300, 600, true);
+    touch.handlePointerMove(3, 300, 560);
+    expect(touch.getSnapshot().direction).toBe('UP');
+    touch.handlePointerUp(3);
+  });
+
+  it('cruises continuously to complete a cut even if player lifts thumb mid-cut, and glides along outer wall on diagonal input', () => {
+    const poly = createInitialArenaPolygon();
+    const ship = new PlayerShip();
+    ship.initForLevel({ x: 450, y: 1200 }, 100);
+
+    // Start cutting UP for 10 frames
+    for (let i = 0; i < 10; i++) {
+      ship.update(FIXED_DT, makeInput('UP', true), poly, []);
+    }
+    expect(ship.state).toBe('CUTTING');
+
+    // Lift thumb completely (direction = null): ship MUST cruise all the way to y=0 and finish the cut!
+    let completed = null;
+    for (let i = 0; i < 320; i++) {
+      const ev = ship.update(FIXED_DT, makeInput(null, false), poly, []);
+      if (ev) {
+        completed = ev;
+        break;
+      }
+    }
+    expect(completed).not.toBeNull();
+    expect(ship.state).toBe('ON_BORDER');
+    expect(ship.y).toBe(0);
+
+    // At top border (450, 0), holding diagonal UP + secondary RIGHT must glide RIGHT instead of stalling!
+    const prevX = ship.x;
+    ship.update(
+      FIXED_DT * 3,
+      {
+        direction: 'UP',
+        secondaryDirection: 'RIGHT',
+        carveHeld: false,
+        autoCarveSwipe: false,
+        pauseJustPressed: false,
+        debugSectorSelect: null
+      },
+      poly,
+      []
+    );
+    expect(ship.x).toBeGreaterThan(prevX);
   });
 });

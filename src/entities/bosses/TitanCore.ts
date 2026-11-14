@@ -38,17 +38,14 @@ export class TitanCore extends BaseBoss {
 
     this.fireTimer -= bctx.dt * speedScale * tempo;
     if (this.fireTimer <= 0) {
-      this.fireTimer = this.fastVariant ? 2.05 : 2.55;
+      this.fireTimer = this.fastVariant ? 2.15 : 2.65;
       this.burstToggle = !this.burstToggle;
       const offset = this.burstToggle ? Math.PI * 0.25 : 0;
-      const orbSpd = (this.fastVariant ? 275 : 245) * speedScale;
+      const orbSpd = (this.fastVariant ? 265 : 238) * speedScale;
       for (let i = 0; i < 4; i++) {
         const ang = offset + Math.PI * 0.5 * i;
         bctx.projectiles.spawnEnemyBullet(
-          {
-            x: this.x + Math.cos(ang) * 38 * this.renderScale,
-            y: this.y + Math.sin(ang) * 38 * this.renderScale
-          },
+          { x: this.x, y: this.y },
           Math.cos(ang) * orbSpd,
           Math.sin(ang) * orbSpd,
           PALETTE.CUT_ORANGE,

@@ -799,10 +799,10 @@ export class MenuRenderer {
   }
 
   // ============================================================================
-  // CLEAN `AYARLAR` SCREEN (ERGONOMIC HAND SIDE + 3-WAY DIFFICULTY + AUDIO/HAPTICS)
+  // CLEAN `AYARLAR` SCREEN (3 CONTROL MODES + 3 POSITIONS + LIVE PREVIEW!)
   // ============================================================================
   private renderSettingsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 102, {
+    drawPixelText(ctx, 'AYARLAR', CANVAS_WIDTH * 0.5, 92, {
       scale: 4.9,
       tone: 'gold',
       align: 'center'
@@ -810,28 +810,104 @@ export class MenuRenderer {
 
     const rowX = 66;
     const rowW = 768;
-    const rowH = 110;
-    const startY = 186;
-    const gapY = 20;
+    const rowH = 104;
 
-    // 1. JOYSTICK YERİ: SAĞ EL / SOL EL (Prominently adjustable at top!)
-    const sideLabel = save.settings.joystickSide === 'LEFT' ? 'SOL EL' : 'SAĞ EL';
-    this.drawPixelPanel(ctx, rowX, startY, rowW, rowH, 'goldSelected');
-    drawPixelText(
-      ctx,
-      `JOYSTICK YERİ: ${sideLabel} ⇄`,
-      CANVAS_WIDTH * 0.5,
-      startY + rowH * 0.5,
-      {
-        scale: 3.6,
-        tone: 'gold',
+    // 1. KONTROL TİPİ: YÜZEN JOYSTICK / YÖN TUŞLARI / SERBEST SÜRÜKLE
+    const y0 = 158;
+    const ctrlLabel =
+      save.settings.controlMode === 'DPAD'
+        ? 'YÖN TUŞLARI'
+        : save.settings.controlMode === 'SWIPE'
+          ? 'SERBEST SÜRÜKLE'
+          : 'YÜZEN JOYSTICK';
+    this.drawPixelPanel(ctx, rowX, y0, rowW, rowH, 'goldSelected');
+    drawPixelText(ctx, `KONTROL: ${ctrlLabel} ⇄`, CANVAS_WIDTH * 0.5, y0 + rowH * 0.5, {
+      scale: 3.5,
+      tone: 'gold',
+      align: 'center'
+    });
+    this.addButton('CYCLE_CONTROL_MODE', rowX, y0, rowW, rowH);
+
+    // 2. KONTROL YERİ: SAĞ / SOL / ORTA
+    const y1 = y0 + rowH + 16;
+    const sideLabel =
+      save.settings.joystickSide === 'LEFT'
+        ? 'SOL'
+        : save.settings.joystickSide === 'CENTER'
+          ? 'ORTA'
+          : 'SAĞ';
+    this.drawPixelPanel(ctx, rowX, y1, rowW, rowH, 'goldSelected');
+    drawPixelText(ctx, `KONUM: ${sideLabel} ⇄`, CANVAS_WIDTH * 0.5, y1 + rowH * 0.5, {
+      scale: 3.7,
+      tone: 'cyan',
+      align: 'center'
+    });
+    this.addButton('TOGGLE_JOYSTICK_SIDE', rowX, y1, rowW, rowH);
+
+    // 3. LIVE CONTROLLER MINI-PREVIEW DECK (shows immediate visual change!)
+    const prevY = y1 + rowH + 18;
+    const prevH = 196;
+    this.drawPixelPanel(ctx, rowX, prevY, rowW, prevH, 'steel');
+    drawPixelText(ctx, 'CANLI KONTROL ÖNİZLEME', CANVAS_WIDTH * 0.5, prevY + 30, {
+      scale: 2.5,
+      tone: 'silver',
+      align: 'center'
+    });
+
+    const previewCx =
+      save.settings.joystickSide === 'LEFT'
+        ? rowX + 185
+        : save.settings.joystickSide === 'CENTER'
+          ? CANVAS_WIDTH * 0.5
+          : rowX + rowW - 185;
+    const previewCy = prevY + 118;
+
+    ctx.save();
+    if (save.settings.controlMode === 'DPAD') {
+      const arm = 48;
+      const half = 17;
+      ctx.fillStyle = '#080C16';
+      ctx.beginPath();
+      ctx.arc(previewCx, previewCy, arm + 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = PALETTE.SAFE_GREEN;
+      ctx.fillRect(previewCx - half, previewCy - arm, half * 2, arm * 2);
+      ctx.fillRect(previewCx - arm, previewCy - half, arm * 2, half * 2);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(previewCx - half, previewCy - arm, half * 2, arm * 2);
+      ctx.strokeRect(previewCx - arm, previewCy - half, arm * 2, half * 2);
+    } else if (save.settings.controlMode === 'SWIPE') {
+      ctx.fillStyle = '#0B1324';
+      ctx.fillRect(previewCx - 125, previewCy - 44, 250, 88);
+      ctx.strokeStyle = '#50E8FF';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(previewCx - 125, previewCy - 44, 250, 88);
+      drawPixelText(ctx, 'SÜRÜKLE', previewCx, previewCy, {
+        scale: 3.0,
+        tone: 'cyan',
         align: 'center'
-      }
-    );
-    this.addButton('TOGGLE_JOYSTICK_SIDE', rowX, startY, rowW, rowH);
+      });
+    } else {
+      ctx.beginPath();
+      ctx.arc(previewCx, previewCy, 50, 0, Math.PI * 2);
+      ctx.fillStyle = '#0F1A2E';
+      ctx.fill();
+      ctx.strokeStyle = PALETTE.SAFE_GREEN;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(previewCx, previewCy, 22, 0, Math.PI * 2);
+      ctx.fillStyle = PALETTE.SAFE_GREEN;
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+    ctx.restore();
 
-    // 2. ZORLUK: KOLAY / NORMAL / ZOR
-    const y1 = startY + (rowH + gapY);
+    // 4. ZORLUK: KOLAY / NORMAL / ZOR
+    const y2 = prevY + prevH + 18;
     const diffName =
       save.difficulty === 'EXPLORER'
         ? 'KOLAY'
@@ -844,109 +920,114 @@ export class MenuRenderer {
         : save.difficulty === 'LEGEND'
           ? 'orange'
           : 'gold';
-    this.drawPixelPanel(ctx, rowX, y1, rowW, rowH, 'steel');
-    drawPixelText(ctx, `ZORLUK: ${diffName}`, CANVAS_WIDTH * 0.5, y1 + rowH * 0.5, {
+    this.drawPixelPanel(ctx, rowX, y2, rowW, rowH, 'steel');
+    drawPixelText(ctx, `ZORLUK: ${diffName} ⇄`, CANVAS_WIDTH * 0.5, y2 + rowH * 0.5, {
       scale: 3.8,
       tone: diffTone,
       align: 'center'
     });
-    this.addButton('CYCLE_DIFFICULTY', rowX, y1, rowW, rowH);
+    this.addButton('CYCLE_DIFFICULTY', rowX, y2, rowW, rowH);
 
-    // 3. KONTROL MODU: JOYSTICK / SÜRÜKLE / KLAVYE
-    const y2 = startY + (rowH + gapY) * 2;
-    const ctrlLabel =
-      save.settings.controlMode === 'SWIPE'
-        ? 'SERBEST SÜRÜKLE'
-        : save.settings.controlMode === 'KEYBOARD'
-          ? 'KLAVYE / GAMEPAD'
-          : 'JOYSTICK + KES';
-    this.drawPixelPanel(ctx, rowX, y2, rowW, rowH, 'steel');
-    drawPixelText(ctx, `KONTROL: ${ctrlLabel}`, CANVAS_WIDTH * 0.5, y2 + rowH * 0.5, {
-      scale: 3.6,
-      tone: 'cyan',
-      align: 'center'
-    });
-    this.addButton('CYCLE_CONTROL_MODE', rowX, y2, rowW, rowH);
-
-    // 4. SES: AÇIK / KAPALI
-    const y3 = startY + (rowH + gapY) * 3;
+    // 5. SES & TİTREŞİM (Side-by-side 2-column buttons)
+    const y3 = y2 + rowH + 16;
+    const halfW = 374;
     const soundOn = !save.settings.muted;
-    this.drawPixelPanel(ctx, rowX, y3, rowW, rowH, 'steel');
+    this.drawPixelPanel(ctx, rowX, y3, halfW, rowH, 'steel');
     drawPixelText(
       ctx,
       `SES: ${soundOn ? 'AÇIK' : 'KAPALI'}`,
-      CANVAS_WIDTH * 0.5,
+      rowX + halfW * 0.5,
       y3 + rowH * 0.5,
       {
-        scale: 3.8,
+        scale: 3.3,
         tone: soundOn ? 'green' : 'muted',
         align: 'center'
       }
     );
-    this.addButton('TOGGLE_MUTE', rowX, y3, rowW, rowH);
+    this.addButton('TOGGLE_MUTE', rowX, y3, halfW, rowH);
 
-    // 5. TİTREŞİM: AÇIK / KAPALI
-    const y4 = startY + (rowH + gapY) * 4;
     const hapOn = save.settings.hapticsEnabled;
-    this.drawPixelPanel(ctx, rowX, y4, rowW, rowH, 'steel');
+    const rightColX = rowX + halfW + 20;
+    this.drawPixelPanel(ctx, rightColX, y3, halfW, rowH, 'steel');
     drawPixelText(
       ctx,
       `TİTREŞİM: ${hapOn ? 'AÇIK' : 'KAPALI'}`,
-      CANVAS_WIDTH * 0.5,
-      y4 + rowH * 0.5,
+      rightColX + halfW * 0.5,
+      y3 + rowH * 0.5,
       {
-        scale: 3.8,
+        scale: 3.1,
         tone: hapOn ? 'green' : 'muted',
         align: 'center'
       }
     );
-    this.addButton('TOGGLE_HAPTICS', rowX, y4, rowW, rowH);
+    this.addButton('TOGGLE_HAPTICS', rightColX, y3, halfW, rowH);
 
     // 6. Optional `SONSUZ MOD` once the final stage (100) is cleared!
     if (save.sectors[TOTAL_STAGES]?.cleared) {
-      const y5 = startY + (rowH + gapY) * 5;
-      this.drawPixelPanel(ctx, rowX, y5, rowW, 112, 'goldRed');
-      drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, y5 + 56, {
-        scale: 3.9,
+      const y4 = y3 + rowH + 16;
+      this.drawPixelPanel(ctx, rowX, y4, rowW, 102, 'goldRed');
+      drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, y4 + 51, {
+        scale: 3.8,
         tone: 'gold',
         align: 'center'
       });
-      this.addButton('START_ENDLESS', rowX, y5, rowW, 112);
+      this.addButton('START_ENDLESS', rowX, y4, rowW, 102);
     }
 
     // Bottom `GERİ` Button
-    this.drawPixelPanel(ctx, 250, 1246, 400, 100, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1296, {
+    this.drawPixelPanel(ctx, 250, 1256, 400, 100, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1306, {
       scale: 4.0,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1246, 400, 100);
+    this.addButton('BACK_MAIN', 250, 1256, 400, 100);
   }
 
   // ============================================================================
   // IN-GAME PIXEL MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`, `VICTORY`)
   // ============================================================================
   private renderPauseModal(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    this.drawPixelPanel(ctx, 84, 340, 732, 690, 'steel');
+    this.drawPixelPanel(ctx, 76, 286, 748, 800, 'steel');
 
-    drawPixelText(ctx, 'DURAKLATILDI', CANVAS_WIDTH * 0.5, 420, {
-      scale: 4.4,
+    drawPixelText(ctx, 'DURAKLATILDI', CANVAS_WIDTH * 0.5, 362, {
+      scale: 4.3,
       tone: 'gold',
       align: 'center'
     });
 
-    const sideLabel = save.settings.joystickSide === 'LEFT' ? 'SOL EL' : 'SAĞ EL';
-    this.drawModalActionBtn(ctx, 'DEVAM ET', 500, 'goldRed', 'RESUME_GAME');
+    const ctrlShort =
+      save.settings.controlMode === 'DPAD'
+        ? 'YÖN TUŞU'
+        : save.settings.controlMode === 'SWIPE'
+          ? 'SÜRÜKLE'
+          : 'JOYSTICK';
+    const sideLabel =
+      save.settings.joystickSide === 'LEFT'
+        ? 'SOL'
+        : save.settings.joystickSide === 'CENTER'
+          ? 'ORTA'
+          : 'SAĞ';
+
+    this.drawModalActionBtn(ctx, 'DEVAM ET', 432, 'goldRed', 'RESUME_GAME', 94);
     this.drawModalActionBtn(
       ctx,
-      `JOYSTICK: ${sideLabel} ⇄`,
-      622,
+      `KONTROL: ${ctrlShort} ⇄`,
+      544,
       'navyBtn',
-      'TOGGLE_JOYSTICK_SIDE'
+      'CYCLE_CONTROL_MODE',
+      92
     );
-    this.drawModalActionBtn(ctx, 'TEKRAR BAŞLA', 744, 'navyBtn', 'RESTART_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 866, 'navyBtn', 'QUIT_TO_MENU');
+    this.drawModalActionBtn(
+      ctx,
+      `KONUM: ${sideLabel} ⇄`,
+      654,
+      'navyBtn',
+      'TOGGLE_JOYSTICK_SIDE',
+      92
+    );
+    this.drawModalActionBtn(ctx, 'TEKRAR BAŞLA', 764, 'navyBtn', 'RESTART_SECTOR', 92);
+    this.drawModalActionBtn(ctx, 'ANA MENÜ', 874, 'navyBtn', 'QUIT_TO_MENU', 92);
   }
 
   private renderSecondChanceModal(ctx: CanvasRenderingContext2D): void {
@@ -1008,33 +1089,35 @@ export class MenuRenderer {
 
     const rowLeft = 128;
     const rowRight = 772;
-    let ry = 576;
-
-    const drawBonusLine = (label: string, val: string, tone: 'white' | 'gold' | 'green' | 'cyan'): void => {
-      drawPixelText(ctx, label, rowLeft, ry, { scale: 3.1, tone: 'silver', align: 'left' });
-      drawPixelText(ctx, val, rowRight, ry, { scale: 3.2, tone, align: 'right' });
-      ry += 58;
-    };
-
     const shownPct =
       bd.winReason === 'TWIN_SPLIT' || bd.winReason === 'BOSS_DESTROYED'
         ? 'TAM ZAFER'
         : `${bd.claimedPercent.toFixed(1)}%`;
 
-    drawBonusLine('ALAN', shownPct, 'green');
-    drawBonusLine('BÖLÜM BONUSU', `+${bd.baseBonus}`, 'white');
+    const bonusRows: Array<[string, string, 'white' | 'gold' | 'green' | 'cyan']> = [
+      ['ALAN', shownPct, 'green'],
+      ['BÖLÜM BONUSU', `+${bd.baseBonus}`, 'white']
+    ];
     if (bd.over80Bonus > 0) {
-      drawBonusLine('ÜSTÜN KESİM', `+${bd.over80Bonus}`, 'gold');
+      bonusRows.push(['ÜSTÜN KESİM', `+${bd.over80Bonus}`, 'gold']);
     }
-    drawBonusLine('KALKAN BONUSU', `+${bd.shieldBonus}`, 'cyan');
+    bonusRows.push(['KALKAN BONUSU', `+${bd.shieldBonus}`, 'cyan']);
     if (bd.specialBonus > 0) {
-      drawBonusLine('BOSS İMHA', `+${bd.specialBonus}`, 'gold');
+      bonusRows.push(['BOSS İMHA', `+${bd.specialBonus}`, 'gold']);
     }
     if (bd.firstCutMillionBonus > 0) {
-      drawBonusLine('TEK ÇİZGİ', `+${bd.firstCutMillionBonus}`, 'gold');
+      bonusRows.push(['TEK ÇİZGİ', `+${bd.firstCutMillionBonus}`, 'gold']);
     }
 
-    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 926, {
+    const rowStep = bonusRows.length <= 4 ? 58 : bonusRows.length === 5 ? 50 : 44;
+    let ry = 568;
+    for (const [label, val, tone] of bonusRows) {
+      drawPixelText(ctx, label, rowLeft, ry, { scale: 3.1, tone: 'silver', align: 'left' });
+      drawPixelText(ctx, val, rowRight, ry, { scale: 3.2, tone, align: 'right' });
+      ry += rowStep;
+    }
+
+    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 932, {
       scale: 3.9,
       tone: 'gold',
       align: 'center'

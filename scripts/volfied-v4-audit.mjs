@@ -161,20 +161,21 @@ if (
   fail('BaseBoss.ts missing 0.62x corridor shrink or crushedInPocket support.');
 }
 
-// 5. Verify Mobile 180-Degree Line Backtrack & Clean Control Deck
-console.log('\n5. Auditing Mobile 180-Degree Line Backtrack & Clean D-Pad + KES Deck...');
+// 5. Verify Mobile 180-Degree Line Backtrack & 3-Mode Clean Control Deck
+console.log('\n5. Auditing Mobile 180-Degree Line Backtrack & 3-Mode Mobile Control Deck...');
 const shipText = fs.readFileSync(path.join(SRC_DIR, 'entities', 'PlayerShip.ts'), 'utf8');
 const touchText = fs.readFileSync(path.join(SRC_DIR, 'input', 'TouchControls.ts'), 'utf8');
 
 if (
   shipText.includes('BACKTRACK_SPEED_MULTIPLIER') &&
   shipText.includes('isBacktracking') &&
-  (touchText.includes('drawArrowKey') || touchText.includes('drawPixelDpadArrow') || touchText.includes('getArcadeJoystickSprite')) &&
-  (touchText.includes('drawCutButton') || touchText.includes('drawPixelCutButton') || touchText.includes('getArcadeCutButtonSprite'))
+  touchText.includes('getArcadeJoystickSprite') &&
+  touchText.includes('drawCrossDpad') &&
+  touchText.includes('drawSwapSideButton')
 ) {
-  pass('180-degree Line Backtrack (1.15x rewind) and clean D-Pad + KES button deck verified.');
+  pass('180-degree Line Backtrack and 3-mode mobile control deck (Joystick / D-Pad / Swipe) verified.');
 } else {
-  fail('Missing 180-degree Line Backtrack or pixel D-Pad / KES button sprites.');
+  fail('Missing 180-degree Line Backtrack or 3-mode mobile control deck sprites.');
 }
 
 // 6. Verify V5 100 Sequential Stages Across 4 Tiers & Solid Wall Blocks

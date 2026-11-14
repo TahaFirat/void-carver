@@ -1,21 +1,22 @@
 import { CANVAS_HEIGHT, CANVAS_WIDTH, THUMB_ZONE_Y } from './Config';
+import type { JoystickSide } from '../services/StorageService';
+
+export type { JoystickSide };
 
 /**
- * V5 Universal Responsive Engine.
+ * Universal Mobile-First Responsive Layout Engine.
  *
  * Game physics always run in the fixed `900x1200` (3:4) logical arena, so stage layouts,
  * wall spacing and boss speeds are 100% fair on every device. Only the *screen shell*
  * around it adapts:
  *
- * - `PHONE_PORTRAIT`  (vw/vh < 0.72): legacy 900-wide column, extra height absorbed by
- *   safe areas and a taller control deck (zero letterboxing on tall/notched phones).
- * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; circular joystick docked to the
- *   player's chosen side (`SAĞ` or `SOL`) with optional `KES` + 1-tap hand swap on the other side.
- * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet (side wings adapt cleanly to `SAĞ` or `SOL`
- *   joystick preference).
+ * - `PHONE_PORTRAIT`  (vw/vh < 0.72): 900-wide column, extra height absorbed by safe areas
+ *   and a generous uncluttered control deck (`SAĞ`, `SOL`, or `ORTA`).
+ * - `TABLET_PORTRAIT` (0.72..1.12): arena column centered; ergonomic controller docked to
+ *   the player's chosen position (`SAĞ`, `SOL`, or `ORTA`).
+ * - `LANDSCAPE_SPLIT` (> 1.12): 3-column arcade cabinet with side wings.
  */
 export type LayoutMode = 'PHONE_PORTRAIT' | 'TABLET_PORTRAIT' | 'LANDSCAPE_SPLIT';
-export type JoystickSide = 'RIGHT' | 'LEFT';
 
 export interface SafeInsets {
   top: number;
@@ -68,9 +69,7 @@ export interface GameLayout {
   joystick: { cx: number; cy: number; radius: number };
   /** Generous touch capture region for thumb steering on the chosen side. */
   joystickZone: Rect;
-  /** Optional instant-carve button on the opposite side for two-thumb arcade play. */
-  cutButton: { cx: number; cy: number; radius: number };
-  /** Quick 1-tap `SOL EL <-> SAĞ EL` swap pill on the opposite side of the deck. */
+  /** Quick 1-tap `KONUM: SAĞ / SOL / ORTA` cycle pill on the auxiliary side of the deck. */
   swapSideButton: Rect;
   pauseButton: Rect;
 
@@ -171,35 +170,29 @@ export function computeLayout(
       h: innerH - wingPad * 2
     };
 
-    const stickWing = joystickSide === 'RIGHT' ? rightWing : leftWing;
-    const auxWing = joystickSide === 'RIGHT' ? leftWing : rightWing;
+    const stickWing = joystickSide === 'LEFT' ? leftWing : rightWing;
+    const auxWing = joystickSide === 'LEFT' ? rightWing : leftWing;
 
-    const joystickRadius = Math.round(Math.max(82, Math.min(114, stickWing.w * 0.34)));
+    const joystickRadius = Math.round(Math.max(88, Math.min(122, stickWing.w * 0.36)));
     const joystick = {
       cx: stickWing.x + stickWing.w * 0.5,
-      cy: stickWing.y + stickWing.h - joystickRadius - 54,
+      cy: stickWing.y + stickWing.h - joystickRadius - 52,
       radius: joystickRadius
     };
     const joystickZone: Rect = {
       x: stickWing.x,
-      y: stickWing.y + stickWing.h * 0.44,
+      y: stickWing.y + stickWing.h * 0.4,
       w: stickWing.w,
-      h: stickWing.h * 0.56
+      h: stickWing.h * 0.6
     };
 
-    const cutRadius = Math.round(Math.max(62, Math.min(84, auxWing.w * 0.26)));
-    const swapW = Math.min(auxWing.w - 28, 236);
-    const swapH = 54;
+    const swapW = Math.min(auxWing.w - 28, 244);
+    const swapH = 58;
     const swapSideButton: Rect = {
       x: Math.round(auxWing.x + (auxWing.w - swapW) * 0.5),
-      y: Math.round(auxWing.y + auxWing.h - swapH - 18),
+      y: Math.round(auxWing.y + auxWing.h - swapH - 22),
       w: Math.round(swapW),
       h: swapH
-    };
-    const cutButton = {
-      cx: auxWing.x + auxWing.w * 0.5,
-      cy: swapSideButton.y - cutRadius - 24,
-      radius: cutRadius
     };
 
     const pauseSize = Math.round(
@@ -251,7 +244,6 @@ export function computeLayout(
       rightWing,
       joystick,
       joystickZone,
-      cutButton,
       swapSideButton,
       pauseButton,
       menuColumn,
@@ -266,55 +258,64 @@ export function computeLayout(
   const innerH = height - safe.top - safe.bottom;
   const extraH = Math.max(0, innerH - LEGACY_H);
   const columnX = (width - LEGACY_W) * 0.5;
-  const topShift = safe.top + Math.min(extraH * 0.25, 60);
+  const topShift = safe.top + Math.min(extraH * 0.22, 54);
   const deckTop = topShift + STATUS_BOTTOM;
   const deckBottom = height - safe.bottom;
-  const deckH = Math.max(240, deckBottom - deckTop);
+  const deckH = Math.max(250, deckBottom - deckTop);
   const deckRect: Rect = { x: 0, y: deckTop, w: width, h: deckH };
 
   const isTablet = mode === 'TABLET_PORTRAIT' || width > LEGACY_W + 120;
   const joystickRadius = Math.round(
-    Math.max(82, Math.min(118, deckH * 0.34, deckH * 0.5 - 40))
+    Math.max(94, Math.min(124, deckH * 0.36, deckH * 0.5 - 32))
   );
 
   const leftCx = isTablet
-    ? safe.left + joystickRadius + 38
-    : columnX + Math.max(joystickRadius + 34, 212);
+    ? safe.left + joystickRadius + 46
+    : columnX + Math.max(joystickRadius + 42, 236);
   const rightCx = isTablet
-    ? width - safe.right - joystickRadius - 38
-    : columnX + LEGACY_W - Math.max(joystickRadius + 34, 212);
+    ? width - safe.right - joystickRadius - 46
+    : columnX + LEGACY_W - Math.max(joystickRadius + 42, 236);
+  const centerCx = width * 0.5;
 
-  const stickCx = joystickSide === 'RIGHT' ? rightCx : leftCx;
-  const auxCx = joystickSide === 'RIGHT' ? leftCx : rightCx;
+  const stickCx =
+    joystickSide === 'RIGHT' ? rightCx : joystickSide === 'LEFT' ? leftCx : centerCx;
 
   const joystick = {
     cx: stickCx,
-    cy: deckTop + Math.min(deckH * 0.46, deckH - joystickRadius - 42),
+    cy: deckTop + Math.min(deckH * 0.47, deckH - joystickRadius - 34),
     radius: joystickRadius
   };
 
   const joystickZone: Rect =
     joystickSide === 'RIGHT'
-      ? { x: width * 0.45, y: deckTop, w: width * 0.55, h: deckH }
-      : { x: 0, y: deckTop, w: width * 0.55, h: deckH };
+      ? { x: width * 0.3, y: deckTop, w: width * 0.7, h: deckH }
+      : joystickSide === 'LEFT'
+        ? { x: 0, y: deckTop, w: width * 0.7, h: deckH }
+        : { x: 0, y: deckTop, w: width, h: deckH };
 
-  const swapW = 248;
-  const swapH = 54;
-  const cutRadius = Math.round(Math.max(62, Math.min(82, (deckH - swapH - 54) * 0.42)));
-  const cutCy = Math.round(deckTop + Math.max(cutRadius + 28, (deckH - swapH - 26) * 0.48));
-  const cutButton = {
-    cx: auxCx,
-    cy: cutCy,
-    radius: cutRadius
-  };
-  const swapSideButton: Rect = {
-    x: Math.round(auxCx - swapW * 0.5),
-    y: Math.round(Math.min(deckBottom - swapH - 10, cutCy + cutRadius + 16)),
-    w: swapW,
-    h: swapH
-  };
+  let swapSideButton: Rect;
+  if (joystickSide === 'CENTER') {
+    const swapW = 196;
+    const swapH = 54;
+    swapSideButton = {
+      x: Math.round(Math.max(safe.left + 16, columnX + 20)),
+      y: Math.round(deckTop + 16),
+      w: swapW,
+      h: swapH
+    };
+  } else {
+    const auxCx = joystickSide === 'RIGHT' ? columnX + 164 : columnX + LEGACY_W - 164;
+    const swapW = 236;
+    const swapH = 60;
+    swapSideButton = {
+      x: Math.round(auxCx - swapW * 0.5),
+      y: Math.round(deckTop + Math.min(deckH * 0.56, deckH - swapH - 18)),
+      w: swapW,
+      h: swapH
+    };
+  }
 
-  const pauseButton: Rect = { x: columnX + LEGACY_W - 124, y: topShift, w: 124, h: 88 };
+  const pauseButton: Rect = { x: columnX + LEGACY_W - 128, y: topShift, w: 128, h: 88 };
 
   const menuColumn: ColumnTransform = {
     tx: columnX,
@@ -344,7 +345,6 @@ export function computeLayout(
     rightWing: null,
     joystick,
     joystickZone,
-    cutButton,
     swapSideButton,
     pauseButton,
     menuColumn,

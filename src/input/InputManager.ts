@@ -4,6 +4,7 @@ import { TouchControls } from './TouchControls';
 
 export interface InputState {
   direction: Direction | null;
+  secondaryDirection?: Direction | null;
   carveHeld: boolean;
   autoCarveSwipe: boolean;
   pauseJustPressed: boolean;
@@ -48,6 +49,13 @@ export class InputManager {
       (this.dirStack.length > 0 ? this.dirStack[this.dirStack.length - 1] : null) ??
       gpSnap.direction;
 
+    const secondaryDirection: Direction | null =
+      touchSnap.direction !== null
+        ? touchSnap.secondaryDirection
+        : this.dirStack.length >= 2
+          ? this.dirStack[this.dirStack.length - 2]
+          : null;
+
     const carveHeld =
       touchSnap.carveActive || this.carveKeys.size > 0 || gpSnap.carveHeld;
 
@@ -59,6 +67,7 @@ export class InputManager {
 
     return {
       direction,
+      secondaryDirection,
       carveHeld,
       autoCarveSwipe: touchSnap.autoCarveSwipe,
       pauseJustPressed,

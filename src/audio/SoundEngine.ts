@@ -50,6 +50,7 @@ class SoundEngineImpl {
 
     window.addEventListener('pointerdown', unlock, { passive: true });
     window.addEventListener('touchstart', unlock, { passive: true });
+    window.addEventListener('touchend', unlock, { passive: true });
     window.addEventListener('keydown', unlock, { passive: true });
   }
 

@@ -47,25 +47,25 @@ export const MAX_ACCUMULATOR = 0.05;
 // Authentic 1989 Arcade Gameplay & Mobile Ergonomic Tuning
 export const TARGET_CLAIM_PERCENT = 80.0;
 export const ENRAGE_CLAIM_PERCENT = 72.0;
-export const CORNER_BUFFER_DIST = 26; // 26px generous mobile corner magnet
-export const CORNER_BUFFER_TIME = 0.18; // 180ms early turn memory
+export const CORNER_BUFFER_DIST = 32; // 32px generous mobile corner magnet
+export const CORNER_BUFFER_TIME = 0.22; // 220ms early turn memory
 
 // Tuned Mobile-Friendly Speed Rules:
 // - Fast & responsive player border/cut speeds
-// - 180-degree Line Backtrack speed: 1.32x current cut speed for quick safe retreats
-export const BASE_BORDER_SPEED = 360;
-export const BASE_CUT_SPEED = 330;
+// - 180-degree Line Backtrack speed: 1.38x current cut speed for quick safe retreats
+export const BASE_BORDER_SPEED = 380;
+export const BASE_CUT_SPEED = 345;
 export const BASE_FUSE_SPEED = 360;
 export const BASE_FUSE_MULTIPLIER = BASE_FUSE_SPEED / BASE_CUT_SPEED;
-export const SPEED_BOOSTED_CUT_SPEED = 465;
+export const SPEED_BOOSTED_CUT_SPEED = 480;
 export const SPEED_UP_STEP = (SPEED_BOOSTED_CUT_SPEED - BASE_CUT_SPEED) / BASE_CUT_SPEED;
 export const MAX_SPEED_MULTIPLIER = 1.7;
-export const BACKTRACK_SPEED_MULTIPLIER = 1.32;
+export const BACKTRACK_SPEED_MULTIPLIER = 1.38;
 export const SHIELD_ZERO_GRACE_SECONDS = 4.0;
 export const IDLE_FUSE_DELAY_SECONDS = 5.5;
 
-// Authentic 1989 Arcade Scoring
-export const DEFAULT_ARCADE_HIGH_SCORE = 800_390;
+// Authentic 1989 Arcade Scoring (honest personal best starting from 0)
+export const DEFAULT_ARCADE_HIGH_SCORE = 0;
 export const SCORE_PER_PERCENT = 100;
 export const BIG_CUT_THRESHOLD = 15.0;
 export const BIG_CUT_MULTIPLIER = 2.5;

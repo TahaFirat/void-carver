@@ -1,5 +1,6 @@
 import { PALETTE } from '../../core/Config';
 import { pointInPolygonStrict, resolvePolygonPenetration } from '../../geometry/PolygonMath';
+import { bounceCircleOffSolidBoxes, SolidRect } from '../../geometry/SolidBoxes';
 import { Point } from '../../geometry/Types';
 import { blitArenaPixelSprite } from '../../rendering/PixelArtEngine';
 import {
@@ -12,14 +13,16 @@ import { BaseBoss, BossUpdateContext, HitCircle } from './BaseBoss';
 interface SegmentState {
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   angle: number;
 }
 
 /**
  * 16-Bit Pixel-Art Armored Giant Centipede (`CentipedeBoss`).
- * - Stage 01: `YELLOW_GREEN`, `10` segments (`01-hedef-oynanis.jpg` signature boss!)
- * - Stage 08: `GOLD`, `12` segments + twin plasma spit
- * - Stage 15: `CRIMSON`, `15` segments + aggressive trail hunting & rapid plasma spit
+ * - KOLAY: `YELLOW_GREEN`, `9` segments
+ * - ORTA: `GOLD`, `11` segments + twin plasma spit
+ * - ZOR / USTA: `GOLD` / `CRIMSON`, `13-15` segments + trail pressure
  */
 export class CentipedeBoss extends BaseBoss {
   public readonly archetype = 'CENTIPEDE' as const;
@@ -27,15 +30,15 @@ export class CentipedeBoss extends BaseBoss {
   private readonly variant: CentipedeColorVariant;
   private readonly segments: SegmentState[] = [];
   private weavePhase = 0;
-  private spitTimer = 2.8;
+  private spitTimer = 3.0;
 
   constructor(
     spawn: Point,
-    segmentCount = 10,
+    segmentCount = 9,
     variant: CentipedeColorVariant = 'YELLOW_GREEN',
     maxHp = 6
   ) {
-    const baseSpd = variant === 'CRIMSON' ? 215 : variant === 'GOLD' ? 192 : 170;
+    const baseSpd = variant === 'CRIMSON' ? 205 : variant === 'GOLD' ? 185 : 162;
     super(spawn, 36, maxHp, baseSpd, -baseSpd * 0.78);
     this.variant = variant;
 
@@ -44,6 +47,8 @@ export class CentipedeBoss extends BaseBoss {
       this.segments.push({
         x: spawn.x - (i + 1) * spacing * 0.65,
         y: spawn.y - (i + 1) * spacing * 0.45,
+        vx: 0,
+        vy: 0,
         angle: 0.6
       });
     }
@@ -64,11 +69,27 @@ export class CentipedeBoss extends BaseBoss {
     }
   }
 
+  public bounceSegmentsOffBoxes(
+    boxes: readonly SolidRect[],
+    activePolygon: readonly Point[]
+  ): void {
+    if (boxes.length === 0) return;
+    const segClampR = 18 * this.renderScale;
+    for (const seg of this.segments) {
+      if (bounceCircleOffSolidBoxes(seg, 16 * this.renderScale, boxes)) {
+        const solved = resolvePolygonPenetration({ x: seg.x, y: seg.y }, segClampR, activePolygon);
+        seg.x = solved.position.x;
+        seg.y = solved.position.y;
+      }
+    }
+  }
+
   public override getHitCircles(): HitCircle[] {
     const circles: HitCircle[] = [
-      { x: this.x, y: this.y, radius: this.boundingRadius * 0.88 }
+      { x: this.x, y: this.y, radius: this.boundingRadius * 0.84 }
     ];
-    const segRadius = 21 * this.renderScale;
+    // Hit radius (16 * scale) stays strictly inside polygon clamp radius (18 * scale)
+    const segRadius = 16 * this.renderScale;
     for (const seg of this.segments) {
       circles.push({ x: seg.x, y: seg.y, radius: segRadius });
     }
@@ -77,14 +98,14 @@ export class CentipedeBoss extends BaseBoss {
 
   protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
     const tierMult =
-      this.variant === 'CRIMSON' ? 1.26 : this.variant === 'GOLD' ? 1.12 : 1.0;
-    this.weavePhase += bctx.dt * 3.1 * speedScale * tierMult;
+      this.variant === 'CRIMSON' ? 1.2 : this.variant === 'GOLD' ? 1.08 : 1.0;
+    this.weavePhase += bctx.dt * 2.9 * speedScale * tierMult;
 
-    const targetSpd = 178 * speedScale * tierMult;
+    const targetSpd = 170 * speedScale * tierMult;
     let heading = Math.atan2(this.vy, this.vx);
 
-    // Subtle organic serpentine S-curve + hunting pressure when player cuts!
-    heading += Math.sin(this.weavePhase) * 1.45 * bctx.dt;
+    // Organic serpentine S-curve + gentle hunting pressure when player cuts
+    heading += Math.sin(this.weavePhase) * 1.35 * bctx.dt;
     if (bctx.playerState === 'CUTTING' && bctx.activeTrail.length >= 2) {
       const targetPt =
         this.variant === 'CRIMSON'
@@ -94,7 +115,7 @@ export class CentipedeBoss extends BaseBoss {
       let diff = desired - heading;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      const steerRate = this.variant === 'YELLOW_GREEN' ? 0.65 : 1.25;
+      const steerRate = this.variant === 'YELLOW_GREEN' ? 0.52 : 1.05;
       heading += Math.max(-steerRate * bctx.dt, Math.min(steerRate * bctx.dt, diff));
     }
 
@@ -105,6 +126,7 @@ export class CentipedeBoss extends BaseBoss {
 
     // Follow-the-leader kinematic chain for all segments
     const segDist = 23 * this.renderScale;
+    const segClampR = 18 * this.renderScale;
     let leaderX = this.x;
     let leaderY = this.y;
     for (let i = 0; i < this.segments.length; i++) {
@@ -119,7 +141,7 @@ export class CentipedeBoss extends BaseBoss {
       }
       const solved = resolvePolygonPenetration(
         { x: seg.x, y: seg.y },
-        16 * this.renderScale,
+        segClampR,
         bctx.activePolygon
       );
       seg.x = solved.position.x;
@@ -129,22 +151,25 @@ export class CentipedeBoss extends BaseBoss {
       leaderY = seg.y;
     }
 
-    // Gold & Crimson Centipedes (or enraged Stage 01) spit twin pincer plasma bolts!
+    // Gold & Crimson Centipedes (or enraged YELLOW_GREEN) spit twin pincer plasma bolts from safe range
     if (this.variant !== 'YELLOW_GREEN' || this.enraged) {
       this.spitTimer -= bctx.dt * speedScale * tierMult;
       if (this.spitTimer <= 0) {
-        this.spitTimer = this.variant === 'CRIMSON' ? 2.1 : 2.8;
-        const aim = Math.atan2(bctx.playerPos.y - this.y, bctx.playerPos.x - this.x);
-        const spd = 255 * speedScale;
-        for (const spread of [-0.16, 0.16]) {
-          const a = aim + spread;
-          bctx.projectiles.spawnEnemyBullet(
-            { x: this.x + Math.cos(a) * 28, y: this.y + Math.sin(a) * 28 },
-            Math.cos(a) * spd,
-            Math.sin(a) * spd,
-            PALETTE.CUT_ORANGE,
-            5.5
-          );
+        this.spitTimer = this.variant === 'CRIMSON' ? 2.3 : 3.0;
+        const distToPlayer = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
+        if (distToPlayer >= 105 && pointInPolygonStrict({ x: this.x, y: this.y }, bctx.activePolygon)) {
+          const aim = Math.atan2(bctx.playerPos.y - this.y, bctx.playerPos.x - this.x);
+          const spd = 245 * speedScale;
+          for (const spread of [-0.16, 0.16]) {
+            const a = aim + spread;
+            bctx.projectiles.spawnEnemyBullet(
+              { x: this.x, y: this.y },
+              Math.cos(a) * spd,
+              Math.sin(a) * spd,
+              PALETTE.CUT_ORANGE,
+              5.5
+            );
+          }
         }
       }
     }

@@ -129,13 +129,14 @@ export class ScoreSystem {
   }
 
   /**
-   * Exponential over-80% mastery bonus scaling smoothly up to `+500,000` near `99.9%`!
+   * Exponential over-target mastery bonus scaling smoothly up to `+500,000` near `99.8%`!
    */
-  public static computeOver80Bonus(claimedPercent: number): number {
-    if (claimedPercent <= 80.0) return 0;
+  public static computeOver80Bonus(claimedPercent: number, targetPercent = 80): number {
+    if (claimedPercent <= targetPercent) return 0;
     if (claimedPercent >= 99.8) return MAX_OVER_80_BONUS;
 
-    const normalized = Math.max(0, Math.min(1, (claimedPercent - 80.0) / 19.8));
+    const span = Math.max(1.0, 99.8 - targetPercent);
+    const normalized = Math.max(0, Math.min(1, (claimedPercent - targetPercent) / span));
     const linearPart = normalized * 60_000;
     const expPart = Math.pow(normalized, 2.75) * (MAX_OVER_80_BONUS - 60_000);
     return Math.min(MAX_OVER_80_BONUS, Math.round((linearPart + expPart) / 100) * 100);
@@ -150,7 +151,9 @@ export class ScoreSystem {
     targetPercent = 80
   ): LevelClearBreakdown {
     const baseBonus = Math.round(LEVEL_CLEAR_BASE_BONUS * diffMultiplier);
-    const over80Bonus = Math.round(this.computeOver80Bonus(claimedPercent) * diffMultiplier);
+    const over80Bonus = Math.round(
+      this.computeOver80Bonus(claimedPercent, targetPercent) * diffMultiplier
+    );
     const shieldBonus = Math.round(remainingShieldUnits * SHIELD_UNIT_BONUS * diffMultiplier);
 
     let specialBonus = 0;

@@ -2,9 +2,9 @@ import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
 import { DifficultyId, SHIP_SKINS, ShipSkinId } from '../core/Config';
 
-export type ControlMode = 'DPAD' | 'SWIPE' | 'KEYBOARD';
+export type ControlMode = 'JOYSTICK' | 'DPAD' | 'SWIPE';
 export type CarveButtonMode = 'HOLD' | 'TOGGLE';
-export type JoystickSide = 'RIGHT' | 'LEFT';
+export type JoystickSide = 'RIGHT' | 'LEFT' | 'CENTER';
 export type LanguageCode = 'TR' | 'EN';
 
 export interface SectorProgress {
@@ -60,14 +60,7 @@ function isValidShipId(val: unknown): val is ShipSkinId {
 }
 
 function detectDefaultControlMode(): ControlMode {
-  if (typeof window !== 'undefined') {
-    const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-    const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    if (coarse || touch) {
-      return 'DPAD';
-    }
-  }
-  return 'DPAD';
+  return 'JOYSTICK';
 }
 
 export function createDefaultSaveData(): GameSaveData {
@@ -82,7 +75,7 @@ export function createDefaultSaveData(): GameSaveData {
   }
 
   return {
-    version: 3,
+    version: 4,
     difficulty: 'COMMANDER',
     selectedShip: 'TITAN',
     unlockedSector: 1,
@@ -110,7 +103,7 @@ export function createDefaultSaveData(): GameSaveData {
       muted: false,
       hapticsEnabled: true,
       language: 'TR',
-      autoCut: false
+      autoCut: true
     }
   };
 }
@@ -154,18 +147,43 @@ class StorageServiceImpl {
           ? parsed.selectedShip
           : 'TITAN';
 
+        const rawVersion = Number(parsed.version) || 1;
         const mergedSettings: PlayerSettings = {
           ...defaults.settings,
           ...(parsed.settings ?? {})
         };
-        if (mergedSettings.joystickSide !== 'LEFT' && mergedSettings.joystickSide !== 'RIGHT') {
+        if (
+          mergedSettings.joystickSide !== 'LEFT' &&
+          mergedSettings.joystickSide !== 'RIGHT' &&
+          mergedSettings.joystickSide !== 'CENTER'
+        ) {
           mergedSettings.joystickSide = 'RIGHT';
         }
+        // Migrate pre-v4 saves (where 'DPAD' or 'KEYBOARD' was the legacy default) cleanly to 'JOYSTICK'
+        const rawMode = (parsed.settings as { controlMode?: string } | undefined)?.controlMode;
+        if (rawVersion < 4) {
+          mergedSettings.controlMode = rawMode === 'SWIPE' ? 'SWIPE' : 'JOYSTICK';
+          mergedSettings.autoCut = true;
+        } else if (
+          mergedSettings.controlMode !== 'JOYSTICK' &&
+          mergedSettings.controlMode !== 'DPAD' &&
+          mergedSettings.controlMode !== 'SWIPE'
+        ) {
+          mergedSettings.controlMode = 'JOYSTICK';
+        }
+
+        const validDiff =
+          parsed.difficulty === 'EXPLORER' ||
+          parsed.difficulty === 'COMMANDER' ||
+          parsed.difficulty === 'LEGEND'
+            ? parsed.difficulty
+            : 'COMMANDER';
 
         this.cached = {
           ...defaults,
           ...parsed,
-          version: 3,
+          version: 4,
+          difficulty: validDiff,
           unlockedSector: Math.max(
             1,
             Math.min(100, Math.round(Number(parsed.unlockedSector) || 1))

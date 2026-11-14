@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateStage, isTierUnlocked } from '../CampaignGenerator';
+import { ScoreSystem } from '../../core/ScoreSystem';
+import { createBossesForLevel } from '../../entities/bosses/BossFactory';
 
 describe('V5 Campaign 100 Stages & Tier Progression Tests', () => {
   it('All 100 stages generate valid configs with correct boundaries, spacing and solid walls', () => {
@@ -91,5 +93,26 @@ describe('V5 Campaign 100 Stages & Tier Progression Tests', () => {
     // Player cleared stage 75 => unlockedSector = 76
     expect(isStageUnlocked(76, 76)).toBe(true);
     expect(isTierUnlocked(3, 76)).toBe(true); // USTA unlocked!
+  });
+
+  it('Enforces smart campaign design: zero barriers in KOLAY, ALIEN_BRAIN only on Tier Finales, and target-anchored over-target bonus', () => {
+    for (let s = 1; s <= 100; s++) {
+      const stage = generateStage(s);
+      if (s <= 25) {
+        expect(stage.barrierSegments).toHaveLength(0);
+        expect(stage.escortBossType).toBeNull();
+      }
+      if (s === 25 || s === 50 || s === 75 || s === 100) {
+        expect(stage.bossType).toBe('ALIEN_BRAIN');
+      } else {
+        expect(stage.bossType).not.toBe('ALIEN_BRAIN');
+      }
+      const spawned = createBossesForLevel(stage.id, stage.bossType, stage.bossHp, stage.tierIndex);
+      expect(spawned.length).toBeGreaterThanOrEqual(1);
+    }
+
+    // Over-target bonus must only trigger strictly above stage targetPercent (e.g. 88% in USTA)
+    expect(ScoreSystem.computeOver80Bonus(88.0, 88)).toBe(0);
+    expect(ScoreSystem.computeOver80Bonus(92.0, 88)).toBeGreaterThan(0);
   });
 });

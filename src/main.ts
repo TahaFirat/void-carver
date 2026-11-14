@@ -73,9 +73,54 @@ function bootstrap(): void {
     };
   };
 
+  // Native Touch pipeline (`passive: false` + `preventDefault()`):
+  // Mandatory on iOS WKWebView / Safari to suppress the iOS text-selection magnifier loupe,
+  // edit callout menu, double-tap zoom, and premature `pointercancel` drops while holding a thumb!
+  window.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.cancelable) e.preventDefault();
+      if (cachedRect.width === 0) {
+        cachedRect = canvas.getBoundingClientRect();
+      }
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        const { vx, vy } = toVirtualCoords(t.clientX, t.clientY);
+        engine.handlePointerDown(1000 + t.identifier, vx, vy);
+      }
+    },
+    { passive: false }
+  );
+
+  window.addEventListener(
+    'touchmove',
+    (e) => {
+      if (e.cancelable) e.preventDefault();
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        const { vx, vy } = toVirtualCoords(t.clientX, t.clientY);
+        engine.handlePointerMove(1000 + t.identifier, vx, vy);
+      }
+    },
+    { passive: false }
+  );
+
+  const endTouches = (e: TouchEvent): void => {
+    if (e.cancelable) e.preventDefault();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      engine.handlePointerUp(1000 + t.identifier);
+    }
+  };
+  window.addEventListener('touchend', endTouches, { passive: false });
+  window.addEventListener('touchcancel', endTouches, { passive: false });
+
+  // Desktop mouse / pen fallback (skips `touch` pointerType already handled above)
   window.addEventListener(
     'pointerdown',
     (e) => {
+      if (e.pointerType === 'touch') return;
+      if (e.cancelable) e.preventDefault();
       if (cachedRect.width === 0) {
         cachedRect = canvas.getBoundingClientRect();
       }
@@ -88,18 +133,29 @@ function bootstrap(): void {
   window.addEventListener(
     'pointermove',
     (e) => {
+      if (e.pointerType === 'touch') return;
       const { vx, vy } = toVirtualCoords(e.clientX, e.clientY);
       engine.handlePointerMove(e.pointerId, vx, vy);
     },
     { passive: false }
   );
 
-  window.addEventListener('pointerup', (e) => engine.handlePointerUp(e.pointerId), {
-    passive: true
-  });
-  window.addEventListener('pointercancel', (e) => engine.handlePointerUp(e.pointerId), {
-    passive: true
-  });
+  window.addEventListener(
+    'pointerup',
+    (e) => {
+      if (e.pointerType === 'touch') return;
+      engine.handlePointerUp(e.pointerId);
+    },
+    { passive: true }
+  );
+  window.addEventListener(
+    'pointercancel',
+    (e) => {
+      if (e.pointerType === 'touch') return;
+      engine.handlePointerUp(e.pointerId);
+    },
+    { passive: true }
+  );
   window.addEventListener('blur', () => engine.resetPointerInputs());
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
@@ -107,8 +163,11 @@ function bootstrap(): void {
     }
   });
 
-  // Prevent browser context menu on long press
+  // Block all browser selection, callout, drag & pinch gestures
   window.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.addEventListener('selectstart', (e) => e.preventDefault());
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+  document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false } as AddEventListenerOptions);
 
   void engine.boot(ctx);
 }
