@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Void Carver: Alan Kesme — Gizlilik Politikası / Privacy Policy</title>
+    <style>
+      :root {
+        --bg: #070b14;
+        --card: #111828;
+        --border: #2c3a56;
+        --accent: #f0b429;
+        --green: #28e038;
+        --text: #f4f6fb;
+        --muted: #93a3bf;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.65;
+        min-height: 100vh;
+        padding: 32px 16px 64px;
+      }
+      .container {
+        max-width: 840px;
+        margin: 0 auto;
+        background: var(--card);
+        border: 2px solid var(--border);
+        border-radius: 18px;
+        padding: 32px 28px;
+        box-shadow: 0 18px 48px rgba(2, 4, 10, 0.72);
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding-bottom: 24px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .brand h1 {
+        font-size: 1.55rem;
+        letter-spacing: 0.04em;
+        color: var(--accent);
+      }
+      .brand span {
+        color: var(--muted);
+        font-size: 0.92rem;
+        font-weight: 500;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+      }
+      .tab-btn {
+        background: #0b1120;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        padding: 8px 18px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .tab-btn.active {
+        background: var(--accent);
+        color: #080b14;
+        border-color: var(--accent);
+      }
+      h2 {
+        color: var(--accent);
+        font-size: 1.15rem;
+        margin: 22px 0 8px;
+      }
+      p,
+      li {
+        color: #d6dfef;
+        font-size: 0.98rem;
+        margin-bottom: 10px;
+      }
+      ul {
+        padding-left: 22px;
+        margin-bottom: 12px;
+      }
+      .badge {
+        display: inline-block;
+        background: #0b1120;
+        border: 1px solid var(--green);
+        color: var(--green);
+        padding: 5px 14px;
+        border-radius: 999px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin-bottom: 16px;
+      }
+      .hidden {
+        display: none;
+      }
+      footer {
+        margin-top: 32px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="brand">
+          <h1>VOID CARVER: ALAN KESME</h1>
+          <span>Gizlilik Politikası &bull; Privacy Policy</span>
+        </div>
+        <div class="tabs">
+          <button id="btn-en" class="tab-btn active" onclick="setLang('en')">ENGLISH</button>
+          <button id="btn-tr" class="tab-btn" onclick="setLang('tr')">TÜRKÇE</button>
+        </div>
+      </header>
+
+      <section id="sec-en">
+        <div class="badge">✓ Zero Personal Data Collected &bull; 100% Offline &amp; Ad-Free</div>
+        <p><strong>Last Updated:</strong> November 15, 2026</p>
+        <p>
+          <strong>Void Carver: Alan Kesme</strong> ("the Game"), developed by
+          <strong>Taha Fırat</strong>, is engineered with strict privacy by design. The Game
+          requires no account registration, login, analytics SDK, or internet connection, and
+          operates completely offline on your device.
+        </p>
+
+        <h2>1. Personal Data Collection</h2>
+        <p>
+          We <strong>do not collect, store, track, transmit, or share any personal data</strong>
+          (including name, email, phone number, location, device identifiers, contacts, photos,
+          camera, or microphone data) on any external server or third-party service.
+        </p>
+
+        <h2>2. On-Device Game Progress Storage</h2>
+        <p>
+          Solely to save your high scores and control preferences, non-personal game state is
+          stored locally on your device using Apple iOS <code>UserDefaults</code>
+          (<code>CA92.1</code>) or browser <code>localStorage</code>:
+        </p>
+        <ul>
+          <li>Personal high scores and deepest wave reached per difficulty tier</li>
+          <li>Unlocked fighter ships and achievements</li>
+          <li>Audio, haptics, handedness, and touch control mode preferences</li>
+        </ul>
+
+        <h2>3. Third-Party Services, Ads &amp; In-App Purchases</h2>
+        <p>
+          Void Carver contains <strong>zero third-party advertising SDKs</strong>,
+          <strong>zero analytics trackers</strong>, and <strong>zero In-App Purchases</strong>.
+        </p>
+
+        <h2>4. Contact Us</h2>
+        <p>
+          If you have any questions about this Privacy Policy, please contact developer
+          <strong>Taha Fırat</strong> at
+          <a href="mailto:tafifirat@gmail.com">tafifirat@gmail.com</a>.
+        </p>
+      </section>
+
+      <section id="sec-tr" class="hidden">
+        <div class="badge">✓ Kişisel Veri Toplanmaz &bull; %100 Çevrimdışı ve Reklamsız</div>
+        <p><strong>Son Güncelleme:</strong> 15 Kasım 2026</p>
+        <p>
+          <strong>Taha Fırat</strong> tarafından geliştirilen
+          <strong>Void Carver: Alan Kesme</strong> ("Oyun"), oyuncu gizliliğini en üst düzeyde
+          koruyacak şekilde tasarlanmıştır. Uygulamamız herhangi bir üyelik, hesap açma veya
+          internet bağlantısı gerektirmez; tamamen çevrimdışı çalışır.
+        </p>
+
+        <h2>1. Toplanan Veriler</h2>
+        <p>
+          Oyunumuz ad, e-posta adresi, telefon numarası, konum, cihaz kimliği, rehber, fotoğraf,
+          mikrofon veya kamera verisi dahil <strong>hiçbir kişisel veriyi toplamaz, işlemez,
+          izlemez ve harici bir sunucuya iletmez</strong>.
+        </p>
+
+        <h2>2. Cihaz İçi Yerel Kayıt (Local Preferences)</h2>
+        <p>
+          Yalnızca oyun ilerlemenizi korumak amacıyla aşağıdaki kişisel olmayan veriler doğrudan
+          cihazınızın yerel depolama alanında (iOS <code>UserDefaults</code>
+          <code>CA92.1</code>) saklanır:
+        </p>
+        <ul>
+          <li>Zorluk kademelerine göre en yüksek skorlar ve ulaşılan en derin dalga</li>
+          <li>Açılan avcı gemileri ve oyun içi başarımlar</li>
+          <li>Ses, dokunsal titreşim (Haptics) ve dokunmatik kontrol modu tercihleri</li>
+        </ul>
+
+        <h2>3. Üçüncü Taraf Hizmetler, Reklam ve Satın Alımlar</h2>
+        <p>
+          Uygulamada üçüncü taraf reklam ağı, analitik takip SDK'sı veya uygulama içi satın alma
+          bulunmamaktadır.
+        </p>
+
+        <h2>4. İletişim</h2>
+        <p>
+          Sorularınız için geliştirici <strong>Taha Fırat</strong> ile
+          <a href="mailto:tafifirat@gmail.com">tafifirat@gmail.com</a> adresi üzerinden iletişime
+          geçebilirsiniz.
+        </p>
+      </section>
+
+      <footer>
+        &copy; 2026 Taha Fırat — Void Carver: Alan Kesme. &bull;
+        <a href="./support.html">Support / Destek</a> &bull;
+        <a href="./index.html">Overview / Tanıtım</a>
+      </footer>
+    </div>
+
+    <script>
+      function setLang(lang) {
+        document.getElementById('sec-tr').classList.toggle('hidden', lang !== 'tr');
+        document.getElementById('sec-en').classList.toggle('hidden', lang !== 'en');
+        document.getElementById('btn-tr').classList.toggle('active', lang === 'tr');
+        document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+      }
+    </script>
+  </body>
+</html>

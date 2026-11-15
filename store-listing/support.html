@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Void Carver: Alan Kesme — Oyuncu Desteği / Player Support</title>
+    <style>
+      :root {
+        --bg: #070b14;
+        --card: #111828;
+        --border: #2c3a56;
+        --accent: #f0b429;
+        --crimson: #d82828;
+        --text: #f4f6fb;
+        --muted: #93a3bf;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.65;
+        min-height: 100vh;
+        padding: 32px 16px 64px;
+      }
+      .container {
+        max-width: 840px;
+        margin: 0 auto;
+        background: var(--card);
+        border: 2px solid var(--border);
+        border-radius: 18px;
+        padding: 32px 28px;
+        box-shadow: 0 18px 48px rgba(2, 4, 10, 0.72);
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding-bottom: 24px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .brand h1 {
+        font-size: 1.55rem;
+        color: var(--accent);
+        letter-spacing: 0.04em;
+      }
+      .brand span {
+        color: var(--muted);
+        font-size: 0.92rem;
+        font-weight: 500;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+      }
+      .tab-btn {
+        background: #0b1120;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        padding: 8px 18px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .tab-btn.active {
+        background: var(--accent);
+        color: #080b14;
+        border-color: var(--accent);
+      }
+      h2 {
+        color: var(--accent);
+        font-size: 1.18rem;
+        margin: 22px 0 10px;
+      }
+      .faq-item {
+        background: #0b1120;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 12px;
+      }
+      .faq-item strong {
+        color: var(--text);
+        display: block;
+        margin-bottom: 6px;
+      }
+      p {
+        color: #d6dfef;
+        font-size: 0.96rem;
+      }
+      .hidden {
+        display: none;
+      }
+      footer {
+        margin-top: 32px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="brand">
+          <h1>VOID CARVER: ALAN KESME</h1>
+          <span>Resmi Oyuncu Desteği &bull; Official Player Support</span>
+        </div>
+        <div class="tabs">
+          <button id="btn-en" class="tab-btn active" onclick="setLang('en')">ENGLISH</button>
+          <button id="btn-tr" class="tab-btn" onclick="setLang('tr')">TÜRKÇE</button>
+        </div>
+      </header>
+
+      <section id="sec-en">
+        <h2>Frequently Asked Questions (FAQ)</h2>
+
+        <div class="faq-item">
+          <strong>How do I play Void Carver?</strong>
+          <p>
+            Pilot your twin-prong fighter along the green shielded arena perimeter. Hold the red
+            <strong>KES (CARVE)</strong> button and steer inward from any barrier-free edge to slice
+            across the alien hull, then reconnect to any safe border to shatter and claim the
+            enclosed polygon. Claim 80%+ of the arena (or destroy the primary Boss with the Super
+            Plasma Cannon) to clear the wave!
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <strong>How can I customize Touch Control Modes or Handedness?</strong>
+          <p>
+            Tap <strong>AYARLAR (Settings)</strong> on the Main Menu—or tap the bottom-left gear /
+            bottom-right hand icon during gameplay—to switch between three zero-inertia control
+            schemes: <em>Magnetic Arcade Stick + CARVE</em>, <em>Classic 4-Way D-Pad + CARVE</em>,
+            and <em>Single-Hand Drag</em>, as well as Left/Right hand layout swap.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <strong>Does Void Carver require an account, internet connection, or In-App Purchases?</strong>
+          <p>
+            No. Void Carver is <strong>100% free, ad-free, and offline-first</strong>. No account
+            registration or login is required, and all 4 fighter ships in the Hangar
+            (<strong>GEMİLER</strong>) unlock purely through gameplay wave progression.
+          </p>
+        </div>
+
+        <h2>Contact Developer Support</h2>
+        <p>
+          Developer: <strong>Taha Fırat</strong><br />
+          Email: <a href="mailto:tafifirat@gmail.com">tafifirat@gmail.com</a><br />
+          Typical response time: Within 24 hours.
+        </p>
+      </section>
+
+      <section id="sec-tr" class="hidden">
+        <h2>Sıkça Sorulan Sorular (SSS)</h2>
+
+        <div class="faq-item">
+          <strong>Nasıl Oynanır?</strong>
+          <p>
+            Çift çatallı avcı geminizle yeşil kalkanlı güvenli sınırda ilerleyin; çelik bariyer
+            olmayan bir noktadan kırmızı <strong>KES</strong> tuşunu basılı tutup içeri yönelerek
+            kapalı poligonlar çizin ve tekrar güvenli kenara bağlanarak alanı parçalayın. Her
+            dalgada alanın %80 ve üzerini ele geçirerek (veya Süper Atış topuyla ana Boss'u imha
+            ederek) sonraki dalgaya geçin!
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <strong>Kontrol Modunu ve Sol/Sağ El Düzenini Nasıl Değiştiririm?</strong>
+          <p>
+            Ana menüdeki <strong>AYARLAR</strong> ekranından veya oyun içindeki sol alt dişli / sağ
+            alt el ikonundan <em>Atari Kolu + KES</em>, <em>Klasik Atari D-Pad</em> ve
+            <em>Tek El Sürükle</em> modları arasında geçiş yapabilir, kontrol yönünü tek dokunuşla
+            Sol/Sağ elinize göre değiştirebilirsiniz.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <strong>Üyelik, İnternet veya Uygulama İçi Satın Alma Gerekiyor mu?</strong>
+          <p>
+            Hayır. Void Carver <strong>%100 ücretsiz, reklamsız ve çevrimdışı</strong> çalışır.
+            Hesap açma gerekmez; <strong>GEMİLER</strong> ekranındaki tüm avcı gemileri yalnızca
+            ulaştığınız dalga derinliğiyle ücretsiz açılır.
+          </p>
+        </div>
+
+        <h2>İletişim</h2>
+        <p>
+          Geliştirici: <strong>Taha Fırat</strong><br />
+          E-posta: <a href="mailto:tafifirat@gmail.com">tafifirat@gmail.com</a>
+        </p>
+      </section>
+
+      <footer>
+        &copy; 2026 Taha Fırat — Void Carver: Alan Kesme. &bull;
+        <a href="./privacy-policy.html">Privacy Policy / Gizlilik Politikası</a> &bull;
+        <a href="./index.html">Overview / Tanıtım</a>
+      </footer>
+    </div>
+
+    <script>
+      function setLang(lang) {
+        document.getElementById('sec-tr').classList.toggle('hidden', lang !== 'tr');
+        document.getElementById('sec-en').classList.toggle('hidden', lang !== 'en');
+        document.getElementById('btn-tr').classList.toggle('active', lang === 'tr');
+        document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+      }
+    </script>
+  </body>
+</html>
