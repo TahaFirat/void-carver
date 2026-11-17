@@ -13,6 +13,8 @@ import { Point } from '../../geometry/Types';
 import {
   getChronoSphinxSprite,
   getElectricMedusaSprite,
+  getFrostLeviathanHeadSprite,
+  getFrostLeviathanSegmentSprite,
   getGravityGolemCoreSprite,
   getGravityShardSprite,
   getHiveCarrierSprite,
@@ -24,9 +26,14 @@ import {
   getMagmaSerpentSegmentSprite,
   getMechaTarantulaSprite,
   getMirrorPrismSprite,
+  getPlasmaScorpionSprite,
+  getQuantumButterflySprite,
   getSawbladeJuggernautSprite,
+  getSinkholeWormSprite,
   getSniperScarabSprite,
-  getSpiralNautilusSprite
+  getSolarFlareCoreSprite,
+  getSpiralNautilusSprite,
+  getVoidEmperorSprite
 } from '../../rendering/BestiarySprites';
 import { blitArenaPixelSprite } from '../../rendering/PixelArtEngine';
 import { getMantisSprite } from '../../rendering/VolfiedSprites';
@@ -1437,6 +1444,618 @@ export class ChronoSphinxBoss extends BaseBoss {
       Math.sin(timeSeconds * 2.4) * 0.08
     );
     this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+// ============================================================================
+// BUILD 12 EXPANSION: 6 NEW CURATED CAMPAIGN BOSSES (TOTAL 24 BOSSES!)
+// ============================================================================
+
+/**
+ * #19 FrostLeviathan (Bölüm 5 — Buzul Leviathan):
+ * Crystalline sea dragon leaving 2.5s non-lethal Frost Crystal trails (slows player cut speed)
+ * and firing telegraphed 3-shard ice fans!
+ */
+export class FrostLeviathanBoss extends BaseBoss {
+  public readonly archetype = 'FROST_LEVIATHAN' as const;
+  public readonly displayName = 'BUZUL LEVIATHAN';
+  private readonly segments: { x: number; y: number; vx: number; vy: number }[] = [];
+  private swimPhase = 0;
+  private frostDropTimer = 1.25;
+  private volleyTimer = 2.6;
+
+  constructor(spawn: Point, maxHp = 9) {
+    super(spawn, 36, maxHp, 148, 128);
+    this.speciesId = 'FROST_LEVIATHAN';
+    for (let i = 0; i < 6; i++) {
+      this.segments.push({ x: spawn.x - (i + 1) * 18, y: spawn.y, vx: 0, vy: 0 });
+    }
+  }
+
+  public override getHitCircles(): HitCircle[] {
+    const out: HitCircle[] = [{ x: this.x, y: this.y, radius: this.boundingRadius * 0.85 }];
+    const sr = 14 * this.renderScale * this.cloneVisualScale;
+    for (let i = 0; i < this.segments.length; i += 2) {
+      out.push({ x: this.segments[i].x, y: this.segments[i].y, radius: sr });
+    }
+    return out;
+  }
+
+  public bounceSegmentsOffBoxes(boxes: readonly SolidRect[], poly: readonly Point[]): void {
+    for (const seg of this.segments) {
+      bounceCircleOffSolidBoxes(seg, 14 * this.renderScale, boxes);
+      const solved = resolvePolygonPenetration(seg, 14 * this.renderScale, poly);
+      seg.x = solved.position.x;
+      seg.y = solved.position.y;
+    }
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    this.swimPhase += bctx.dt * 3.1;
+    const spd = 148 * speedScale;
+    const baseHeading = Math.atan2(this.vy, this.vx) + Math.sin(this.swimPhase) * 1.15 * bctx.dt;
+    this.vx = Math.cos(baseHeading) * spd;
+    this.vy = Math.sin(baseHeading) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    let lx = this.x;
+    let ly = this.y;
+    const gap = 18 * this.renderScale * this.cloneVisualScale;
+    for (const seg of this.segments) {
+      const dx = lx - seg.x;
+      const dy = ly - seg.y;
+      const d = Math.hypot(dx, dy) || 1;
+      seg.x = lx - (dx / d) * gap;
+      seg.y = ly - (dy / d) * gap;
+      const solved = resolvePolygonPenetration(seg, 14 * this.renderScale, bctx.activePolygon);
+      seg.x = solved.position.x;
+      seg.y = solved.position.y;
+      lx = seg.x;
+      ly = seg.y;
+    }
+
+    this.frostDropTimer -= bctx.dt;
+    if (this.frostDropTimer <= 0) {
+      this.frostDropTimer = 1.35;
+      const tail = this.segments[this.segments.length - 1] ?? { x: this.x, y: this.y };
+      const dp = Math.hypot(bctx.playerPos.x - tail.x, bctx.playerPos.y - tail.y);
+      if (dp >= 88 && pointInPolygonStrict(tail, bctx.activePolygon)) {
+        bctx.hazards?.spawnFrostZone(tail, 2.5, 26);
+      }
+    }
+
+    this.volleyTimer -= bctx.dt;
+    if (this.volleyTimer <= 0) {
+      this.volleyTimer = 2.8;
+      const lead = bctx.telegraphLeadSec ?? 0.7;
+      this.queueTelegraphedAttack(lead, '#68F4FF', (laterCtx, laterScale) => {
+        const d = Math.hypot(laterCtx.playerPos.x - this.x, laterCtx.playerPos.y - this.y);
+        if (d < 95 || !pointInPolygonStrict({ x: this.x, y: this.y }, laterCtx.activePolygon)) return;
+        const bSpd = 220 * Math.min(1.3, laterScale);
+        const aim = this.resolveDifficultyAimAngle(laterCtx, bSpd);
+        for (const off of [-0.28, 0, 0.28]) {
+          this.spawnBossBullet(
+            laterCtx,
+            Math.cos(aim + off) * bSpd,
+            Math.sin(aim + off) * bSpd,
+            '#78F8FF',
+            5.5
+          );
+        }
+      });
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const frame: 0 | 1 = Math.floor(timeSeconds * 8) % 2 === 0 ? 0 : 1;
+
+    for (let i = this.segments.length - 1; i >= 0; i--) {
+      const seg = this.segments[i];
+      blitArenaPixelSprite(
+        ctx,
+        getFrostLeviathanSegmentSprite(i >= this.segments.length - 2),
+        seg.x,
+        seg.y,
+        sc * 1.12
+      );
+    }
+
+    blitArenaPixelSprite(
+      ctx,
+      getFrostLeviathanHeadSprite(frame, this.telegraphTimer > 0),
+      pos.x,
+      pos.y,
+      sc * 1.24,
+      Math.atan2(this.vy, this.vx)
+    );
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+/**
+ * #20 PlasmaScorpion (Bölüm 8 — Plazma Akrebi):
+ * Sequentially lights up its 4 stinger tail segments (`telegraphLeadSec` warning) before firing a 3-bolt plasma arc!
+ */
+export class PlasmaScorpionBoss extends BaseBoss {
+  public readonly archetype = 'PLASMA_SCORPION' as const;
+  public readonly displayName = 'PLAZMA AKREBI';
+  private tailChargeCooldown = 2.65;
+
+  constructor(spawn: Point, maxHp = 10) {
+    super(spawn, 40, maxHp, 152, -138);
+    this.speciesId = 'PLASMA_SCORPION';
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    const spd = 152 * speedScale;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    this.tailChargeCooldown -= bctx.dt;
+    if (this.tailChargeCooldown <= 0) {
+      this.tailChargeCooldown = 2.85;
+      const lead = bctx.telegraphLeadSec ?? 0.7;
+      this.queueTelegraphedAttack(lead, '#FF7820', (laterCtx, laterScale) => {
+        const d = Math.hypot(laterCtx.playerPos.x - this.x, laterCtx.playerPos.y - this.y);
+        if (d < 95 || !pointInPolygonStrict({ x: this.x, y: this.y }, laterCtx.activePolygon)) return;
+        const bSpd = 232 * Math.min(1.3, laterScale);
+        const aim = this.resolveDifficultyAimAngle(laterCtx, bSpd);
+        for (const off of [-0.32, 0, 0.32]) {
+          this.spawnBossBullet(
+            laterCtx,
+            Math.cos(aim + off) * bSpd,
+            Math.sin(aim + off) * bSpd,
+            '#FF8C24',
+            6.0
+          );
+        }
+      });
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const frame: 0 | 1 = Math.floor(timeSeconds * 9) % 2 === 0 ? 0 : 1;
+    const litNodes =
+      this.telegraphTimer > 0
+        ? Math.min(4, Math.ceil((1 - this.telegraphTimer / Math.max(0.1, this.telegraphDuration)) * 4))
+        : 0;
+
+    blitArenaPixelSprite(
+      ctx,
+      getPlasmaScorpionSprite(frame, litNodes),
+      pos.x,
+      pos.y,
+      sc * 1.24,
+      0
+    );
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+/**
+ * #21 SinkholeWorm (Bölüm 12 — Obruk Solucanı):
+ * Submerges into a gravity vortex and displays a 1.0s purple emergence warning ring before surfacing!
+ */
+export class SinkholeWormBoss extends BaseBoss {
+  public readonly archetype = 'SINKHOLE_WORM' as const;
+  public readonly displayName = 'OBRUK SOLUCANI';
+  private burrowCooldown = 4.4;
+  private emergeWarningTimer = 0;
+  private emergeDest: Point | null = null;
+  private spinAngle = 0;
+
+  constructor(spawn: Point, maxHp = 11) {
+    super(spawn, 38, maxHp, 146, 134);
+    this.speciesId = 'SINKHOLE_WORM';
+  }
+
+  private pickSafeEmergencePoint(bctx: BossUpdateContext): Point | null {
+    const margin = this.boundingRadius + 42;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const sx = 150 + ((Math.round(bctx.timeSeconds * 73) + attempt * 167) % 600);
+      const sy = 190 + ((Math.round(bctx.timeSeconds * 89) + attempt * 193) % 800);
+      const cand = { x: sx, y: sy };
+      if (!pointInPolygonStrict(cand, bctx.activePolygon)) continue;
+      const solved = resolvePolygonPenetration(cand, margin, bctx.activePolygon);
+      if (Math.hypot(solved.position.x - cand.x, solved.position.y - cand.y) > 8) continue;
+      if (Math.hypot(cand.x - bctx.playerPos.x, cand.y - bctx.playerPos.y) < 165) continue;
+      return cand;
+    }
+    return null;
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    this.spinAngle += bctx.dt * 2.8;
+
+    if (this.emergeWarningTimer > 0 && this.emergeDest) {
+      this.emergeWarningTimer -= bctx.dt;
+      if (this.emergeWarningTimer <= 0) {
+        if (pointInPolygonStrict(this.emergeDest, bctx.activePolygon)) {
+          const safe = resolvePolygonPenetration(
+            this.emergeDest,
+            this.boundingRadius + 4,
+            bctx.activePolygon
+          ).position;
+          this.x = safe.x;
+          this.y = safe.y;
+          this.prevX = safe.x;
+          this.prevY = safe.y;
+
+          const dp = Math.hypot(bctx.playerPos.x - this.x, bctx.playerPos.y - this.y);
+          if (dp >= 100) {
+            const bSpd = 195 * Math.min(1.25, speedScale);
+            for (let i = 0; i < 6; i++) {
+              const a = this.spinAngle + (i * Math.PI) / 3;
+              this.spawnBossBullet(
+                bctx,
+                Math.cos(a) * bSpd,
+                Math.sin(a) * bSpd,
+                '#E088FF',
+                5.5
+              );
+            }
+          }
+        }
+        this.emergeDest = null;
+      }
+      return;
+    }
+
+    const spd = 146 * speedScale;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    this.burrowCooldown -= bctx.dt;
+    if (this.burrowCooldown <= 0) {
+      this.burrowCooldown = 4.8;
+      const dest = this.pickSafeEmergencePoint(bctx);
+      if (dest) {
+        this.emergeDest = dest;
+        this.emergeWarningTimer = Math.max(1.0, bctx.telegraphLeadSec ?? 1.0);
+      }
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const frame: 0 | 1 = Math.floor(timeSeconds * 8) % 2 === 0 ? 0 : 1;
+
+    if (this.emergeWarningTimer > 0 && this.emergeDest) {
+      ctx.save();
+      const pulse = 1 + Math.sin(timeSeconds * 22) * 0.16;
+      const r = Math.round(this.boundingRadius * pulse);
+      ctx.strokeStyle = frame === 0 ? '#E078FF' : '#FFE878';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(Math.round(this.emergeDest.x), Math.round(this.emergeDest.y), r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(224, 120, 255, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(Math.round(this.emergeDest.x), Math.round(this.emergeDest.y), Math.round(r * 0.6), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    const submerging = this.emergeWarningTimer > 0;
+    ctx.save();
+    if (submerging) ctx.globalAlpha = 0.45;
+    blitArenaPixelSprite(
+      ctx,
+      getSinkholeWormSprite(frame, submerging),
+      pos.x,
+      pos.y,
+      sc * 1.24,
+      this.spinAngle * 0.5
+    );
+    ctx.restore();
+
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+/**
+ * #22 QuantumButterfly (Bölüm 15 — Kuantum Kelebeği):
+ * Glides smoothly in figure-8 waves and emits wide-gap symmetric dual rings after telegraphing!
+ */
+export class QuantumButterflyBoss extends BaseBoss {
+  public readonly archetype = 'QUANTUM_BUTTERFLY' as const;
+  public readonly displayName = 'KUANTUM KELEBEGI';
+  private glidePhase = 0;
+  private ringTimer = 2.9;
+  private ringOffset = 0;
+
+  constructor(spawn: Point, maxHp = 12) {
+    super(spawn, 38, maxHp, 144, 126);
+    this.speciesId = 'QUANTUM_BUTTERFLY';
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    this.glidePhase += bctx.dt * 2.4;
+    const spd = 144 * speedScale;
+    const swayHeading = Math.atan2(this.vy, this.vx) + Math.sin(this.glidePhase) * 1.35 * bctx.dt;
+    this.vx = Math.cos(swayHeading) * spd;
+    this.vy = Math.sin(swayHeading) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    this.ringTimer -= bctx.dt;
+    if (this.ringTimer <= 0) {
+      this.ringTimer = 3.1;
+      const lead = bctx.telegraphLeadSec ?? 0.7;
+      this.queueTelegraphedAttack(lead, '#48F0FF', (laterCtx, laterScale) => {
+        const dp = Math.hypot(laterCtx.playerPos.x - this.x, laterCtx.playerPos.y - this.y);
+        if (dp < 100 || !pointInPolygonStrict({ x: this.x, y: this.y }, laterCtx.activePolygon)) return;
+        this.ringOffset += 0.35;
+        const fastSpd = 205 * Math.min(1.25, laterScale);
+        const slowSpd = 150 * Math.min(1.25, laterScale);
+        for (let i = 0; i < 6; i++) {
+          const a1 = this.ringOffset + (i * Math.PI) / 3;
+          const a2 = a1 + Math.PI / 6;
+          this.spawnBossBullet(laterCtx, Math.cos(a1) * fastSpd, Math.sin(a1) * fastSpd, '#48F0FF', 5.5);
+          this.spawnBossBullet(laterCtx, Math.cos(a2) * slowSpd, Math.sin(a2) * slowSpd, '#E858FF', 5.0);
+        }
+      });
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const flapFrame: 0 | 1 = Math.floor(timeSeconds * 8) % 2 === 0 ? 0 : 1;
+
+    blitArenaPixelSprite(
+      ctx,
+      getQuantumButterflySprite(flapFrame, this.telegraphTimer > 0),
+      pos.x,
+      pos.y,
+      sc * 1.25,
+      Math.sin(timeSeconds * 2.6) * 0.12
+    );
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+/**
+ * #23 SolarFlareCore (Bölüm 19 — Güneş Fırtınası Çekirdeği):
+ * Rotates 4 short-range solar flare arms with generous 90-degree safe corridors between them!
+ */
+export class SolarFlareCoreBoss extends BaseBoss {
+  public readonly archetype = 'SOLAR_FLARE_CORE' as const;
+  public readonly displayName = 'GUNES FIRTINASI CEKIRDEGI';
+  private coronaAngle = 0;
+  private pulseTimer = 3.0;
+  private flareExtendedTimer = 0;
+
+  constructor(spawn: Point, maxHp = 14) {
+    super(spawn, 40, maxHp, 138, -130);
+    this.speciesId = 'SOLAR_FLARE_CORE';
+  }
+
+  public override getHitCircles(): HitCircle[] {
+    const out: HitCircle[] = [{ x: this.x, y: this.y, radius: this.boundingRadius * 0.88 }];
+    if (this.flareExtendedTimer > 0) {
+      const armReach = this.boundingRadius * 1.48;
+      for (let i = 0; i < 4; i++) {
+        const a = this.coronaAngle + (i * Math.PI) / 2;
+        const fx = this.x + Math.cos(a) * armReach;
+        const fy = this.y + Math.sin(a) * armReach;
+        out.push({ x: fx, y: fy, radius: 10 * this.renderScale });
+      }
+    }
+    return out;
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    this.coronaAngle += bctx.dt * 1.55 * speedScale;
+    if (this.flareExtendedTimer > 0) {
+      this.flareExtendedTimer = Math.max(0, this.flareExtendedTimer - bctx.dt);
+    }
+
+    const spd = 138 * speedScale;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    this.pulseTimer -= bctx.dt;
+    if (this.pulseTimer <= 0) {
+      this.pulseTimer = 3.3;
+      const lead = bctx.telegraphLeadSec ?? 0.65;
+      this.queueTelegraphedAttack(lead, '#FFB828', (laterCtx, laterScale) => {
+        this.flareExtendedTimer = 1.6;
+        const dp = Math.hypot(laterCtx.playerPos.x - this.x, laterCtx.playerPos.y - this.y);
+        if (dp < 105 || !pointInPolygonStrict({ x: this.x, y: this.y }, laterCtx.activePolygon)) return;
+        const bSpd = 198 * Math.min(1.25, laterScale);
+        for (let i = 0; i < 4; i++) {
+          const a = this.coronaAngle + (i * Math.PI) / 2;
+          this.spawnBossBullet(laterCtx, Math.cos(a) * bSpd, Math.sin(a) * bSpd, '#FFD038', 5.8);
+        }
+      });
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const frame: 0 | 1 = Math.floor(timeSeconds * 10) % 2 === 0 ? 0 : 1;
+
+    if (this.flareExtendedTimer > 0) {
+      const armReach = this.boundingRadius * 1.5;
+      ctx.save();
+      for (let i = 0; i < 4; i++) {
+        const a = this.coronaAngle + (i * Math.PI) / 2;
+        const x2 = Math.round(pos.x + Math.cos(a) * armReach);
+        const y2 = Math.round(pos.y + Math.sin(a) * armReach);
+        ctx.strokeStyle = '#FF6818';
+        ctx.lineWidth = 10 * sc;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(pos.x), Math.round(pos.y));
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.strokeStyle = '#FFF898';
+        ctx.lineWidth = 4 * sc;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    blitArenaPixelSprite(
+      ctx,
+      getSolarFlareCoreSprite(frame, this.telegraphTimer > 0 || this.flareExtendedTimer > 0),
+      pos.x,
+      pos.y,
+      sc * 1.24,
+      this.coronaAngle
+    );
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.9);
+    this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
+  }
+}
+
+/**
+ * #24 VoidEmperor (Bölüm 24 — Hiçlik İmparatoru):
+ * Two-stage Campaign Finale Boss!
+ * - Below 45% captured area: Armored Throne Monolith patrolling steadily.
+ * - At >= 45% captured area: Sheds outer throne armor into Awakened Winged Core, telegraphing every royal volley!
+ */
+export class VoidEmperorBoss extends BaseBoss {
+  public readonly archetype = 'VOID_EMPEROR' as const;
+  public readonly displayName = 'HICLIK IMPARATORU';
+  public awakenedCore = false;
+  private salvoTimer = 2.5;
+  private starAngle = 0;
+
+  constructor(spawn: Point, maxHp = 18) {
+    super(spawn, 44, maxHp, 136, 124);
+    this.speciesId = 'VOID_EMPEROR';
+    this.armorDamageReduction = 0.35;
+  }
+
+  protected updateBehavior(bctx: BossUpdateContext, speedScale: number): void {
+    if (!this.awakenedCore && bctx.claimedPercent >= 45) {
+      this.awakenedCore = true;
+      this.combatPhase = 2;
+      this.armorDamageReduction = 0;
+      this.hitFlash = 0.25;
+    }
+
+    const baseSpd = this.awakenedCore ? 160 : 136;
+    const spd = baseSpd * speedScale;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * bctx.dt;
+    this.y += this.vy * bctx.dt;
+
+    this.salvoTimer -= bctx.dt;
+    if (this.salvoTimer <= 0) {
+      this.salvoTimer = this.awakenedCore ? 2.45 : 2.85;
+      const lead = bctx.telegraphLeadSec ?? 0.65;
+      this.queueTelegraphedAttack(lead, '#E858FF', (laterCtx, laterScale) => {
+        const dp = Math.hypot(laterCtx.playerPos.x - this.x, laterCtx.playerPos.y - this.y);
+        if (dp < 105 || !pointInPolygonStrict({ x: this.x, y: this.y }, laterCtx.activePolygon)) return;
+        const bSpd = (this.awakenedCore ? 225 : 200) * Math.min(1.28, laterScale);
+        if (!this.awakenedCore) {
+          const aim = this.resolveDifficultyAimAngle(laterCtx, bSpd);
+          for (const off of [-0.3, 0, 0.3]) {
+            this.spawnBossBullet(
+              laterCtx,
+              Math.cos(aim + off) * bSpd,
+              Math.sin(aim + off) * bSpd,
+              '#FFE068',
+              6.0
+            );
+          }
+        } else {
+          this.starAngle += 0.42;
+          for (let i = 0; i < 6; i++) {
+            const a = this.starAngle + (i * Math.PI) / 3;
+            this.spawnBossBullet(
+              laterCtx,
+              Math.cos(a) * bSpd,
+              Math.sin(a) * bSpd,
+              i % 2 === 0 ? '#E858FF' : '#FFE868',
+              5.8
+            );
+          }
+        }
+      });
+    }
+  }
+
+  public render(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number,
+    bossCannonArmed = false
+  ): void {
+    const pos = this.getRenderPos(alpha);
+    const sc = this.renderScale * this.cloneVisualScale;
+    const frame: 0 | 1 = Math.floor(timeSeconds * 8) % 2 === 0 ? 0 : 1;
+
+    if (this.awakenedCore) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(232, 88, 255, 0.45)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(Math.round(pos.x), Math.round(pos.y), Math.round(this.boundingRadius * 1.18), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    blitArenaPixelSprite(
+      ctx,
+      getVoidEmperorSprite(frame, this.awakenedCore, this.telegraphTimer > 0),
+      pos.x,
+      pos.y,
+      sc * 1.28,
+      0
+    );
+    this.renderHitPixelFlash(ctx, pos.x, pos.y, this.boundingRadius * 0.92);
     this.renderHealthBar(ctx, pos.x, pos.y, bossCannonArmed);
   }
 }

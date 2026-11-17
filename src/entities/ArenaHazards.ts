@@ -2,6 +2,7 @@ import { PALETTE } from '../core/Config';
 import { pointInPolygonStrict, projectPointToPolygon } from '../geometry/PolygonMath';
 import { Point } from '../geometry/Types';
 import {
+  getFrostTrailSprite,
   getMagmaPoolSprite,
   getProximityMineSprite,
   getWebZoneSprite
@@ -9,6 +10,14 @@ import {
 import { blitArenaPixelSprite } from '../rendering/PixelArtEngine';
 
 export interface MagmaPoolHazard {
+  x: number;
+  y: number;
+  radius: number;
+  lifeSec: number;
+  maxLifeSec: number;
+}
+
+export interface FrostZoneHazard {
   x: number;
   y: number;
   radius: number;
@@ -41,6 +50,7 @@ export interface StaticBorderArcHazard {
 
 export class ArenaHazardManager {
   public magmaPools: MagmaPoolHazard[] = [];
+  public frostZones: FrostZoneHazard[] = [];
   public webZones: WebZoneHazard[] = [];
   public spaceMines: SpaceMineHazard[] = [];
   public staticArcs: StaticBorderArcHazard[] = [];
@@ -48,10 +58,36 @@ export class ArenaHazardManager {
 
   public clear(): void {
     this.magmaPools = [];
+    this.frostZones = [];
     this.webZones = [];
     this.spaceMines = [];
     this.staticArcs = [];
     this.seekerRespawnTimers = [];
+  }
+
+  public spawnFrostZone(pos: Point, durationSec = 2.5, radius = 26): void {
+    if (this.frostZones.some((f) => Math.hypot(f.x - pos.x, f.y - pos.y) < 26)) {
+      return;
+    }
+    if (this.frostZones.length >= 10) {
+      this.frostZones.shift();
+    }
+    this.frostZones.push({
+      x: pos.x,
+      y: pos.y,
+      radius,
+      lifeSec: durationSec,
+      maxLifeSec: durationSec
+    });
+  }
+
+  public isPointInFrostZone(pos: Point): boolean {
+    for (const f of this.frostZones) {
+      if (Math.hypot(pos.x - f.x, pos.y - f.y) <= f.radius) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public spawnMagmaPool(pos: Point, durationSec = 3.0, radius = 22): void {
@@ -126,6 +162,7 @@ export class ArenaHazardManager {
 
   public pruneOutsidePolygon(activePolygon: readonly Point[]): void {
     this.magmaPools = this.magmaPools.filter((p) => pointInPolygonStrict(p, activePolygon));
+    this.frostZones = this.frostZones.filter((f) => pointInPolygonStrict(f, activePolygon));
     this.webZones = this.webZones.filter((w) => pointInPolygonStrict(w, activePolygon));
     this.spaceMines = this.spaceMines.filter((m) => pointInPolygonStrict(m, activePolygon));
     this.staticArcs = this.staticArcs.filter((a) => {
@@ -141,6 +178,9 @@ export class ArenaHazardManager {
   public update(dt: number): number {
     for (const p of this.magmaPools) p.lifeSec -= dt;
     this.magmaPools = this.magmaPools.filter((p) => p.lifeSec > 0);
+
+    for (const f of this.frostZones) f.lifeSec -= dt;
+    this.frostZones = this.frostZones.filter((f) => f.lifeSec > 0);
 
     for (const w of this.webZones) w.lifeSec -= dt;
     this.webZones = this.webZones.filter((w) => w.lifeSec > 0);
@@ -175,6 +215,16 @@ export class ArenaHazardManager {
       ctx.globalAlpha = fade;
       const sprite = getWebZoneSprite(f2);
       blitArenaPixelSprite(ctx, sprite, w.x, w.y, (w.radius * 2) / (36 * 3.125));
+      ctx.restore();
+    }
+
+    // 1B. Non-Lethal Frost Crystal Wake Zones (`FrostLeviathan` — slows cutting speed!)
+    for (const f of this.frostZones) {
+      const fade = f.lifeSec < 0.6 ? Math.max(0.25, f.lifeSec / 0.6) : 0.92;
+      ctx.save();
+      ctx.globalAlpha = fade;
+      const sprite = getFrostTrailSprite(f2);
+      blitArenaPixelSprite(ctx, sprite, f.x, f.y, 0.95);
       ctx.restore();
     }
 

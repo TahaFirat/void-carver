@@ -1,7 +1,7 @@
+import type { MinionSpeciesId } from '../../core/CampaignProgressionV12';
 import { projectPointToPolyline, resolvePolygonPenetration } from '../../geometry/PolygonMath';
 import { SolidRect } from '../../geometry/SolidBoxes';
 import { Point } from '../../geometry/Types';
-import type { MinionSpeciesId } from '../../levels/EncounterDeck';
 import type { ArenaHazardManager } from '../ArenaHazards';
 import { ProjectileManager } from '../Projectiles';
 
@@ -21,7 +21,11 @@ export type MinionKind =
   | 'GHOST'
   | 'SATELLITE'
   | 'BARNACLE'
-  | 'SPORE';
+  | 'SPORE'
+  | 'MANTA'
+  | 'CRYSTAL'
+  | 'VORTEX'
+  | 'COMET';
 
 export interface MinionContext {
   dt: number;
@@ -59,6 +63,8 @@ export abstract class InteriorMinion {
   public isSwarmAggro = false;
   public currentSpeed = 0;
   public speciesId?: MinionSpeciesId;
+  public autonomousId?: string;
+  public isTimeFrozen = false;
   public ignoresSolidBoxes = false;
   public isLatchedToBorder = false;
   public isBorderSparkActive = false;

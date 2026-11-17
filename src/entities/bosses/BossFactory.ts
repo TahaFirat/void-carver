@@ -1,6 +1,7 @@
+import { BossSpeciesId, ResolvedLevelPlan } from '../../core/CampaignProgressionV12';
 import { Point } from '../../geometry/Types';
 import { ESCORT_SPAWN } from '../../levels/CampaignGenerator';
-import { BossSpeciesId, WaveEncounterPlan } from '../../levels/EncounterDeck';
+import { WaveEncounterPlan } from '../../levels/EncounterDeck';
 import {
   BossPhaseBehavior,
   EndlessBossArchetype,
@@ -10,6 +11,7 @@ import { BaseBoss, BossArchetype } from './BaseBoss';
 import {
   ChronoSphinxBoss,
   ElectricMedusaBoss,
+  FrostLeviathanBoss,
   GravityGolemBoss,
   HiveCarrierBoss,
   HydraBioHeadBoss,
@@ -18,9 +20,14 @@ import {
   MechaTarantulaBoss,
   MirrorPrismBoss,
   PhantomMantisBoss,
+  PlasmaScorpionBoss,
+  QuantumButterflyBoss,
   SawbladeJuggernautBoss,
+  SinkholeWormBoss,
   SniperScarabBoss,
-  SpiralNautilusBoss
+  SolarFlareCoreBoss,
+  SpiralNautilusBoss,
+  VoidEmperorBoss
 } from './BestiaryBosses';
 import { CentipedeBoss } from './CentipedeBoss';
 import { TitanCore } from './TitanCore';
@@ -102,7 +109,40 @@ export function instantiateBossBySpeciesId(
       b.speciesId = bossId;
       return [b];
     }
+    case 'FROST_LEVIATHAN':
+      return [new FrostLeviathanBoss(spawn, hp + 1)];
+    case 'PLASMA_SCORPION':
+      return [new PlasmaScorpionBoss(spawn, hp + 1)];
+    case 'SINKHOLE_WORM':
+      return [new SinkholeWormBoss(spawn, hp + 2)];
+    case 'QUANTUM_BUTTERFLY':
+      return [new QuantumButterflyBoss(spawn, hp + 2)];
+    case 'SOLAR_FLARE_CORE':
+      return [new SolarFlareCoreBoss(spawn, hp + 3)];
+    case 'VOID_EMPEROR':
+      return [new VoidEmperorBoss(spawn, hp + 5)];
   }
+}
+
+export function createBossesForFixedLevelPlan(
+  plan: ResolvedLevelPlan,
+  phase1Behavior?: BossPhaseBehavior
+): BaseBoss[] {
+  const diffHpBonus = plan.difficulty === 'HARD' ? 2 : plan.difficulty === 'MEDIUM' ? 1 : 0;
+  const hp = Math.max(6, Math.round(6 + plan.stageIndexZeroBased * 0.45 + diffHpBonus));
+  const hasEvolution = plan.levelNumber >= 18 || plan.loopCycle > 0;
+  const primary = instantiateBossBySpeciesId(
+    plan.bossId,
+    { x: 450, y: 500 },
+    hp,
+    hasEvolution
+  );
+  for (const b of primary) {
+    if (phase1Behavior) {
+      b.applyPhaseBehavior(phase1Behavior);
+    }
+  }
+  return primary;
 }
 
 export function createBossesForEncounterPlan(
@@ -346,5 +386,23 @@ export function createBossesForLevel(
 
     case 'ALIEN_BRAIN':
       return [new AlienBrainBoss({ x: 450, y: 490 }, bossHpOverride ?? 18, tierIndex >= 2)];
+
+    case 'FROST_LEVIATHAN':
+      return [new FrostLeviathanBoss({ x: 450, y: 500 }, bossHpOverride ?? 10)];
+
+    case 'PLASMA_SCORPION':
+      return [new PlasmaScorpionBoss({ x: 450, y: 500 }, bossHpOverride ?? 11)];
+
+    case 'SINKHOLE_WORM':
+      return [new SinkholeWormBoss({ x: 450, y: 500 }, bossHpOverride ?? 12)];
+
+    case 'QUANTUM_BUTTERFLY':
+      return [new QuantumButterflyBoss({ x: 450, y: 500 }, bossHpOverride ?? 13)];
+
+    case 'SOLAR_FLARE_CORE':
+      return [new SolarFlareCoreBoss({ x: 450, y: 500 }, bossHpOverride ?? 15)];
+
+    case 'VOID_EMPEROR':
+      return [new VoidEmperorBoss({ x: 450, y: 500 }, bossHpOverride ?? 18)];
   }
 }

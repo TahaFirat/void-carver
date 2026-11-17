@@ -1,4 +1,9 @@
 import {
+  DIFFICULTY_UI_PROFILES,
+  FIXED_CAMPAIGN_STAGES,
+  GameDifficulty
+} from '../core/CampaignProgressionV12';
+import {
   CANVAS_HEIGHT,
   CANVAS_WIDTH,
   PALETTE,
@@ -14,6 +19,7 @@ import {
   drawPixelText,
   fillRectPx,
   hexToU32,
+  measurePixelText,
   PixelSurface,
   setPx
 } from '../rendering/PixelArtEngine';
@@ -22,7 +28,11 @@ import {
   getPixelStarSprite,
   getPlayerShipSprite
 } from '../rendering/VolfiedSprites';
-import { GameSaveData, StorageService } from '../services/StorageService';
+import {
+  difficultyIdToRunDifficulty,
+  GameSaveData,
+  StorageService
+} from '../services/StorageService';
 import { ColumnTransform, getLayout } from '../core/ResponsiveLayout';
 
 export type ScreenState =
@@ -283,7 +293,18 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
 
 export class MenuRenderer {
   public readonly activeButtons: UiButtonRect[] = [];
+  public stageStripStart = 1;
+  private lastSyncedDiff: GameDifficulty | null = null;
+  private lastSyncedSelStage = -1;
   private cur: ColumnTransform = { tx: 0, ty: 0, s: 1 };
+
+  public shiftStageStrip(delta: number): void {
+    this.stageStripStart = Math.max(1, Math.min(22, this.stageStripStart + delta));
+  }
+
+  public centerStageStripOn(stageNum: number): void {
+    this.stageStripStart = Math.max(1, Math.min(22, stageNum - 1));
+  }
 
   public hitTest(vx: number, vy: number): string | null {
     for (let i = this.activeButtons.length - 1; i >= 0; i--) {
@@ -344,7 +365,7 @@ export class MenuRenderer {
       ctx.fillRect(0, 0, layout.width, layout.height);
     }
 
-    if ((screen === 'MAIN_MENU' || screen === 'SECTOR_SELECT') && layout.menuHero && layout.menuSelector) {
+    if (screen === 'MAIN_MENU' && layout.menuHero && layout.menuSelector) {
       this.withTransform(ctx, layout.menuHero, () => this.renderMenuHero(ctx, save, timeSeconds));
       this.withTransform(ctx, layout.menuSelector, () => this.renderMenuSelector(ctx, save));
     } else {
@@ -376,8 +397,10 @@ export class MenuRenderer {
   ): void {
     switch (screen) {
       case 'MAIN_MENU':
-      case 'SECTOR_SELECT':
         this.renderEndlessMainMenu(ctx, save, timeSeconds);
+        break;
+      case 'SECTOR_SELECT':
+        this.renderCampaignStageGridScreen(ctx, save);
         break;
       case 'HANGAR':
         this.renderShipsScreen(ctx, save);
@@ -552,8 +575,8 @@ export class MenuRenderer {
   }
 
   /**
-   * Hero section (`y: 40..610`):
-   * Green wireframe planet + diagonal twin-prong fighter + dual thruster flames + chrome `VOID CARVER` logo!
+   * Hero section (`y: 36..588`):
+   * Green wireframe planet + diagonal twin-prong fighter + chrome `VOID CARVER` logo + personal best strip!
    */
   private renderMenuHero(
     ctx: CanvasRenderingContext2D,
@@ -561,27 +584,25 @@ export class MenuRenderer {
     timeSeconds = 0
   ): void {
     const planetHero = getMenuPlanetHeroSprite();
-    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 315, PIXEL_SCALE * 1.32);
+    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 286, PIXEL_SCALE * 1.18);
 
     const titleLogo = getVoidCarverLogoSprite();
-    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 212, PIXEL_SCALE * 1.08);
+    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 168, PIXEL_SCALE * 1.06);
 
-    // Diagonal Twin-Prong Fighter + Dual Golden Exhaust Plumes (`01-hedef-sonsuz-menu.jpg`!)
     const skin = SHIP_SKINS.find((s) => s.id === save.selectedShip) ?? SHIP_SKINS[0];
     const shipSprite = getPlayerShipSprite(skin, 'UP');
     const bob = Math.sin(timeSeconds * 3.2) * 5;
     const sx = CANVAS_WIDTH * 0.5 + 18;
-    const sy = 415 + bob;
+    const sy = 372 + bob;
 
     ctx.save();
     ctx.translate(sx, sy);
-    ctx.rotate(1.12); // ~64° up-right flight angle across wireframe globe!
+    ctx.rotate(1.12);
 
-    // Dual golden-white pixel thruster flames behind twin engines
-    const flameLen = 84 + Math.round(Math.sin(timeSeconds * 22) * 10);
+    const flameLen = 74 + Math.round(Math.sin(timeSeconds * 22) * 9);
     for (const exOff of [-22, 22]) {
       ctx.fillStyle = 'rgba(255, 160, 48, 0.35)';
-      ctx.fillRect(exOff - 12, 46, 24, flameLen + 18);
+      ctx.fillRect(exOff - 12, 46, 24, flameLen + 16);
       ctx.fillStyle = '#FF9828';
       ctx.fillRect(exOff - 8, 44, 16, flameLen);
       ctx.fillStyle = '#FFF4A8';
@@ -589,160 +610,553 @@ export class MenuRenderer {
     }
 
     ctx.imageSmoothingEnabled = false;
-    const scale = 6.2;
+    const scale = 5.6;
     const dw = shipSprite.width * scale;
     const dh = shipSprite.height * scale;
     ctx.drawImage(shipSprite, -dw * 0.5, -dh * 0.5, dw, dh);
     ctx.restore();
+
+    // Compact Personal Record Ribbon
+    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
+    const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+    const totalStars = StorageService.getTotalCampaignStarsV12(save);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(7, 11, 22, 0.9)';
+    ctx.fillRect(66, 502, 768, 86);
+    ctx.strokeStyle = '#3E5278';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(66, 502, 768, 86);
+    ctx.restore();
+
+    drawPixelText(
+      ctx,
+      `REKOR: ${formatGroupedScore(Math.max(0, rec.highScore))}  •  ★ ${totalStars}/72`,
+      CANVAS_WIDTH * 0.5,
+      528,
+      { scale: 2.75, tone: 'gold', align: 'center' }
+    );
+    drawPixelText(
+      ctx,
+      `ULAŞILAN DERİNLİK: BÖLÜM ${String(maxUnlocked).padStart(2, '0')} / 24`,
+      CANVAS_WIDTH * 0.5,
+      564,
+      { scale: 2.65, tone: 'cyan', align: 'center' }
+    );
+  }
+
+  private shortenBossTitle(nameTr: string): string {
+    if (nameTr.length <= 16) return nameTr;
+    const map: Record<string, string> = {
+      'ÇELİK PEYGAMBERDEVESİ': 'ÇELİK PEYGAMBER',
+      'ELEKTRİK DENİZANASI': 'ELEKT. DENİZANASI',
+      'GÜNEŞ FIRTINASI ÇEKİRDEĞİ': 'GÜNEŞ ÇEKİRDEĞİ'
+    };
+    return map[nameTr] ?? nameTr.slice(0, 16);
   }
 
   /**
-   * Endless Record Card + `KOLAY / ORTA / ZOR` + Giant `OYNA` + `GEMİLER / AYARLAR` (`y: 650..1550`)
+   * Build 12 Crystal-Clear Difficulty Selector + Live Summary Box + 24-Stage Strip + `OYNA` (`y: 610..1548`)
    */
   private renderMenuSelector(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    // 1. Gold-Framed Personal Record Card (`01-hedef-sonsuz-menu.jpg`)
-    const cardX = 72;
-    const cardY = 660;
-    const cardW = 756;
-    const cardH = 204;
+    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const activeProf = DIFFICULTY_UI_PROFILES[runDiff];
+    const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+    const selectedStage = StorageService.getSelectedStartStage(runDiff, save);
 
-    ctx.save();
-    ctx.shadowColor = 'rgba(255, 208, 72, 0.32)';
-    ctx.shadowBlur = 18;
-    ctx.fillStyle = '#05070E';
-    ctx.fillRect(cardX, cardY, cardW, cardH);
-    ctx.strokeStyle = '#F8D058';
-    ctx.lineWidth = 7;
-    ctx.strokeRect(cardX, cardY, cardW, cardH);
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = '#FFF8B8';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(cardX + 5, cardY + 5, cardW - 10, cardH - 10);
-    ctx.restore();
+    if (this.lastSyncedDiff !== runDiff || this.lastSyncedSelStage !== selectedStage) {
+      this.lastSyncedDiff = runDiff;
+      this.lastSyncedSelStage = selectedStage;
+      this.centerStageStripOn(selectedStage);
+    }
 
-    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
-    const shownScore = Math.max(rec.highScore, 0);
-    const shownWave = Math.max(1, rec.bestWave);
+    // =========================================================================
+    // 1. ZORLUK SEÇİMİ — 100% UNMISTAKABLE HIGH-CONTRAST ACTIVE PILL + BADGE
+    // =========================================================================
+    drawPixelText(ctx, 'ZORLUK SEÇİMİ', CANVAS_WIDTH * 0.5, 622, {
+      scale: 2.95,
+      tone: 'silver',
+      align: 'center'
+    });
 
-    drawPixelText(
-      ctx,
-      `EN YÜKSEK SKOR: ${formatGroupedScore(shownScore)}`,
-      CANVAS_WIDTH * 0.5,
-      cardY + 68,
-      { scale: 3.7, tone: 'gold', align: 'center' }
-    );
-    drawPixelText(
-      ctx,
-      `ULAŞILAN DERİNLİK: DALGA ${String(shownWave).padStart(2, '0')}`,
-      CANVAS_WIDTH * 0.5,
-      cardY + 142,
-      { scale: 3.5, tone: 'cyan', align: 'center' }
-    );
-
-    // 2. Side-by-Side `KOLAY` · `ORTA` · `ZOR` Difficulty Selector (`01-hedef-sonsuz-menu.jpg`)
-    const diffY = 948;
-    const diffH = 128;
-    const diffGap = 24;
-    const diffW = Math.floor((756 - diffGap * 2) / 3); // 236
+    const rowX = 66;
+    const rowW = 768;
+    const diffGap = 21;
+    const diffW = Math.floor((rowW - diffGap * 2) / 3); // 242
+    const baseDiffY = 660;
+    const baseDiffH = 104;
 
     const diffs: Array<{
-      id: 'EXPLORER' | 'COMMANDER' | 'LEGEND';
-      label: string;
-      borderCol: string;
-      textTone: 'green' | 'gold' | 'red';
+      saveId: 'EXPLORER' | 'COMMANDER' | 'LEGEND';
+      runId: GameDifficulty;
+      topBevel: string;
+      botShade: string;
     }> = [
-      { id: 'EXPLORER', label: 'KOLAY', borderCol: '#1ED058', textTone: 'green' },
-      { id: 'COMMANDER', label: 'ORTA', borderCol: '#F8D048', textTone: 'gold' },
-      { id: 'LEGEND', label: 'ZOR', borderCol: '#E82828', textTone: 'red' }
+      { saveId: 'EXPLORER', runId: 'EASY', topBevel: '#6EE7B7', botShade: '#047857' },
+      { saveId: 'COMMANDER', runId: 'MEDIUM', topBevel: '#FDE68A', botShade: '#B45309' },
+      { saveId: 'LEGEND', runId: 'HARD', topBevel: '#FCA5A5', botShade: '#B91C1C' }
     ];
 
+    let activeCenterX = CANVAS_WIDTH * 0.5;
+
     for (let i = 0; i < diffs.length; i++) {
-      const d = diffs[i];
-      const bx = cardX + i * (diffW + diffGap);
-      const active = save.difficulty === d.id;
-      const by = active ? diffY - 6 : diffY;
-      const bh = active ? diffH + 12 : diffH;
+      const d = diffs[i]!;
+      const prof = DIFFICULTY_UI_PROFILES[d.runId];
+      const active = save.difficulty === d.saveId;
+
+      // Selected card scales up (`scale(1.06)` feel) while unselected cards sit recessed & matte!
+      const bx = active ? rowX + i * (diffW + diffGap) - 6 : rowX + i * (diffW + diffGap) + 4;
+      const bw = active ? diffW + 12 : diffW - 8;
+      const by = active ? baseDiffY - 10 : baseDiffY + 4;
+      const bh = active ? baseDiffH + 22 : baseDiffH - 6;
+
+      if (active) {
+        activeCenterX = bx + bw * 0.5;
+      }
 
       ctx.save();
       if (active) {
-        ctx.shadowColor = 'rgba(255, 214, 72, 0.55)';
-        ctx.shadowBlur = 22;
+        ctx.shadowColor = prof.glowRgba;
+        ctx.shadowBlur = 26;
+        ctx.fillStyle = prof.accentHex;
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.shadowBlur = 0;
+
+        // Top specular highlight + lower bevel for tactile arcade punch
+        ctx.fillStyle = d.topBevel;
+        ctx.fillRect(bx + 4, by + 4, bw - 8, 6);
+        ctx.fillStyle = d.botShade;
+        ctx.fillRect(bx + 4, by + bh - 12, bw - 8, 8);
+
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(bx + 2, by + 2, bw - 4, bh - 4);
+
+        drawPixelText(ctx, prof.titleTr, bx + bw * 0.5, by + 46, {
+          scale: 4.35,
+          tone: 'white',
+          align: 'center'
+        });
+
+        // Crisp dark pill badge inside active card: `✓ SEÇİLİ`
+        const badgeW = 166;
+        const badgeH = 34;
+        const badgeX = Math.round(bx + (bw - badgeW) * 0.5);
+        const badgeY = by + bh - 46;
+        ctx.fillStyle = 'rgba(6, 10, 18, 0.86)';
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+        ctx.strokeStyle = d.topBevel;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+        drawPixelText(ctx, '✓ SEÇİLİ', bx + bw * 0.5, badgeY + 18, {
+          scale: 2.35,
+          tone: d.runId === 'EASY' ? 'green' : d.runId === 'MEDIUM' ? 'gold' : 'white',
+          align: 'center'
+        });
+      } else {
+        // Matte low-distraction unselected button (`rgba(18, 24, 34, 0.65)`, `#7C8B9E` muted label)
+        ctx.fillStyle = 'rgba(18, 24, 34, 0.68)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx, by, bw, bh);
+        // Subtle colored bottom indicator strip so player knows each button's tier color
+        ctx.fillStyle = prof.accentHex;
+        ctx.globalAlpha = 0.42;
+        ctx.fillRect(bx + 12, by + bh - 6, bw - 24, 3);
+        ctx.globalAlpha = 1;
+
+        drawPixelText(ctx, prof.titleTr, bx + bw * 0.5, by + bh * 0.5, {
+          scale: 3.45,
+          tone: 'muted',
+          align: 'center'
+        });
       }
-      ctx.fillStyle = active ? '#171510' : '#090D16';
-      ctx.fillRect(bx, by, diffW, bh);
-
-      ctx.strokeStyle = active ? '#FFF078' : d.borderCol;
-      ctx.lineWidth = active ? 7 : 5;
-      ctx.strokeRect(bx, by, diffW, bh);
-
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = active ? '#C89218' : d.borderCol;
-      ctx.lineWidth = 2.5;
-      ctx.strokeRect(bx + 10, by + 10, diffW - 20, bh - 20);
       ctx.restore();
 
-      drawPixelText(ctx, d.label, bx + diffW * 0.5, by + bh * 0.5, {
-        scale: active ? 4.2 : 3.8,
-        tone: active ? 'gold' : d.textTone,
-        align: 'center'
-      });
-
-      this.addButton(`SET_DIFF_${d.id}`, bx, by, diffW, bh);
+      this.addButton(`SET_DIFF_${d.saveId}`, bx, by, bw, bh);
     }
 
-    // 3. Giant Crimson-Gold `OYNA` Button (`01-hedef-sonsuz-menu.jpg`)
-    const playW = 576;
-    const playH = 196;
+    // =========================================================================
+    // 2. LIVE DIFFICULTY SUMMARY BOX (Framed in `activeProf.accentHex` + Pointer)
+    // =========================================================================
+    const infoX = 66;
+    const infoY = 796;
+    const infoW = 768;
+    const infoH = 96;
+
+    ctx.save();
+    ctx.shadowColor = activeProf.glowRgba;
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = '#070C18';
+    ctx.fillRect(infoX, infoY, infoW, infoH);
+    ctx.strokeStyle = activeProf.accentHex;
+    ctx.lineWidth = 3.5;
+    ctx.strokeRect(infoX, infoY, infoW, infoH);
+    ctx.shadowBlur = 0;
+
+    // Upward pointer triangle pointing straight to the selected difficulty button!
+    ctx.fillStyle = activeProf.accentHex;
+    ctx.beginPath();
+    ctx.moveTo(activeCenterX - 14, infoY);
+    ctx.lineTo(activeCenterX + 14, infoY);
+    ctx.lineTo(activeCenterX, infoY - 13);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    const headerTone =
+      runDiff === 'EASY' ? 'green' : runDiff === 'MEDIUM' ? 'gold' : 'crimson';
+    const headerLine = `✓ SEÇİLEN: ${activeProf.titleTr} • ${activeProf.badgeTr}`;
+    const rawHdrW = measurePixelText(headerLine, 2.3, 0.45);
+    const hdrScale = rawHdrW > infoW - 32 ? 2.3 * ((infoW - 32) / rawHdrW) : 2.3;
+    drawPixelText(ctx, headerLine, CANVAS_WIDTH * 0.5, infoY + 31, {
+      scale: hdrScale,
+      tone: headerTone,
+      align: 'center',
+      letterGap: 0.45
+    });
+
+    const rawSumW = measurePixelText(activeProf.summaryLineTr, 2.05, 0.35);
+    const sumScale = rawSumW > infoW - 32 ? 2.05 * ((infoW - 32) / rawSumW) : 2.05;
+    drawPixelText(ctx, activeProf.summaryLineTr, CANVAS_WIDTH * 0.5, infoY + 68, {
+      scale: sumScale,
+      tone: 'white',
+      align: 'center',
+      letterGap: 0.35
+    });
+
+    // =========================================================================
+    // 3. HORIZONTAL 24-STAGE SELECTOR STRIP (`BÖLÜM 1..24`) + `TÜMÜ 24` GRID BTN
+    // =========================================================================
+    drawPixelText(ctx, 'BÖLÜM SEÇİCİ (SABİT 1-24)', 68, 926, {
+      scale: 2.55,
+      tone: 'silver',
+      align: 'left',
+      letterGap: 0.5
+    });
+
+    // `[TÜM 24 BÖLÜM]` quick grid button on right of header
+    const allBtnX = 626;
+    const allBtnY = 904;
+    const allBtnW = 208;
+    const allBtnH = 42;
+    ctx.save();
+    ctx.fillStyle = '#121E36';
+    ctx.fillRect(allBtnX, allBtnY, allBtnW, allBtnH);
+    ctx.strokeStyle = '#58C8FF';
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(allBtnX, allBtnY, allBtnW, allBtnH);
+    ctx.restore();
+    drawPixelText(ctx, 'TÜM 24 BÖLÜM >', allBtnX + allBtnW * 0.5, allBtnY + 22, {
+      scale: 2.05,
+      tone: 'cyan',
+      align: 'center',
+      letterGap: 0.4
+    });
+    this.addButton('OPEN_STAGE_GRID', allBtnX, allBtnY, allBtnW, allBtnH);
+
+    const stripY = 956;
+    const stripH = 172;
+    const navW = 58;
+
+    // Left `<` pager button
+    const canPrev = this.stageStripStart > 1;
+    ctx.save();
+    ctx.fillStyle = canPrev ? '#142038' : '#0A0E18';
+    ctx.fillRect(54, stripY, navW, stripH);
+    ctx.strokeStyle = canPrev ? '#7A92B8' : '#263044';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(54, stripY, navW, stripH);
+    ctx.restore();
+    drawPixelText(ctx, '◄', 54 + navW * 0.5, stripY + stripH * 0.5, {
+      scale: 3.4,
+      tone: canPrev ? 'white' : 'muted',
+      align: 'center'
+    });
+    this.addButton('STAGE_STRIP_PREV', 54, stripY, navW, stripH);
+
+    // Right `>` pager button
+    const canNext = this.stageStripStart < 22;
+    ctx.save();
+    ctx.fillStyle = canNext ? '#142038' : '#0A0E18';
+    ctx.fillRect(788, stripY, navW, stripH);
+    ctx.strokeStyle = canNext ? '#7A92B8' : '#263044';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(788, stripY, navW, stripH);
+    ctx.restore();
+    drawPixelText(ctx, '►', 788 + navW * 0.5, stripY + stripH * 0.5, {
+      scale: 3.4,
+      tone: canNext ? 'white' : 'muted',
+      align: 'center'
+    });
+    this.addButton('STAGE_STRIP_NEXT', 788, stripY, navW, stripH);
+
+    // 3 visible Stage Cards in `[stageStripStart .. stageStripStart + 2]`
+    const cardsAreaX = 122;
+    const cardGap = 12;
+    const stageCardW = 210; // 3 * 210 + 2 * 12 = 654 (122 + 654 = 776)
+
+    for (let slot = 0; slot < 3; slot++) {
+      const stageNum = this.stageStripStart + slot;
+      const spec = FIXED_CAMPAIGN_STAGES[stageNum - 1];
+      if (!spec) continue;
+
+      const cx = cardsAreaX + slot * (stageCardW + cardGap);
+      const unlocked = stageNum <= maxUnlocked;
+      const isSelected = stageNum === selectedStage;
+      const stars = StorageService.getCampaignStageStars(runDiff, stageNum, save);
+
+      ctx.save();
+      if (isSelected) {
+        ctx.shadowColor = activeProf.glowRgba;
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = '#141B2E';
+        ctx.fillRect(cx, stripY - 4, stageCardW, stripH + 8);
+        ctx.strokeStyle = activeProf.accentHex;
+        ctx.lineWidth = 4.5;
+        ctx.strokeRect(cx, stripY - 4, stageCardW, stripH + 8);
+      } else if (unlocked) {
+        ctx.fillStyle = '#0D1424';
+        ctx.fillRect(cx, stripY, stageCardW, stripH);
+        ctx.strokeStyle = '#4A5E82';
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(cx, stripY, stageCardW, stripH);
+      } else {
+        ctx.fillStyle = 'rgba(10, 14, 24, 0.72)';
+        ctx.fillRect(cx, stripY, stageCardW, stripH);
+        ctx.strokeStyle = '#242E42';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cx, stripY, stageCardW, stripH);
+      }
+      ctx.restore();
+
+      const midX = cx + stageCardW * 0.5;
+      drawPixelText(
+        ctx,
+        unlocked ? `BÖLÜM ${stageNum}` : `BÖLÜM ${stageNum} 🔒`,
+        midX,
+        stripY + 32,
+        {
+          scale: 2.55,
+          tone: isSelected ? headerTone : unlocked ? 'white' : 'muted',
+          align: 'center'
+        }
+      );
+
+      drawPixelText(
+        ctx,
+        unlocked ? this.shortenBossTitle(spec.bossNameTr) : 'KİLİTLİ BOSS',
+        midX,
+        stripY + 76,
+        {
+          scale: 1.85,
+          tone: isSelected ? 'gold' : unlocked ? 'cyan' : 'muted',
+          align: 'center',
+          letterGap: 0.35
+        }
+      );
+
+      if (unlocked) {
+        const starStr =
+          stars >= 3 ? '★★★' : stars === 2 ? '★★☆' : stars === 1 ? '★☆☆' : '☆☆☆';
+        drawPixelText(ctx, starStr, midX, stripY + 116, {
+          scale: 2.6,
+          tone: stars > 0 ? 'gold' : 'muted',
+          align: 'center'
+        });
+        drawPixelText(
+          ctx,
+          isSelected ? '✓ BAŞLANGIÇ' : 'DOKUN SEÇ',
+          midX,
+          stripY + 150,
+          {
+            scale: 1.85,
+            tone: isSelected ? 'green' : 'silver',
+            align: 'center',
+            letterGap: 0.4
+          }
+        );
+      } else {
+        drawPixelText(ctx, `BÖLÜM ${stageNum - 1} GEREKLİ`, midX, stripY + 132, {
+          scale: 1.75,
+          tone: 'muted',
+          align: 'center',
+          letterGap: 0.35
+        });
+      }
+
+      this.addButton(`SELECT_STAGE_${stageNum}`, cx, stripY, stageCardW, stripH);
+    }
+
+    // =========================================================================
+    // 4. GIANT ARCADE `OYNA` BUTTON (`BÖLÜM X: <BOSS>`)
+    // =========================================================================
+    const chosenSpec = FIXED_CAMPAIGN_STAGES[selectedStage - 1] ?? FIXED_CAMPAIGN_STAGES[0]!;
+    const playW = 636;
+    const playH = 174;
     const playX = Math.round((CANVAS_WIDTH - playW) * 0.5);
-    const playY = 1158;
+    const playY = 1156;
 
     ctx.save();
     ctx.shadowColor = 'rgba(255, 208, 64, 0.55)';
-    ctx.shadowBlur = 28;
+    ctx.shadowBlur = 24;
     ctx.fillStyle = '#FFF078';
-    ctx.fillRect(playX - 8, playY - 8, playW + 16, playH + 16);
+    ctx.fillRect(playX - 6, playY - 6, playW + 12, playH + 12);
     ctx.shadowBlur = 0;
 
     ctx.fillStyle = '#080810';
     ctx.fillRect(playX, playY, playW, playH);
 
-    // Rich crimson arcade button face
     ctx.fillStyle = '#E01818';
-    ctx.fillRect(playX + 8, playY + 8, playW - 16, playH - 16);
+    ctx.fillRect(playX + 6, playY + 6, playW - 12, playH - 12);
     ctx.fillStyle = '#B40C10';
-    ctx.fillRect(playX + 14, playY + playH * 0.52, playW - 28, playH * 0.48 - 14);
+    ctx.fillRect(playX + 12, playY + playH * 0.54, playW - 24, playH * 0.46 - 12);
     ctx.strokeStyle = '#FF7868';
     ctx.lineWidth = 4;
-    ctx.strokeRect(playX + 12, playY + 12, playW - 24, playH - 24);
+    ctx.strokeRect(playX + 10, playY + 10, playW - 20, playH - 20);
     ctx.restore();
 
-    drawPixelText(ctx, 'OYNA', CANVAS_WIDTH * 0.5, playY + playH * 0.5, {
-      scale: 8.6,
+    drawPixelText(ctx, 'OYUNA BAŞLA', CANVAS_WIDTH * 0.5, playY + 66, {
+      scale: 5.5,
       tone: 'gold',
       align: 'center'
     });
+    drawPixelText(
+      ctx,
+      `BÖLÜM ${selectedStage}: ${chosenSpec.bossNameTr} • ${activeProf.titleTr}`,
+      CANVAS_WIDTH * 0.5,
+      playY + 132,
+      { scale: 2.3, tone: 'white', align: 'center', letterGap: 0.45 }
+    );
     this.addButton('START_ENDLESS_RUN', playX, playY, playW, playH);
 
-    // 4. Bottom Riveted Brushed-Steel `GEMİLER` & `AYARLAR` Buttons (`01-hedef-sonsuz-menu.jpg`)
-    const botY = 1432;
-    const botH = 104;
-    const botW = 324;
+    // =========================================================================
+    // 5. BOTTOM `GEMİLER` & `AYARLAR` BUTTONS
+    // =========================================================================
+    const botY = 1366;
+    const botH = 100;
+    const botW = 342;
 
-    this.drawPixelPanel(ctx, 108, botY, botW, botH, 'brushedSteel');
-    drawPixelText(ctx, 'GEMİLER', 108 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.9,
+    this.drawPixelPanel(ctx, 90, botY, botW, botH, 'brushedSteel');
+    drawPixelText(ctx, 'GEMİLER', 90 + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.7,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('OPEN_SHIPS', 108, botY, botW, botH);
+    this.addButton('OPEN_SHIPS', 90, botY, botW, botH);
 
     this.drawPixelPanel(ctx, 468, botY, botW, botH, 'brushedSteel');
     drawPixelText(ctx, 'AYARLAR', 468 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.9,
+      scale: 3.7,
       tone: 'white',
       align: 'center'
     });
     this.addButton('GOTO_SETTINGS', 468, botY, botW, botH);
+  }
+
+  /**
+   * Full 24-Stage Fixed Campaign Grid (`Bölüm 1..24` across 4 Sectors)
+   */
+  private renderCampaignStageGridScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
+    this.drawCabinetOuterBezel(ctx);
+    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const prof = DIFFICULTY_UI_PROFILES[runDiff];
+    const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+    const selectedStage = StorageService.getSelectedStartStage(runDiff, save);
+
+    drawPixelText(ctx, `24 SABİT BÖLÜM • ${prof.titleTr}`, CANVAS_WIDTH * 0.5, 86, {
+      scale: 4.1,
+      tone: runDiff === 'EASY' ? 'green' : runDiff === 'MEDIUM' ? 'gold' : 'crimson',
+      align: 'center'
+    });
+    drawPixelText(
+      ctx,
+      `AÇIK BÖLÜMLER: 1 - ${maxUnlocked} / 24  •  DOKUN VE HEMEN BAŞLA`,
+      CANVAS_WIDTH * 0.5,
+      142,
+      { scale: 2.35, tone: 'cyan', align: 'center', letterGap: 0.45 }
+    );
+
+    const cols = 4;
+    const cardW = 186;
+    const cardH = 166;
+    const gapX = 16;
+    const gapY = 18;
+    const startX = Math.round((CANVAS_WIDTH - (cols * cardW + (cols - 1) * gapX)) * 0.5);
+    const startY = 186;
+
+    for (let idx = 0; idx < FIXED_CAMPAIGN_STAGES.length; idx++) {
+      const st = FIXED_CAMPAIGN_STAGES[idx]!;
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const cx = startX + col * (cardW + gapX);
+      const cy = startY + row * (cardH + gapY);
+
+      const unlocked = st.levelNumber <= maxUnlocked;
+      const isSelected = st.levelNumber === selectedStage;
+      const stars = StorageService.getCampaignStageStars(runDiff, st.levelNumber, save);
+
+      this.drawPixelPanel(
+        ctx,
+        cx,
+        cy,
+        cardW,
+        cardH,
+        isSelected ? 'goldSelected' : unlocked ? 'steel' : 'locked'
+      );
+
+      drawPixelText(
+        ctx,
+        unlocked ? `BÖLÜM ${st.levelNumber}` : `BÖLÜM ${st.levelNumber} 🔒`,
+        cx + cardW * 0.5,
+        cy + 34,
+        {
+          scale: 2.35,
+          tone: isSelected ? 'gold' : unlocked ? 'white' : 'muted',
+          align: 'center'
+        }
+      );
+
+      drawPixelText(
+        ctx,
+        unlocked ? this.shortenBossTitle(st.bossNameTr) : 'KİLİTLİ',
+        cx + cardW * 0.5,
+        cy + 80,
+        {
+          scale: 1.65,
+          tone: unlocked ? 'cyan' : 'muted',
+          align: 'center',
+          letterGap: 0.3
+        }
+      );
+
+      const starStr = unlocked
+        ? stars >= 3
+          ? '★★★'
+          : stars === 2
+            ? '★★☆'
+            : stars === 1
+              ? '★☆☆'
+              : '☆☆☆'
+        : '---';
+      drawPixelText(ctx, starStr, cx + cardW * 0.5, cy + 126, {
+        scale: 2.45,
+        tone: stars > 0 ? 'gold' : 'muted',
+        align: 'center'
+      });
+
+      this.addButton(`LAUNCH_STAGE_${st.levelNumber}`, cx, cy, cardW, cardH);
+    }
+
+    this.drawPixelPanel(ctx, 250, 1320, 400, 104, 'navyBtn');
+    drawPixelText(ctx, 'ANA MENÜYE DÖN', CANVAS_WIDTH * 0.5, 1372, {
+      scale: 3.3,
+      tone: 'white',
+      align: 'center'
+    });
+    this.addButton('BACK_MAIN', 250, 1320, 400, 104);
   }
 
   // ============================================================================
@@ -1057,8 +1471,8 @@ export class MenuRenderer {
       'TOGGLE_JOYSTICK_SIDE',
       92
     );
-    this.drawModalActionBtn(ctx, 'YENİDEN BAŞLA', 764, 'navyBtn', 'RESTART_RUN', 92);
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 874, 'navyBtn', 'QUIT_TO_MENU', 92);
+    this.drawModalActionBtn(ctx, 'BU BÖLÜMÜ TEKRARLA', 764, 'navyBtn', 'RETRY_CURRENT_STAGE', 92);
+    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 874, 'navyBtn', 'QUIT_TO_MENU', 92);
   }
 
   private renderSecondChanceModal(ctx: CanvasRenderingContext2D): void {
@@ -1099,22 +1513,25 @@ export class MenuRenderer {
     currentScore: number,
     waveNumber: number
   ): void {
-    this.drawPixelPanel(ctx, 72, 310, 756, 880, 'steel');
+    this.drawPixelPanel(ctx, 64, 270, 772, 956, 'steel');
 
-    const title = `DALGA ${String(waveNumber).padStart(2, '0')} TAMAM`;
-    drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 398, {
-      scale: 4.2,
+    const title =
+      waveNumber === 24
+        ? 'BÖLÜM 24 FİNAL ZAFERİ!'
+        : `BÖLÜM ${String(waveNumber).padStart(2, '0')} TAMAMLANDI!`;
+    drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 348, {
+      scale: 3.9,
       tone: 'gold',
       align: 'center'
     });
 
     for (let i = 0; i < 3; i++) {
       const star = getPixelStarSprite(i < bd.stars);
-      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 484, 5);
+      blitPixelSprite(ctx, star, CANVAS_WIDTH * 0.5 + (i - 1) * 90, 430, 5);
     }
 
-    const rowLeft = 128;
-    const rowRight = 772;
+    const rowLeft = 118;
+    const rowRight = 782;
     const shownPct =
       bd.winReason === 'TWIN_SPLIT' || bd.winReason === 'BOSS_DESTROYED'
         ? 'TAM ZAFER'
@@ -1122,7 +1539,7 @@ export class MenuRenderer {
 
     const bonusRows: Array<[string, string, 'white' | 'gold' | 'green' | 'cyan']> = [
       ['ALAN', shownPct, 'green'],
-      ['DALGA BONUSU', `+${bd.baseBonus}`, 'white']
+      ['BÖLÜM BONUSU', `+${bd.baseBonus}`, 'white']
     ];
     if (bd.over80Bonus > 0) {
       bonusRows.push(['ÜSTÜN KESİM', `+${bd.over80Bonus}`, 'gold']);
@@ -1135,22 +1552,48 @@ export class MenuRenderer {
       bonusRows.push(['TEK ÇİZGİ', `+${bd.firstCutMillionBonus}`, 'gold']);
     }
 
-    const rowStep = bonusRows.length <= 4 ? 58 : bonusRows.length === 5 ? 50 : 44;
-    let ry = 568;
+    const rowStep = bonusRows.length <= 4 ? 50 : bonusRows.length === 5 ? 44 : 38;
+    let ry = 508;
     for (const [label, val, tone] of bonusRows) {
-      drawPixelText(ctx, label, rowLeft, ry, { scale: 3.1, tone: 'silver', align: 'left' });
-      drawPixelText(ctx, val, rowRight, ry, { scale: 3.2, tone, align: 'right' });
+      drawPixelText(ctx, label, rowLeft, ry, { scale: 2.9, tone: 'silver', align: 'left' });
+      drawPixelText(ctx, val, rowRight, ry, { scale: 3.0, tone, align: 'right' });
       ry += rowStep;
     }
 
-    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 932, {
-      scale: 3.9,
+    // Next Stage Fixed Boss Preview Card!
+    const nextStageIdx = waveNumber % FIXED_CAMPAIGN_STAGES.length;
+    const nextSpec = FIXED_CAMPAIGN_STAGES[nextStageIdx]!;
+    ctx.save();
+    ctx.fillStyle = '#091020';
+    ctx.fillRect(108, 770, 684, 96);
+    ctx.strokeStyle = '#48C8FF';
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(108, 770, 684, 96);
+    ctx.restore();
+
+    drawPixelText(
+      ctx,
+      `SIRADAKİ BÖLÜM ${waveNumber + 1}: ${nextSpec.bossNameTr}`,
+      CANVAS_WIDTH * 0.5,
+      798,
+      { scale: 2.45, tone: 'cyan', align: 'center' }
+    );
+    drawPixelText(
+      ctx,
+      nextSpec.bossMechanicHintTr.slice(0, 52),
+      CANVAS_WIDTH * 0.5,
+      838,
+      { scale: 1.75, tone: 'silver', align: 'center', letterGap: 0.35 }
+    );
+
+    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 916, {
+      scale: 3.8,
       tone: 'gold',
       align: 'center'
     });
 
-    this.drawModalActionBtn(ctx, 'SONRAKİ DALGA', 994, 'goldRed', 'NEXT_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 1108, 'navyBtn', 'QUIT_TO_MENU', 90);
+    this.drawModalActionBtn(ctx, 'SONRAKİ BÖLÜM >', 974, 'goldRed', 'NEXT_SECTOR');
+    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 1090, 'navyBtn', 'QUIT_TO_MENU', 90);
   }
 
   private renderGameOverModal(
@@ -1159,9 +1602,11 @@ export class MenuRenderer {
     waveNumber: number,
     isNewRecord: boolean
   ): void {
-    this.drawPixelPanel(ctx, 84, 390, 732, 680, 'steel');
+    this.drawPixelPanel(ctx, 72, 360, 756, 730, 'steel');
+    const stageIdx = (Math.max(1, waveNumber) - 1) % FIXED_CAMPAIGN_STAGES.length;
+    const stageSpec = FIXED_CAMPAIGN_STAGES[stageIdx]!;
 
-    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 480, {
+    drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 444, {
       scale: 4.8,
       tone: 'red',
       align: 'center'
@@ -1169,30 +1614,39 @@ export class MenuRenderer {
 
     drawPixelText(
       ctx,
-      `ULAŞILAN DERİNLİK: DALGA ${String(waveNumber).padStart(2, '0')}`,
+      `BÖLÜM ${String(waveNumber).padStart(2, '0')}: ${stageSpec.bossNameTr}`,
       CANVAS_WIDTH * 0.5,
-      566,
-      { scale: 3.3, tone: 'cyan', align: 'center' }
+      528,
+      { scale: 3.0, tone: 'cyan', align: 'center' }
     );
 
     drawPixelText(
       ctx,
       `SKOR ${formatGroupedScore(currentScore)}`,
       CANVAS_WIDTH * 0.5,
-      640,
+      604,
       { scale: 3.9, tone: 'gold', align: 'center' }
     );
 
     if (isNewRecord) {
-      drawPixelText(ctx, '★ YENİ KİŞİSEL REKOR! ★', CANVAS_WIDTH * 0.5, 706, {
-        scale: 3.1,
+      drawPixelText(ctx, '★ YENİ KİŞİSEL REKOR! ★', CANVAS_WIDTH * 0.5, 668, {
+        scale: 3.0,
         tone: 'green',
         align: 'center'
       });
     }
 
-    this.drawModalActionBtn(ctx, 'TEKRAR OYNA', 766, 'goldRed', 'RESTART_RUN');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ', 896, 'navyBtn', 'QUIT_TO_MENU');
+    // Build 12 Rule: Retry directly from current fixed level (`BÖLÜM X`) with full lives!
+    this.drawModalActionBtn(
+      ctx,
+      `TEKRAR DENE (BÖLÜM ${waveNumber})`,
+      732,
+      'goldRed',
+      'RETRY_CURRENT_STAGE',
+      104
+    );
+    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 858, 'navyBtn', 'QUIT_TO_MENU', 96);
+    this.drawModalActionBtn(ctx, 'TÜM 24 BÖLÜM LİSTESİ', 972, 'navyBtn', 'OPEN_STAGE_GRID', 86);
   }
 
   private drawModalActionBtn(

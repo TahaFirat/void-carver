@@ -1,10 +1,12 @@
+import { MinionSpeciesId } from '../../core/CampaignProgressionV12';
 import { Point } from '../../geometry/Types';
-import { MinionSpeciesId } from '../../levels/EncounterDeck';
 import { InteriorMinion } from './BaseMinion';
 import {
   AnchorBarnacleMinion,
   BorderSparkCrabMinion,
   ChargerHornMinion,
+  CometSeedMinion,
+  CosmicMantaMinion,
   HomingSeekerMinion,
   KamikazeSporeMinion,
   LineLeechMinion,
@@ -12,9 +14,11 @@ import {
   OrbitSatelliteMinion,
   PhaseGhostMinion,
   PodTurretMinion,
+  RicochetCrystalMinion,
   ScarabBeetleMinion,
   ShieldSapperMinion,
   SplitterAmoebaMinion,
+  VortexDrifterMinion,
   WaspSwarmerMinion
 } from './BestiaryMinions';
 
@@ -56,5 +60,13 @@ export function createMinionBySpecies(
       return new AnchorBarnacleMinion(pos, seedIndex);
     case 'KAMIKAZE_SPORE':
       return new KamikazeSporeMinion(pos, 216, seedIndex);
+    case 'COSMIC_MANTA':
+      return new CosmicMantaMinion(pos, 134, seedIndex);
+    case 'RICOCHET_CRYSTAL':
+      return new RicochetCrystalMinion(pos, 148, seedIndex);
+    case 'VORTEX_DRIFTER':
+      return new VortexDrifterMinion(pos, 115, seedIndex);
+    case 'COMET_SEED':
+      return new CometSeedMinion(pos, 156, seedIndex);
   }
 }

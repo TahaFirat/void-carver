@@ -1,5 +1,10 @@
 import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
+import {
+  CampaignSaveData,
+  createDefaultCampaignSave,
+  GameDifficulty
+} from '../core/CampaignProgressionV12';
 import { DifficultyId, SHIP_SKINS, ShipSkinConfig, ShipSkinId } from '../core/Config';
 import type { ControlScheme } from '../input/TouchGestureEngine';
 import type { RunDifficulty } from '../levels/EndlessBossDirector';
@@ -54,6 +59,8 @@ export interface GameSaveData {
   highScoreEndless: number;
   bestEndlessWave: number;
   difficultyRecords: Record<RunDifficulty, DifficultyPersonalRecord>;
+  campaignV12: CampaignSaveData;
+  selectedStageByDifficulty: Record<GameDifficulty, number>;
   achievements: string[];
   premiumUnlocked: boolean;
   stats: LifetimeStats;
@@ -101,6 +108,12 @@ export function createDefaultSaveData(): GameSaveData {
       MEDIUM: { highScore: 0, bestWave: 0 },
       HARD: { highScore: 0, bestWave: 0 }
     },
+    campaignV12: createDefaultCampaignSave(),
+    selectedStageByDifficulty: {
+      EASY: 1,
+      MEDIUM: 1,
+      HARD: 1
+    },
     achievements: [],
     premiumUnlocked: false,
     stats: {
@@ -145,7 +158,43 @@ class StorageServiceImpl {
     for (let i = 1; i <= 100; i++) {
       sum += this.cached.sectors[i]?.stars ?? 0;
     }
-    return sum;
+    const v12Stars = this.getTotalCampaignStarsV12(this.cached);
+    return Math.max(sum, v12Stars);
+  }
+
+  public getCampaignStageStars(
+    diff: GameDifficulty,
+    stageNum: number,
+    save: GameSaveData = this.cached
+  ): number {
+    const key = `${diff}_${stageNum}`;
+    return save.campaignV12?.starsByLevel?.[key] ?? 0;
+  }
+
+  public getTotalCampaignStarsV12(save: GameSaveData = this.cached): number {
+    const map = save.campaignV12?.starsByLevel ?? {};
+    let total = 0;
+    for (const v of Object.values(map)) {
+      total += Number(v) || 0;
+    }
+    return total;
+  }
+
+  public getHighestUnlockedStage(
+    diff: GameDifficulty = difficultyIdToRunDifficulty(this.cached.difficulty),
+    save: GameSaveData = this.cached
+  ): number {
+    const raw = save.campaignV12?.highestUnlockedLevel?.[diff] ?? 1;
+    return Math.max(1, Math.min(24, Math.floor(raw)));
+  }
+
+  public getSelectedStartStage(
+    diff: GameDifficulty = difficultyIdToRunDifficulty(this.cached.difficulty),
+    save: GameSaveData = this.cached
+  ): number {
+    const maxUnlocked = this.getHighestUnlockedStage(diff, save);
+    const chosen = save.selectedStageByDifficulty?.[diff] ?? maxUnlocked;
+    return Math.max(1, Math.min(maxUnlocked, Math.floor(chosen)));
   }
 
   public getBestWaveOverall(save: GameSaveData = this.cached): number {
@@ -272,10 +321,74 @@ class StorageServiceImpl {
           }
         };
 
+        const parsedCamp = parsed.campaignV12;
+        const defaultCamp = createDefaultCampaignSave();
+        const highestUnlockedLevel: Record<GameDifficulty, number> = {
+          EASY: Math.max(
+            1,
+            Math.min(
+              24,
+              Number(parsedCamp?.highestUnlockedLevel?.EASY) ||
+                difficultyRecords.EASY.bestWave ||
+                1
+            )
+          ),
+          MEDIUM: Math.max(
+            1,
+            Math.min(
+              24,
+              Number(parsedCamp?.highestUnlockedLevel?.MEDIUM) ||
+                difficultyRecords.MEDIUM.bestWave ||
+                1
+            )
+          ),
+          HARD: Math.max(
+            1,
+            Math.min(
+              24,
+              Number(parsedCamp?.highestUnlockedLevel?.HARD) ||
+                difficultyRecords.HARD.bestWave ||
+                1
+            )
+          )
+        };
+        const campaignV12: CampaignSaveData = {
+          selectedDifficulty: difficultyIdToRunDifficulty(validDiff),
+          highestUnlockedLevel,
+          starsByLevel: {
+            ...defaultCamp.starsByLevel,
+            ...(parsedCamp?.starsByLevel ?? {})
+          }
+        };
+        const parsedSelStage = parsed.selectedStageByDifficulty;
+        const selectedStageByDifficulty: Record<GameDifficulty, number> = {
+          EASY: Math.max(
+            1,
+            Math.min(
+              highestUnlockedLevel.EASY,
+              Number(parsedSelStage?.EASY) || highestUnlockedLevel.EASY
+            )
+          ),
+          MEDIUM: Math.max(
+            1,
+            Math.min(
+              highestUnlockedLevel.MEDIUM,
+              Number(parsedSelStage?.MEDIUM) || highestUnlockedLevel.MEDIUM
+            )
+          ),
+          HARD: Math.max(
+            1,
+            Math.min(
+              highestUnlockedLevel.HARD,
+              Number(parsedSelStage?.HARD) || highestUnlockedLevel.HARD
+            )
+          )
+        };
+
         this.cached = {
           ...defaults,
           ...parsed,
-          version: 7,
+          version: 12,
           difficulty: validDiff,
           unlockedSector: Math.max(
             1,
@@ -284,6 +397,8 @@ class StorageServiceImpl {
           selectedShip: migratedShip,
           sectors: { ...defaults.sectors, ...(parsed.sectors ?? {}) },
           difficultyRecords,
+          campaignV12,
+          selectedStageByDifficulty,
           stats: { ...defaults.stats, ...(parsed.stats ?? {}) },
           settings: mergedSettings,
           achievements: Array.isArray(parsed.achievements) ? parsed.achievements : []

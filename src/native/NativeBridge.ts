@@ -93,11 +93,18 @@ class NativeBridgeImpl {
     }
   }
 
+  private canWebVibrate(): boolean {
+    if (typeof navigator === 'undefined' || !('vibrate' in navigator)) return false;
+    const ua = (navigator as Navigator & { userActivation?: { hasBeenActive?: boolean } })
+      .userActivation;
+    return Boolean(ua?.hasBeenActive);
+  }
+
   public hapticPowerUp(): void {
     if (!this.hapticsEnabled) return;
     if (this.isNative()) {
       Haptics.impact({ style: ImpactStyle.Medium }).catch(() => {});
-    } else if ('vibrate' in navigator) {
+    } else if (this.canWebVibrate()) {
       try {
         navigator.vibrate(18);
       } catch {
@@ -111,7 +118,7 @@ class NativeBridgeImpl {
     if (this.isNative()) {
       const style = percentClaimed >= 10 ? ImpactStyle.Heavy : ImpactStyle.Light;
       Haptics.impact({ style }).catch(() => {});
-    } else if (percentClaimed >= 10 && 'vibrate' in navigator) {
+    } else if (percentClaimed >= 10 && this.canWebVibrate()) {
       try {
         navigator.vibrate(28);
       } catch {
@@ -124,7 +131,7 @@ class NativeBridgeImpl {
     if (!this.hapticsEnabled) return;
     if (this.isNative()) {
       Haptics.notification({ type: NotificationType.Error }).catch(() => {});
-    } else if ('vibrate' in navigator) {
+    } else if (this.canWebVibrate()) {
       try {
         navigator.vibrate([45, 30, 65]);
       } catch {

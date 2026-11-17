@@ -14,6 +14,8 @@ import {
   getAnchorBarnacleSprite,
   getBorderSparkCrabSprite,
   getChargerHornSprite,
+  getCometSeedSprite,
+  getCosmicMantaSprite,
   getHomingSeekerSprite,
   getKamikazeSporeSprite,
   getLineLeechSprite,
@@ -21,9 +23,11 @@ import {
   getOrbitSatelliteSprite,
   getPhaseGhostSprite,
   getPodTurretSprite,
+  getRicochetCrystalSprite,
   getScarabBeetleSprite,
   getShieldSapperSprite,
   getSplitterAmoebaSprite,
+  getVortexDrifterSprite,
   getWaspSwarmerSprite
 } from '../../rendering/BestiarySprites';
 import { blitArenaPixelSprite } from '../../rendering/PixelArtEngine';
@@ -991,5 +995,170 @@ export class KamikazeSporeMinion extends InteriorMinion {
     const pos = this.getRenderPos(alpha);
     const frame: 0 | 1 = Math.floor(timeSeconds * 16) % 2 === 0 ? 0 : 1;
     blitArenaPixelSprite(ctx, getKamikazeSporeSprite(frame), pos.x, pos.y, 1.05);
+  }
+}
+
+// ============================================================================
+// BUILD 12 EXPANSION: 4 NEW SMOOTH AUTONOMOUS MINIONS (TOTAL 18 SPECIES!)
+// ============================================================================
+
+/**
+ * #15 CosmicManta (Kozmik Vatoz — r = 12):
+ * Graceful sapphire-cyan space manta gliding in figure-8 Lissajous curves without chasing the player!
+ */
+export class CosmicMantaMinion extends InteriorMinion {
+  public readonly kind = 'MANTA' as const;
+  private glidePhase: number;
+  private readonly baseSpeed: number;
+
+  constructor(pos: Point, speed = 134, seed = 0) {
+    const ang = (seed * 1.9 + 0.5) % (Math.PI * 2);
+    super(pos, Math.cos(ang) * speed, Math.sin(ang) * speed, 12);
+    this.speciesId = 'COSMIC_MANTA';
+    this.baseSpeed = speed;
+    this.glidePhase = seed * 1.2;
+  }
+
+  public update(mctx: MinionContext): void {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.glidePhase += mctx.dt * 2.6;
+    const spd = this.baseSpeed * mctx.speedScale;
+    this.currentSpeed = spd;
+    const heading = Math.atan2(this.vy, this.vx) + Math.sin(this.glidePhase) * 1.45 * mctx.dt;
+    this.vx = Math.cos(heading) * spd;
+    this.vy = Math.sin(heading) * spd;
+    this.x += this.vx * mctx.dt;
+    this.y += this.vy * mctx.dt;
+    this.enforcePolygonBounds(mctx.activePolygon);
+  }
+
+  public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
+    const pos = this.getRenderPos(alpha);
+    const frame: 0 | 1 = Math.floor(timeSeconds * 8) % 2 === 0 ? 0 : 1;
+    blitArenaPixelSprite(
+      ctx,
+      getCosmicMantaSprite(frame),
+      pos.x,
+      pos.y,
+      1.1,
+      Math.atan2(this.vy, this.vx)
+    );
+  }
+}
+
+/**
+ * #16 RicochetCrystal (Seken Kristal Küp — r = 11):
+ * Faceted prism crystal bouncing cleanly at crisp diagonal angles!
+ */
+export class RicochetCrystalMinion extends InteriorMinion {
+  public readonly kind = 'CRYSTAL' as const;
+  private readonly baseSpeed: number;
+  private spinAngle = 0;
+
+  constructor(pos: Point, speed = 148, seed = 0) {
+    const ang = Math.PI * 0.25 + (seed % 4) * (Math.PI * 0.5);
+    super(pos, Math.cos(ang) * speed, Math.sin(ang) * speed, 11);
+    this.speciesId = 'RICOCHET_CRYSTAL';
+    this.baseSpeed = speed;
+  }
+
+  public update(mctx: MinionContext): void {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.spinAngle += mctx.dt * 2.4;
+    const spd = this.baseSpeed * mctx.speedScale;
+    this.currentSpeed = spd;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * mctx.dt;
+    this.y += this.vy * mctx.dt;
+    this.enforcePolygonBounds(mctx.activePolygon);
+  }
+
+  public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
+    const pos = this.getRenderPos(alpha);
+    const frame: 0 | 1 = Math.floor(timeSeconds * 7) % 2 === 0 ? 0 : 1;
+    blitArenaPixelSprite(ctx, getRicochetCrystalSprite(frame), pos.x, pos.y, 1.08, this.spinAngle * 0.35);
+  }
+}
+
+/**
+ * #17 VortexDrifter (Çekim Girdabı — r = 12):
+ * Calm swirling nebula disc; trapping & crushing it inside a completed cut awards +5s extra Shield!
+ */
+export class VortexDrifterMinion extends InteriorMinion {
+  public readonly kind = 'VORTEX' as const;
+  private swirlAngle = 0;
+  private readonly baseSpeed: number;
+
+  constructor(pos: Point, speed = 115, seed = 0) {
+    const ang = (seed * 2.3 + 0.8) % (Math.PI * 2);
+    super(pos, Math.cos(ang) * speed, Math.sin(ang) * speed, 12);
+    this.speciesId = 'VORTEX_DRIFTER';
+    this.baseSpeed = speed;
+  }
+
+  public update(mctx: MinionContext): void {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.swirlAngle += mctx.dt * 3.6;
+    const spd = this.baseSpeed * mctx.speedScale;
+    this.currentSpeed = spd;
+    const heading = Math.atan2(this.vy, this.vx) + Math.cos(this.swirlAngle * 0.5) * 0.9 * mctx.dt;
+    this.vx = Math.cos(heading) * spd;
+    this.vy = Math.sin(heading) * spd;
+    this.x += this.vx * mctx.dt;
+    this.y += this.vy * mctx.dt;
+    this.enforcePolygonBounds(mctx.activePolygon);
+  }
+
+  public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
+    const pos = this.getRenderPos(alpha);
+    const frame: 0 | 1 = Math.floor(timeSeconds * 9) % 2 === 0 ? 0 : 1;
+    blitArenaPixelSprite(ctx, getVortexDrifterSprite(frame), pos.x, pos.y, 1.1, this.swirlAngle);
+  }
+}
+
+/**
+ * #18 CometSeed (Kuyruklu Yıldız Tohumu — r = 10):
+ * Fast straight-line star core leaving a clear directional spark tail!
+ */
+export class CometSeedMinion extends InteriorMinion {
+  public readonly kind = 'COMET' as const;
+  private readonly baseSpeed: number;
+
+  constructor(pos: Point, speed = 156, seed = 0) {
+    const ang = (seed * 1.65 + 0.4) % (Math.PI * 2);
+    super(pos, Math.cos(ang) * speed, Math.sin(ang) * speed, 10);
+    this.speciesId = 'COMET_SEED';
+    this.baseSpeed = speed;
+  }
+
+  public update(mctx: MinionContext): void {
+    this.prevX = this.x;
+    this.prevY = this.y;
+    const spd = this.baseSpeed * mctx.speedScale;
+    this.currentSpeed = spd;
+    const n = Math.hypot(this.vx, this.vy) || 1;
+    this.vx = (this.vx / n) * spd;
+    this.vy = (this.vy / n) * spd;
+    this.x += this.vx * mctx.dt;
+    this.y += this.vy * mctx.dt;
+    this.enforcePolygonBounds(mctx.activePolygon);
+  }
+
+  public render(ctx: CanvasRenderingContext2D, alpha: number, timeSeconds: number): void {
+    const pos = this.getRenderPos(alpha);
+    const frame: 0 | 1 = Math.floor(timeSeconds * 16) % 2 === 0 ? 0 : 1;
+    blitArenaPixelSprite(
+      ctx,
+      getCometSeedSprite(frame),
+      pos.x,
+      pos.y,
+      1.08,
+      Math.atan2(this.vy, this.vx)
+    );
   }
 }

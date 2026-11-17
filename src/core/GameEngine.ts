@@ -1,9 +1,9 @@
 import { SoundEngine } from '../audio/SoundEngine';
 import { ArenaHazardManager } from '../entities/ArenaHazards';
 import { BaseBoss } from '../entities/bosses/BaseBoss';
-import { MagmaSerpentBoss } from '../entities/bosses/BestiaryBosses';
+import { FrostLeviathanBoss, MagmaSerpentBoss } from '../entities/bosses/BestiaryBosses';
 import {
-  createBossesForEncounterPlan,
+  createBossesForFixedLevelPlan,
   instantiateBossBySpeciesId
 } from '../entities/bosses/BossFactory';
 import { CentipedeBoss } from '../entities/bosses/CentipedeBoss';
@@ -16,10 +16,7 @@ import {
   OpticNerveBoss
 } from '../entities/bosses/VolfiedBosses';
 import { InteriorMinion } from '../entities/enemies/BaseMinion';
-import {
-  HomingSeekerMinion,
-  OrbitSatelliteMinion
-} from '../entities/enemies/BestiaryMinions';
+import { HomingSeekerMinion } from '../entities/enemies/BestiaryMinions';
 import { BorderCrawler } from '../entities/enemies/BorderCrawler';
 import { createMinionBySpecies } from '../entities/enemies/MinionFactory';
 import { PlayerShip } from '../entities/PlayerShip';
@@ -47,6 +44,8 @@ import {
   getActivePerimeterBarriers,
   getPolygonEdges,
   getTotalPerimeter,
+  isPointOnBarrier,
+  isPointOnPolygonBoundary,
   pointInPolygonStrict,
   pointToArcLength,
   projectPointToPolygon,
@@ -55,24 +54,20 @@ import {
   resolvePolygonPenetration
 } from '../geometry/PolygonMath';
 import { PolygonSplitter } from '../geometry/PolygonSplitter';
-import { Barrier, Point } from '../geometry/Types';
+import { Barrier, DIR_VECTORS, Point } from '../geometry/Types';
 import { InputManager, InputState } from '../input/InputManager';
-import {
-  ALL_BOSS_IDS,
-  BossSpeciesId,
-  EncounterDeck,
-  WaveEncounterPlan
-} from '../levels/EncounterDeck';
 import {
   BossCombatPhase,
   EndlessBossDirector,
   WaveEncounterSpec
 } from '../levels/EndlessBossDirector';
 import { NativeBridge } from '../native/NativeBridge';
+import { getFieldCrystalSprite } from '../rendering/BestiarySprites';
 import { LayerRenderer } from '../rendering/LayerRenderer';
 import { ParticlePool } from '../rendering/ParticlePool';
 import {
   ARENA_PIXEL_SCALE,
+  blitArenaPixelSprite,
   blitPixelSprite,
   drawPixelText,
   measurePixelText
@@ -85,10 +80,26 @@ import {
 } from '../services/StorageService';
 import { isShipSkinId, MenuRenderer, ScreenState } from '../ui/MenuRenderer';
 import {
+  ArenaBounds,
+  AutonomousMinionEcology,
+  AutonomousMinionState
+} from './AutonomousMinionEcology';
+import {
+  ALL_BOSS_IDS_V12,
+  BossSpeciesId,
+  computeCrowdingSpeedDampener,
+  DIFFICULTY_UI_PROFILES,
+  FIXED_CAMPAIGN_STAGES,
+  getFixedLevelPlan,
+  recordLevelCompletion,
+  ResolvedLevelPlan
+} from './CampaignProgressionV12';
+import {
   ARENA_HEIGHT,
   ARENA_VIEW_SCALE,
   ARENA_VIEW_X,
   ARENA_VIEW_Y,
+  BASE_CUT_SPEED,
   CANVAS_WIDTH,
   CHAPTER_THEMES,
   ChapterThemeId,
@@ -109,6 +120,10 @@ import {
   ShipSkinConfig
 } from './Config';
 import { GameLoop } from './GameLoop';
+import {
+  PowerUpAndJuiceSystem,
+  PowerUpType as FieldCrystalType
+} from './PowerUpAndJuiceSystem';
 import { getLayout, pointInRect } from './ResponsiveLayout';
 import {
   ACHIEVEMENTS,
@@ -129,13 +144,19 @@ export class GameEngine {
   private readonly ship = new PlayerShip();
   private readonly menuRenderer = new MenuRenderer();
   private readonly endlessDirector = new EndlessBossDirector();
-  private readonly encounterDeck = new EncounterDeck();
+  private readonly minionEcology = new AutonomousMinionEcology(0x51f2a9c3);
+  private readonly juiceSystem = new PowerUpAndJuiceSystem();
   private readonly hazards = new ArenaHazardManager();
   private readonly gameLoop: GameLoop;
 
   private currentWave = 1;
   private currentWaveSpec: WaveEncounterSpec;
-  private currentEncounterPlan: WaveEncounterPlan;
+  private currentLevelPlan: ResolvedLevelPlan;
+  private autonomousMinionStates: AutonomousMinionState[] = [];
+  private minionSeqCounter = 0;
+  private activeCutDurationSec = 0;
+  private crystalDropTimer = 10;
+  private crystalCycleIdx = 0;
   private waveElapsedSec = 0;
   private activeCombatPhase: BossCombatPhase = 1;
   private phaseAwakeningTimer = 0;
@@ -194,8 +215,7 @@ export class GameEngine {
 
   constructor() {
     this.currentWaveSpec = this.endlessDirector.buildWave(1, 'MEDIUM');
-    this.currentEncounterPlan = this.encounterDeck.nextEncounter(1, 'MEDIUM');
-    this.encounterDeck.resetRun();
+    this.currentLevelPlan = getFixedLevelPlan(1, 'MEDIUM');
     this.gameLoop = new GameLoop(
       (dt) => this.update(dt),
       (alpha, frameDt) => this.render(alpha, frameDt)
@@ -277,6 +297,20 @@ export class GameEngine {
       MEDIUM: { highScore: 3_423_594, bestWave: 19 },
       HARD: { highScore: 3_423_594, bestWave: 19 }
     };
+    save.campaignV12 = {
+      selectedDifficulty: 'MEDIUM',
+      highestUnlockedLevel: { EASY: 12, MEDIUM: 14, HARD: 9 },
+      starsByLevel: {
+        MEDIUM_1: 3,
+        MEDIUM_2: 3,
+        MEDIUM_3: 2,
+        MEDIUM_4: 3,
+        MEDIUM_5: 2,
+        MEDIUM_6: 3,
+        MEDIUM_7: 2
+      }
+    };
+    save.selectedStageByDifficulty = { EASY: 5, MEDIUM: 8, HARD: 9 };
     save.highScoreEndless = 3_423_594;
     save.bestEndlessWave = 19;
 
@@ -284,15 +318,13 @@ export class GameEngine {
       const startWave = waveParam ? Math.max(1, Math.min(99, Number(waveParam) || 1)) : 1;
       this.startEndlessRun(startWave);
       this.roundIntroTimer = 0;
-      if (bossParam && (ALL_BOSS_IDS as readonly string[]).includes(bossParam)) {
+      if (bossParam && (ALL_BOSS_IDS_V12 as readonly string[]).includes(bossParam)) {
         const forcedBossId = bossParam as BossSpeciesId;
-        this.currentEncounterPlan = {
-          ...this.currentEncounterPlan,
+        const matchedStage = FIXED_CAMPAIGN_STAGES.find((s) => s.bossId === forcedBossId);
+        this.currentLevelPlan = {
+          ...this.currentLevelPlan,
           bossId: forcedBossId,
-          bossDisplayNameTr: this.encounterDeck.getBossDisplayNameTr(
-            forcedBossId,
-            this.currentEncounterPlan.eliteMutation
-          )
+          bossDisplayNameTr: matchedStage ? matchedStage.bossNameTr : forcedBossId
         };
         this.bosses = instantiateBossBySpeciesId(forcedBossId, { x: 450, y: 500 }, 10, true);
         for (const b of this.bosses) {
@@ -304,6 +336,8 @@ export class GameEngine {
 
     if (shot === 'menu') {
       save.difficulty = 'COMMANDER';
+      save.selectedStageByDifficulty.MEDIUM = 2;
+      this.menuRenderer.stageStripStart = 1;
       return;
     }
 
@@ -313,13 +347,14 @@ export class GameEngine {
       zor: 'LEGEND',
       faz2: 'LEGEND'
     };
-    save.difficulty = diffMap[shot] ?? 'LEGEND';
+    save.difficulty = diffMap[shot] ?? 'COMMANDER';
 
-    const targetWave = shot === 'kolay' ? 3 : shot === 'orta' ? 8 : 14;
+    // Showcase curated Build 12 stages: Stage 5 (Frost Leviathan), Stage 8 (Plasma Scorpion), Stage 15 (Quantum Butterfly), Stage 24 (Void Emperor)!
+    const targetWave = shot === 'kolay' ? 5 : shot === 'orta' ? 8 : shot === 'faz2' ? 24 : 15;
     this.startEndlessRun(targetWave);
     this.roundIntroTimer = 0;
     this.score = shot === 'kolay' ? 128_400 : shot === 'orta' ? 412_600 : 842_500;
-    this.lives = 3;
+    this.lives = DIFFICULTIES[save.difficulty].startingLives;
 
     const cuts: Point[][] =
       shot === 'kolay'
@@ -334,6 +369,18 @@ export class GameEngine {
       this.processCompletedCut(trail, 1);
     }
 
+    // Showcase Build 12 Field Power Crystals & 1-Hit Shield ring in gameplay screenshots!
+    this.juiceSystem.crystals = [];
+    this.juiceSystem.spawnCrystal('show_1', { x: 310, y: 310 }, 'TIME_FREEZE');
+    this.juiceSystem.spawnCrystal('show_2', { x: 640, y: 420 }, 'SPEED_BOOST');
+    if (shot === 'orta') {
+      this.juiceSystem.powerState.hasOneHitTrailShield = true;
+      for (const b of this.bosses) {
+        b.telegraphDuration = 2.0;
+        b.telegraphTimer = 1.65;
+      }
+    }
+
     if (shot === 'faz2' || shot === 'zor') {
       const nextPhase: BossCombatPhase = 2;
       this.activeCombatPhase = nextPhase;
@@ -341,6 +388,21 @@ export class GameEngine {
       for (const boss of this.bosses) {
         if (boss.alive) {
           boss.applyPhaseBehavior(this.currentWaveSpec.phases[nextPhase]);
+          if (shot === 'faz2') {
+            boss.update({
+              dt: 0.016,
+              timeSeconds: 1.0,
+              activePolygon: this.activePolygon,
+              claimedPercent: 52,
+              playerPos: { x: this.ship.x, y: this.ship.y },
+              playerState: 'ON_BORDER',
+              activeTrail: [],
+              speedScale: 1.0,
+              projectiles: this.projectiles,
+              summonMinion: () => {},
+              currentMinionCount: this.minions.length
+            });
+          }
         }
       }
     }
@@ -491,17 +553,75 @@ export class GameEngine {
       return;
     }
 
+    if (actionId === 'OPEN_STAGE_GRID') {
+      this.screen = 'SECTOR_SELECT';
+      return;
+    }
+
+    if (actionId === 'STAGE_STRIP_PREV') {
+      this.menuRenderer.shiftStageStrip(-1);
+      return;
+    }
+
+    if (actionId === 'STAGE_STRIP_NEXT') {
+      this.menuRenderer.shiftStageStrip(1);
+      return;
+    }
+
+    if (actionId.startsWith('SELECT_STAGE_')) {
+      const stageNum = Math.max(1, Math.min(24, Number(actionId.replace('SELECT_STAGE_', '')) || 1));
+      const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+      const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+      if (stageNum <= maxUnlocked) {
+        await StorageService.save((d) => {
+          d.selectedStageByDifficulty[runDiff] = stageNum;
+        });
+        NativeBridge.hapticPowerUp();
+        const stSpec = FIXED_CAMPAIGN_STAGES[stageNum - 1];
+        this.showToast(`BÖLÜM ${stageNum}: ${stSpec ? stSpec.bossNameTr : ''}`);
+      } else {
+        this.showToast(`ÖNCE BÖLÜM ${stageNum - 1} AÇILMALI`);
+      }
+      return;
+    }
+
+    if (actionId.startsWith('LAUNCH_STAGE_')) {
+      const stageNum = Math.max(1, Math.min(24, Number(actionId.replace('LAUNCH_STAGE_', '')) || 1));
+      const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+      const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+      if (stageNum <= maxUnlocked) {
+        await StorageService.save((d) => {
+          d.selectedStageByDifficulty[runDiff] = stageNum;
+        });
+        NativeBridge.hapticPowerUp();
+        this.startEndlessRun(stageNum);
+      } else {
+        this.showToast(`BÖLÜM ${stageNum} KİLİTLİ`);
+      }
+      return;
+    }
+
     if (actionId === 'START_ENDLESS_RUN' || actionId === 'START_ENDLESS') {
-      this.startEndlessRun(1);
+      const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+      const startStage = StorageService.getSelectedStartStage(runDiff, save);
+      this.startEndlessRun(startStage);
+      return;
+    }
+
+    if (actionId === 'RETRY_CURRENT_STAGE') {
+      this.startEndlessRun(Math.max(1, this.currentWave));
       return;
     }
 
     if (actionId.startsWith('SET_DIFF_')) {
       const diff = actionId.replace('SET_DIFF_', '') as DifficultyId;
       if (DIFFICULTIES[diff]) {
+        const runDiff = difficultyIdToRunDifficulty(diff);
         await StorageService.save((d) => {
           d.difficulty = diff;
+          d.campaignV12.selectedDifficulty = runDiff;
         });
+        NativeBridge.hapticPowerUp();
       }
       return;
     }
@@ -513,9 +633,12 @@ export class GameEngine {
           : save.difficulty === 'COMMANDER'
             ? 'LEGEND'
             : 'EXPLORER';
+      const runDiff = difficultyIdToRunDifficulty(nextDiff);
       await StorageService.save((d) => {
         d.difficulty = nextDiff;
+        d.campaignV12.selectedDifficulty = runDiff;
       });
+      NativeBridge.hapticPowerUp();
       this.showToast(`ZORLUK: ${DIFFICULTIES[nextDiff].nameTr}`);
       return;
     }
@@ -592,7 +715,7 @@ export class GameEngine {
     }
 
     if (actionId === 'RESTART_RUN' || actionId === 'RESTART_SECTOR') {
-      this.startEndlessRun(1);
+      this.startEndlessRun(Math.max(1, this.currentWave));
       return;
     }
 
@@ -636,21 +759,14 @@ export class GameEngine {
 
   private startEndlessRun(startWave = 1): void {
     const save = StorageService.getCurrent();
-    const diff = DIFFICULTIES[save.difficulty];
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const prof = DIFFICULTY_UI_PROFILES[runDiff];
     const rec = StorageService.getDifficultyRecord(save.difficulty, save);
 
     this.endlessDirector.resetRun();
-    this.encounterDeck.resetRun();
-    if (startWave > 1) {
-      const warmupSteps = Math.min(startWave - 1, 36);
-      for (let w = 1; w <= warmupSteps; w++) {
-        this.encounterDeck.nextEncounter(w, runDiff);
-      }
-    }
     this.score = 0;
     this.nextExtraLifeScore = EXTRA_LIFE_SCORE_STEP;
-    this.lives = diff.startingLives;
+    this.lives = prof.startingLives;
     this.runBaselineHighScore = rec.highScore;
     this.runBaselineBestWave = rec.bestWave;
     this.runIsNewRecord = false;
@@ -822,23 +938,143 @@ export class GameEngine {
     this.capsules.push(new PowerUpCapsule({ x: this.ship.x, y: this.ship.y - 40 }, 'BOSS_CANNON'));
   }
 
+  private computePolygonBounds(poly: readonly Point[]): ArenaBounds {
+    let minX = 900;
+    let minY = 1200;
+    let maxX = 0;
+    let maxY = 0;
+    for (const p of poly) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return {
+      minX: Math.min(minX, maxX - 40),
+      minY: Math.min(minY, maxY - 40),
+      maxX: Math.max(maxX, minX + 40),
+      maxY: Math.max(maxY, minY + 40)
+    };
+  }
+
+  private attachAutonomousMinion(minion: InteriorMinion, speedScale: number): void {
+    const id = `auto_m_${++this.minionSeqCounter}`;
+    minion.autonomousId = id;
+    const bounds = this.computePolygonBounds(this.activePolygon);
+    const anchor = this.bosses[0] ? { x: this.bosses[0].x, y: this.bosses[0].y } : { x: 450, y: 500 };
+    const st = this.minionEcology.spawnMinion(
+      id,
+      minion.speciesId ?? 'SCARAB_BEETLE',
+      bounds,
+      anchor,
+      speedScale
+    );
+    st.pos = { x: minion.x, y: minion.y };
+    st.vel = { x: minion.vx, y: minion.vy };
+    this.autonomousMinionStates.push(st);
+  }
+
+  private trySpawnFieldPowerCrystal(): void {
+    if (this.juiceSystem.crystals.length >= 2) return;
+    const crystalOrder: FieldCrystalType[] = [
+      'TRAIL_SHIELD_1HIT',
+      'SPEED_BOOST',
+      'TIME_FREEZE',
+      'LASER_CANNON'
+    ];
+    const chosenType = crystalOrder[this.crystalCycleIdx % crystalOrder.length]!;
+    this.crystalCycleIdx += 1;
+
+    for (let attempt = 0; attempt < 28; attempt++) {
+      const seedA = (Math.round(this.timeSeconds * 83) + attempt * 179 + this.currentWave * 97) % 640;
+      const seedB = (Math.round(this.timeSeconds * 71) + attempt * 151 + this.currentWave * 67) % 820;
+      const cand = { x: 130 + seedA, y: 180 + seedB };
+      if (!pointInPolygonStrict(cand, this.activePolygon)) continue;
+      const wallProj = projectPointToPolygon(cand, this.activePolygon);
+      if (wallProj.distance < 56) continue;
+      if (Math.hypot(this.ship.x - cand.x, this.ship.y - cand.y) < 120) continue;
+      if (
+        this.getActiveSolidBoxes().some(
+          (b) => Math.max(Math.abs(b.x - cand.x), Math.abs(b.y - cand.y)) < SOLID_BOX_HALF + 46
+        )
+      ) {
+        continue;
+      }
+      if (
+        this.juiceSystem.crystals.some(
+          (c) => Math.hypot(c.pos.x - cand.x, c.pos.y - cand.y) < 130
+        )
+      ) {
+        continue;
+      }
+
+      const id = `crys_${Math.round(this.timeSeconds * 100)}_${this.crystalCycleIdx}`;
+      this.juiceSystem.spawnCrystal(id, cand, chosenType);
+      this.particles.spawnShockwave(cand.x, cand.y, 64, '#68F4FF', 0.28);
+      return;
+    }
+  }
+
+  private applyFieldCrystalEffect(type: FieldCrystalType, px: number, py: number): void {
+    const label = this.juiceSystem.activatePowerUp(type, this.autonomousMinionStates);
+    const save = StorageService.getCurrent();
+    save.stats.powerUpsCollected += 1;
+
+    const soundMap: Record<FieldCrystalType, CollectiblePowerUpType> = {
+      TIME_FREEZE: 'T',
+      SPEED_BOOST: 'S',
+      TRAIL_SHIELD_1HIT: 'P',
+      LASER_CANNON: 'L'
+    };
+    SoundEngine.playPowerUp(soundMap[type]);
+    NativeBridge.hapticPowerUp();
+
+    if (type === 'TIME_FREEZE') {
+      this.timeFreezeTimer = Math.max(this.timeFreezeTimer, 5.0);
+      this.particles.spawnShockwave(px, py, 420, '#68F4FF', 0.42);
+    } else if (type === 'SPEED_BOOST') {
+      this.particles.spawnShockwave(px, py, 240, '#FFE058', 0.34);
+    } else if (type === 'TRAIL_SHIELD_1HIT') {
+      this.particles.spawnShockwave(px, py, 260, '#38B8FF', 0.36);
+    } else if (type === 'LASER_CANNON') {
+      this.ship.laserTimer = Math.max(this.ship.laserTimer, 6.0);
+      this.particles.spawnShockwave(px, py, 260, '#FF6858', 0.34);
+    }
+
+    const col =
+      type === 'TIME_FREEZE'
+        ? '#78F8FF'
+        : type === 'SPEED_BOOST'
+          ? '#FFE058'
+          : type === 'TRAIL_SHIELD_1HIT'
+            ? '#58D8FF'
+            : '#FF8868';
+    this.particles.spawnFloatingText(px, py - 28, label, col, 24);
+  }
+
   private loadWave(waveNumber: number): void {
     const save = StorageService.getCurrent();
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
     const spec = this.endlessDirector.buildWave(waveNumber, runDiff);
-    const plan = this.encounterDeck.nextEncounter(waveNumber, runDiff);
+    const plan = getFixedLevelPlan(waveNumber, runDiff);
 
     spec.terrainThemeIndex = plan.terrainThemeIndex;
     spec.targetPercent = plan.targetPercent;
     spec.shieldSeconds = plan.shieldSeconds;
+    // Build 12 Fairness: Never 0ms instant-detonate trail without fuse/shield counterplay on mobile!
+    spec.rules = {
+      ...spec.rules,
+      bossHitTrailInstantDetonation: false
+    };
 
     this.currentWave = waveNumber;
     this.currentWaveSpec = spec;
-    this.currentEncounterPlan = plan;
+    this.currentLevelPlan = plan;
     this.waveElapsedSec = 0;
     this.activeCombatPhase = 1;
     this.phaseAwakeningTimer = 0;
     this.phaseAwakeningLabel = null;
+    this.activeCutDurationSec = 0;
 
     this.activePolygon = createInitialArenaPolygon();
     this.waveBarrierDefs = this.buildWaveBarriers(spec.borderBarrierRatio, waveNumber);
@@ -861,10 +1097,20 @@ export class GameEngine {
     this.capsules = [];
     this.crawlers = [];
     this.minions = [];
+    this.autonomousMinionStates = [];
+    this.juiceSystem.crystals = [];
+    this.juiceSystem.powerState = {
+      hasOneHitTrailShield: false,
+      speedBoostRemainingSec: 0,
+      timeFreezeRemainingSec: 0,
+      laserCannonRemainingSec: 0,
+      respawnInvulnRemainingSec: 0
+    };
+    this.crystalDropTimer = Math.max(5.5, plan.powerUpDropIntervalSec * 0.55);
     this.clearBreakdown = null;
     this.timeFreezeTimer = 0;
     this.dynamicPodTimer = 24;
-    this.roundIntroTimer = 0.95;
+    this.roundIntroTimer = 1.05;
     this.cutStallTimer = 0;
     this.hesitationFuseLit = false;
     this.shieldZeroBeepTimer = 0;
@@ -873,7 +1119,7 @@ export class GameEngine {
     this.cutsThisLevel = 0;
     this.reviveUsedThisLevel = false;
     this.deathsThisLevel = 0;
-    this.crawlerSpawnTimer = spec.rules.crawlerDelaySec;
+    this.crawlerSpawnTimer = Math.max(36, spec.rules.crawlerDelaySec);
 
     // 1. Initialize Twin-Prong Fighter at bottom center (450, 1200)
     const shieldUnits = Math.max(200, Math.min(999, Math.round(spec.shieldSeconds * 10)));
@@ -884,10 +1130,10 @@ export class GameEngine {
     this.powerBoxes = boxDefs.map((cfg) => new PowerUpBox(cfg));
     this.syncSolidBoxes();
 
-    // 3. Spawn Zero-Repeat 16-Bit Bestiary Bosses (+ Elite Mutations on deep waves / Cycle 2+)
-    this.bosses = createBossesForEncounterPlan(plan, spec.phases[1]);
+    // 3. Spawn 100% Deterministic Fixed Stage Boss (`Bölüm 1..24`)!
+    this.bosses = createBossesForFixedLevelPlan(plan, spec.phases[1]);
 
-    // 4. Spawn collision-free 16-Bit Bestiary Minion Squad from `plan.minionSpawns`
+    // 4. Spawn collision-free Autonomous Minions (`AutonomousMinionEcology`)
     const pickSafeMinionPos = (baseX: number, baseY: number, seedIdx: number): Point => {
       for (let attempt = 0; attempt < 36; attempt++) {
         const px =
@@ -916,16 +1162,10 @@ export class GameEngine {
           255 + ((seedIdx * 195) % 490),
           seedIdx
         );
-        this.minions.push(createMinionBySpecies(group.species, pos, seedIdx));
+        const m = createMinionBySpecies(group.species, pos, seedIdx);
+        this.minions.push(m);
+        this.attachAutonomousMinion(m, plan.minionSpeedScale);
         seedIdx++;
-      }
-    }
-
-    if (plan.eliteMutation === 'ORBIT_GUARDED') {
-      const anchorBoss = this.bosses[0];
-      const center = anchorBoss ? { x: anchorBoss.x, y: anchorBoss.y } : { x: 450, y: 500 };
-      for (let s = 0; s < 2; s++) {
-        this.minions.push(new OrbitSatelliteMinion(center, s));
       }
     }
 
@@ -1100,7 +1340,10 @@ export class GameEngine {
     }
 
     if (newlySummonedMinions.length > 0) {
-      this.minions.push(...newlySummonedMinions);
+      for (const sm of newlySummonedMinions) {
+        this.minions.push(sm);
+        this.attachAutonomousMinion(sm, this.currentLevelPlan.minionSpeedScale);
+      }
     }
     if (newlySpawnedBosses.length > 0) {
       this.bosses.push(...newlySpawnedBosses);
@@ -1169,17 +1412,88 @@ export class GameEngine {
       this.trapEnrageTimer = Math.max(0, this.trapEnrageTimer - dt);
     }
 
-    // 1. Update Twin-Prong Fighter with zero-inertia stop & Cut-First Priority (`BorderAndCutNavigator`)
+    // 1. Step Build 12 Power-Up & Juice Timers + Calibrated Player Cutting Speed + 10px Auto-Close Snap
+    this.juiceSystem.stepTimers(dt);
+    if (this.juiceSystem.powerState.laserCannonRemainingSec > 0) {
+      this.ship.laserTimer = Math.max(
+        this.ship.laserTimer,
+        this.juiceSystem.powerState.laserCannonRemainingSec
+      );
+    }
+
     this.syncSolidBoxes();
     const prevX = this.ship.x;
     const prevY = this.ship.y;
     const inWebZone = this.hazards.isPointInWebZone({ x: this.ship.x, y: this.ship.y });
+    const inFrostZone = this.hazards.isPointInFrostZone({ x: this.ship.x, y: this.ship.y });
     const savedSpeedMult = this.ship.speedMultiplier;
-    if (inWebZone && (this.ship.state === 'CUTTING' || input.carveHeld || input.autoCarveSwipe)) {
-      this.ship.speedMultiplier = savedSpeedMult * 0.55;
+    const isActivelyCutting =
+      this.ship.state === 'CUTTING' || Boolean(input.carveHeld || input.autoCarveSwipe);
+    if (isActivelyCutting) {
+      const calibratedCutRatio = this.currentLevelPlan.playerCutSpeedPxPerSec / BASE_CUT_SPEED;
+      const turboBoost = this.juiceSystem.powerState.speedBoostRemainingSec > 0 ? 1.6 : 1.0;
+      const hazardSlow = inWebZone ? 0.58 : inFrostZone ? 0.72 : 1.0;
+      this.ship.speedMultiplier = Math.max(
+        0.42,
+        savedSpeedMult * calibratedCutRatio * turboBoost * hazardSlow
+      );
     }
-    const completedCut = this.ship.update(dt, input, this.activePolygon, this.activeBarriers);
+    let completedCut = this.ship.update(dt, input, this.activePolygon, this.activeBarriers);
     this.ship.speedMultiplier = savedSpeedMult;
+
+    // Build 12 Ergonomic Upgrade: 10px Wall Auto-Close Magnet (`10px Duvar Tamamlama Mıknatısı`)
+    if (
+      !completedCut &&
+      this.ship.state === 'CUTTING' &&
+      !this.ship.isBacktracking &&
+      this.ship.getActiveTrailLength() >= 24
+    ) {
+      const trailNow = this.ship.getActiveTrail();
+      const dirVec = DIR_VECTORS[this.ship.cutDirection];
+      const allRects = this.getAllSolidRects();
+      for (let snapDist = 2; snapDist <= 10; snapDist += 2) {
+        const probe = {
+          x: this.ship.x + dirVec.dx * snapDist,
+          y: this.ship.y + dirVec.dy * snapDist
+        };
+        if (circleHitsSolidBox(probe.x, probe.y, 4, allRects)) break;
+        if (
+          isPointOnPolygonBoundary(probe, this.activePolygon, 0.75) &&
+          !isPointOnBarrier(probe, this.activeBarriers, 0.75) &&
+          trailNow.length >= 2 &&
+          Math.hypot(probe.x - trailNow[0].x, probe.y - trailNow[0].y) >= 14
+        ) {
+          const snappedTrail = trailNow.map((p) => ({ x: p.x, y: p.y }));
+          snappedTrail[snappedTrail.length - 1] = { x: probe.x, y: probe.y };
+          this.ship.x = probe.x;
+          this.ship.y = probe.y;
+          completedCut = { trail: snappedTrail };
+          break;
+        }
+      }
+    }
+
+    if (this.ship.state === 'CUTTING') {
+      this.activeCutDurationSec += dt;
+      if (
+        this.juiceSystem.powerState.speedBoostRemainingSec > 0 &&
+        Math.floor(this.timeSeconds * 30) % 2 === 0
+      ) {
+        this.particles.spawnBurst(this.ship.x, this.ship.y, 2, '#FFE048', 25, 85, 4, 0.18);
+      }
+    } else {
+      this.activeCutDurationSec = 0;
+    }
+
+    // Direct touch collection of Field Power Crystals while cutting across them
+    for (let ci = this.juiceSystem.crystals.length - 1; ci >= 0; ci--) {
+      const crys = this.juiceSystem.crystals[ci]!;
+      if (Math.hypot(crys.pos.x - this.ship.x, crys.pos.y - this.ship.y) <= 26) {
+        this.juiceSystem.crystals.splice(ci, 1);
+        this.applyFieldCrystalEffect(crys.type, crys.pos.x, crys.pos.y);
+      }
+    }
+
     const movedDist = Math.hypot(this.ship.x - prevX, this.ship.y - prevY);
 
     // ShieldSapper (`3.0x` shield drain on border) + ElectricMedusa `StaticBorderArc` border hazard
@@ -1332,17 +1646,25 @@ export class GameEngine {
       }
     }
 
-    const timeFrozen = this.timeFreezeTimer > 0;
+    // Periodic Build 12 Collectible Field Power Crystal Spawner (`11s / 14s / 16s`)
+    this.crystalDropTimer -= dt;
+    if (this.crystalDropTimer <= 0) {
+      this.crystalDropTimer = this.currentLevelPlan.powerUpDropIntervalSec;
+      this.trySpawnFieldPowerCrystal();
+    }
+
+    const timeFrozen =
+      this.timeFreezeTimer > 0 || this.juiceSystem.powerState.timeFreezeRemainingSec > 0;
     if (this.timeFreezeTimer > 0) {
       this.timeFreezeTimer = Math.max(0, this.timeFreezeTimer - dt);
     }
 
     const activeTrail = this.ship.getActiveTrail();
     const enemyDt = this.phaseAwakeningTimer > 0 ? dt * 0.28 : dt;
-    const enrageBoost = this.trapEnrageTimer > 0 ? 1.38 : 1.0;
-    const minionSpeedScale = Math.min(1.95, 0.92 + spec.threatIndex * 0.065) * enrageBoost;
+    const crowdingDamp = computeCrowdingSpeedDampener(this.claimedPercent);
+    const bossEffectiveScale = this.currentLevelPlan.bossSpeedScale * crowdingDamp;
 
-    // 3. Update 18 Bestiary Bosses, 14 Minion Species, Arena Hazards, Crawlers & Electric Shocks
+    // 3. Update 24 Fixed-Campaign Bosses & 18 Autonomous Minions (`AutonomousMinionEcology`)
     if (!timeFrozen) {
       this.waveElapsedSec += enemyDt;
       const spawnedMinions: InteriorMinion[] = [];
@@ -1356,12 +1678,12 @@ export class GameEngine {
         for (let s = 0; s < readySeekers; s++) {
           if (
             hostBoss &&
-            this.minions.filter((m) => m.alive).length + spawnedMinions.length < 9
+            this.minions.filter((m) => m.alive).length + spawnedMinions.length < 6
           ) {
             spawnedMinions.push(
               new HomingSeekerMinion(
                 { x: hostBoss.x, y: hostBoss.y },
-                198,
+                156,
                 (this.timeSeconds + s) * 2.1
               )
             );
@@ -1381,7 +1703,8 @@ export class GameEngine {
           playerVel: { x: this.ship.vx, y: this.ship.vy },
           playerState: this.ship.state,
           activeTrail,
-          speedScale: 1.0,
+          speedScale: bossEffectiveScale,
+          telegraphLeadSec: this.currentLevelPlan.telegraphLeadSec,
           aimMode: spec.rules.bossAimMode,
           projectiles: this.projectiles,
           summonMinion: (m) => spawnedMinions.push(m),
@@ -1416,6 +1739,8 @@ export class GameEngine {
           boss.bounceSegmentsOffBoxes(solidBoxesNow, this.activePolygon);
         } else if (boss instanceof MagmaSerpentBoss) {
           boss.bounceSegmentsOffBoxes(solidBoxesNow, this.activePolygon);
+        } else if (boss instanceof FrostLeviathanBoss) {
+          boss.bounceSegmentsOffBoxes(solidBoxesNow, this.activePolygon);
         } else if (boss instanceof OpticNerveBoss) {
           boss.bounceTailOffBoxes(solidBoxesNow, this.activePolygon);
         }
@@ -1439,73 +1764,102 @@ export class GameEngine {
         return;
       }
 
-      // V7 Law 3: Determine which alive minions enter Unshielded Swarm Aggro during `CUTTING`
-      const aggroAllowed = new Set<InteriorMinion>();
-      if (this.ship.state === 'CUTTING') {
-        const aliveSorted = this.minions
-          .filter((m) => m.alive)
-          .slice()
-          .sort(
-            (a, b) =>
-              Math.hypot(a.x - this.ship.x, a.y - this.ship.y) -
-              Math.hypot(b.x - this.ship.x, b.y - this.ship.y)
-          );
-        const cap = Math.max(1, spec.rules.aggroMaxMinions);
-        for (let i = 0; i < Math.min(cap, aliveSorted.length); i++) {
-          aggroAllowed.add(aliveSorted[i]);
-        }
-      }
-
+      // Build 12 Autonomous Minion Ecology: ZERO border-camping, continuous organic free-roam!
       const primaryBossAlive =
         this.getPrimaryBosses().find((b) => b.alive) ?? this.bosses.find((b) => b.alive);
       const bossCenter = primaryBossAlive
         ? { x: primaryBossAlive.x, y: primaryBossAlive.y }
-        : undefined;
+        : { x: 450, y: 500 };
       const allSolidRectsNow = this.getAllSolidRects();
+      const polyBounds = this.computePolygonBounds(this.activePolygon);
 
+      const aliveIds = new Set<string>();
       for (const m of this.minions) {
         if (!m.alive) continue;
-        m.update({
-          dt: enemyDt,
-          activePolygon: this.activePolygon,
-          playerState: this.ship.state,
-          playerPos: { x: this.ship.x, y: this.ship.y },
-          playerVel: { x: this.ship.vx, y: this.ship.vy },
-          activeTrail,
-          speedScale: minionSpeedScale,
-          aggroActive: aggroAllowed.has(m),
-          aggroSpeedMult: this.currentEncounterPlan.minionAggroMultiplier,
-          interceptLead: spec.rules.swarmInterceptLead,
-          projectiles: this.projectiles,
-          spawnChildMinion: (child) => spawnedMinions.push(child),
-          currentMinionCount: this.minions.length + spawnedMinions.length,
-          bossCenter,
-          hazards: this.hazards,
-          solidBoxes: allSolidRectsNow,
-          waveElapsedSec: this.waveElapsedSec,
-          crawlerDelaySec: spec.rules.crawlerDelaySec
-        });
-        if (!m.alive && m.explodedOnWall) {
-          this.particles.spawnBurst(m.x, m.y, 12, '#FF7828', 50, 175, 5, 0.28);
-          continue;
+        if (!m.autonomousId) {
+          this.attachAutonomousMinion(m, this.currentLevelPlan.minionSpeedScale);
         }
-        if (
-          !m.ignoresSolidBoxes &&
-          !m.isPetrifiedObstacle &&
-          bounceCircleOffSolidBoxes(m, m.radius, allSolidRectsNow)
-        ) {
+        aliveIds.add(m.autonomousId!);
+      }
+      this.autonomousMinionStates = this.autonomousMinionStates.filter((st) =>
+        aliveIds.has(st.id)
+      );
+
+      let trailMidpoint: Point | undefined;
+      if (activeTrail.length >= 2) {
+        const midIdx = Math.floor(activeTrail.length * 0.5);
+        trailMidpoint = activeTrail[midIdx];
+      }
+
+      this.minionEcology.stepMinions(
+        this.autonomousMinionStates,
+        enemyDt,
+        polyBounds,
+        bossCenter,
+        {
+          pos: { x: this.ship.x, y: this.ship.y },
+          isCutting: this.ship.state === 'CUTTING',
+          activeCuttingDurationSec: this.activeCutDurationSec,
+          trailMidpoint
+        },
+        this.claimedPercent,
+        this.currentLevelPlan.reactionGraceSec,
+        (px, py) =>
+          !pointInPolygonStrict({ x: px, y: py }, this.activePolygon) ||
+          Boolean(circleHitsSolidBox(px, py, 12, allSolidRectsNow)),
+        (px, py) => {
+          const proj = projectPointToPolygon({ x: px, y: py }, this.activePolygon);
+          if (proj.distance <= 0.01) return null;
+          const dx = px - proj.point.x;
+          const dy = py - proj.point.y;
+          const len = Math.hypot(dx, dy) || 1;
+          return { dist: proj.distance, normalX: dx / len, normalY: dy / len };
+        }
+      );
+
+      const stateById = new Map<string, AutonomousMinionState>();
+      for (const st of this.autonomousMinionStates) {
+        stateById.set(st.id, st);
+      }
+
+      for (const m of this.minions) {
+        if (!m.alive || !m.autonomousId) continue;
+        const st = stateById.get(m.autonomousId);
+        if (!st) continue;
+        m.prevX = m.x;
+        m.prevY = m.y;
+        m.isLatchedToBorder = false;
+        m.isBorderSparkActive = false;
+        m.isPetrifiedObstacle = false;
+        m.isTimeFrozen = st.frozenTimerSec > 0;
+        m.x = st.pos.x;
+        m.y = st.pos.y;
+        m.vx = st.vel.x;
+        m.vy = st.vel.y;
+        m.currentSpeed = Math.hypot(st.vel.x, st.vel.y);
+        m.enforcePolygonBounds(this.activePolygon);
+        if (!m.ignoresSolidBoxes && bounceCircleOffSolidBoxes(m, m.radius, allSolidRectsNow)) {
           m.enforcePolygonBounds(this.activePolygon);
         }
+        st.pos.x = m.x;
+        st.pos.y = m.y;
+        st.vel.x = m.vx;
+        st.vel.y = m.vy;
       }
 
       if (spawnedMinions.length > 0) {
-        this.minions.push(...spawnedMinions);
+        const aliveNow = this.minions.filter((m) => m.alive).length;
+        for (const sm of spawnedMinions) {
+          if (aliveNow + 1 > 6) break;
+          this.minions.push(sm);
+          this.attachAutonomousMinion(sm, this.currentLevelPlan.minionSpeedScale);
+        }
       }
       this.syncSolidBoxes();
 
       this.crawlerSpawnTimer -= enemyDt;
-      if (this.crawlerSpawnTimer <= 0 && this.crawlers.length < 2) {
-        this.crawlerSpawnTimer = spec.rules.crawlerDelaySec;
+      if (this.crawlerSpawnTimer <= 0 && this.crawlers.length < 1 && this.currentWave >= 6) {
+        this.crawlerSpawnTimer = Math.max(38, spec.rules.crawlerDelaySec);
         const edges = getPolygonEdges(this.activePolygon);
         const totalPerim = getTotalPerimeter(edges);
         if (totalPerim > 0) {
@@ -1515,7 +1869,7 @@ export class GameEngine {
           );
           const playerS = pointToArcLength(playerProj.point, this.activePolygon) ?? 0;
           const oppositeS = (playerS + totalPerim * 0.5) % totalPerim;
-          this.crawlers.push(new BorderCrawler(this.activePolygon, oppositeS, 138));
+          this.crawlers.push(new BorderCrawler(this.activePolygon, oppositeS, 126));
         }
       }
 
@@ -1524,12 +1878,12 @@ export class GameEngine {
           enemyDt,
           this.activePolygon,
           { x: this.ship.x, y: this.ship.y },
-          minionSpeedScale
+          this.currentLevelPlan.minionSpeedScale * crowdingDamp
         );
       }
 
       if (this.ship.state === 'CUTTING' && activeTrail.length >= 2) {
-        const fuseSpeed = spec.rules.electricShockSpeed;
+        const fuseSpeed = Math.min(340, spec.rules.electricShockSpeed);
         for (const fuse of this.fuses) {
           const res = fuse.update(enemyDt, activeTrail, fuseSpeed);
           if (res.playAlarmPulse) {
@@ -1542,6 +1896,16 @@ export class GameEngine {
         }
       } else {
         this.fuses = [];
+      }
+    } else {
+      for (const m of this.minions) {
+        m.prevX = m.x;
+        m.prevY = m.y;
+        m.isTimeFrozen = true;
+      }
+      for (const b of this.bosses) {
+        b.prevX = b.x;
+        b.prevY = b.y;
       }
     }
 
@@ -1627,6 +1991,27 @@ export class GameEngine {
     this.fuses = [];
     this.cutStallTimer = 0;
     this.hesitationFuseLit = false;
+    this.activeCutDurationSec = 0;
+
+    // Measure closest enemy/bullet distance to the closing trail for Close-Call (+600) reward!
+    let nearestEnemyDistAtClosePx = 999;
+    if (trail.length >= 2) {
+      for (const eb of this.projectiles.enemyBullets) {
+        if (!eb.active) continue;
+        const d = projectPointToPolyline({ x: eb.x, y: eb.y }, trail).distance - eb.radius;
+        if (d < nearestEnemyDistAtClosePx) nearestEnemyDistAtClosePx = Math.max(0, d);
+      }
+      for (const m of this.minions) {
+        if (!m.alive) continue;
+        const d = projectPointToPolyline({ x: m.x, y: m.y }, trail).distance - m.radius;
+        if (d < nearestEnemyDistAtClosePx) nearestEnemyDistAtClosePx = Math.max(0, d);
+      }
+      for (const b of this.bosses) {
+        if (!b.alive) continue;
+        const d = projectPointToPolyline({ x: b.x, y: b.y }, trail).distance - b.boundingRadius;
+        if (d < nearestEnemyDistAtClosePx) nearestEnemyDistAtClosePx = Math.max(0, d);
+      }
+    }
 
     const split = PolygonSplitter.split(this.activePolygon, trail);
     if (!split) {
@@ -1699,6 +2084,7 @@ export class GameEngine {
     );
 
     let trappedCount = 0;
+    let vortexBonusSec = 0;
     for (const m of this.minions) {
       if (!m.alive) continue;
       if (!pointInPolygonStrict(m.position, this.activePolygon)) {
@@ -1716,12 +2102,57 @@ export class GameEngine {
             this.ship.shieldTimer + restoreSec
           );
           this.particles.spawnFloatingText(m.x, m.y - 26, '+80 KALKAN', '#28E038', 22);
+        } else if (m.speciesId === 'VORTEX_DRIFTER') {
+          vortexBonusSec += 5;
+          this.particles.spawnFloatingText(m.x, m.y - 26, '+5 SN KALKAN!', '#58F8D8', 22);
         }
       }
     }
     this.minions = this.minions.filter((m) => m.alive);
+    const remainingIds = new Set(this.minions.map((m) => m.autonomousId));
+    this.autonomousMinionStates = this.autonomousMinionStates.filter((st) =>
+      remainingIds.has(st.id)
+    );
     if (trappedCount >= 3) {
       this.tryUnlockAchievement('COMBO_HUNTER');
+    }
+
+    // Build 12 Juice Rewards: Mega Cut, Minion Crush Combo (+3s shield each) & Close-Call (+600)!
+    const juiceRewards = this.juiceSystem.computeCutRewards(
+      percentDelta,
+      trappedCount,
+      nearestEnemyDistAtClosePx
+    );
+    if (juiceRewards.bonusScore > 0) {
+      this.addScore(juiceRewards.bonusScore);
+    }
+    const totalBonusShieldSec = juiceRewards.bonusShieldSec + vortexBonusSec;
+    if (totalBonusShieldSec > 0) {
+      this.ship.shieldTimer = Math.min(
+        this.ship.maxShieldDuration * 1.2,
+        this.ship.shieldTimer + totalBonusShieldSec
+      );
+    }
+    if (juiceRewards.triggerHitStopMs > 0) {
+      this.gameLoop.triggerHitStop(Math.min(0.095, juiceRewards.triggerHitStopMs / 1000));
+    }
+    for (let ci = 0; ci < juiceRewards.calloutsTr.length; ci++) {
+      this.particles.spawnFloatingText(
+        this.ship.x,
+        Math.max(90, this.ship.y - 58 - ci * 32),
+        juiceRewards.calloutsTr[ci]!,
+        '#58F8FF',
+        23
+      );
+    }
+
+    // Collect any Field Power Crystals (`❄️`, `⚡`, `🛡️`, `🔫`) enclosed inside the claimed polygon!
+    for (let ci = this.juiceSystem.crystals.length - 1; ci >= 0; ci--) {
+      const crys = this.juiceSystem.crystals[ci]!;
+      if (!pointInPolygonStrict(crys.pos, this.activePolygon)) {
+        this.juiceSystem.crystals.splice(ci, 1);
+        this.applyFieldCrystalEffect(crys.type, crys.pos.x, crys.pos.y);
+      }
     }
 
     this.hazards.pruneOutsidePolygon(this.activePolygon);
@@ -1944,9 +2375,10 @@ export class GameEngine {
         if (hitBoss) {
           bolt.active = false;
           if (!bolt.heavyPlasma) {
+            boss.applyLaserStun(0.32);
             SoundEngine.playBossHit(true);
-            this.addScore(20);
-            this.particles.spawnBurst(bolt.x, bolt.y, 5, '#50E8FF', 45, 130, 4, 0.18);
+            this.addScore(35);
+            this.particles.spawnBurst(bolt.x, bolt.y, 6, '#50E8FF', 45, 130, 4, 0.18);
           } else {
             const armoredShell = boss.armorDamageReduction >= 0.5;
             SoundEngine.playBossHit(armoredShell);
@@ -2202,6 +2634,38 @@ export class GameEngine {
   }
 
   private killPlayerShip(): void {
+    // Build 12 Protection: Respawn Invulnerability & 1-Hit Trail Shield Rescue!
+    const shieldCheck = this.juiceSystem.resolveIncomingPlayerHit(this.ship.cutStartPoint);
+    if (!shieldCheck.playerDied) {
+      if (shieldCheck.rewindToPos) {
+        const savedLaser = this.ship.laserTimer;
+        const savedCannon = this.ship.bossCannonTimer;
+        this.fuses = [];
+        this.cutStallTimer = 0;
+        this.hesitationFuseLit = false;
+        this.activeCutDurationSec = 0;
+        this.projectiles.clearEnemyBullets();
+        this.ship.respawnAtCutStart(this.activePolygon);
+        this.ship.laserTimer = savedLaser;
+        this.ship.bossCannonTimer = savedCannon;
+        this.ship.invulnerableTimer = 1.6;
+        SoundEngine.playShieldDeflect();
+        NativeBridge.hapticPowerUp();
+        this.particles.spawnShockwave(this.ship.x, this.ship.y, 280, '#38D8FF', 0.4);
+        if (shieldCheck.bannerTextTr) {
+          this.showToast(shieldCheck.bannerTextTr);
+          this.particles.spawnFloatingText(
+            this.ship.x,
+            this.ship.y - 36,
+            shieldCheck.bannerTextTr,
+            '#58E8FF',
+            24
+          );
+        }
+      }
+      return;
+    }
+
     SoundEngine.playShipExplode();
     NativeBridge.hapticDanger();
     this.particles.triggerShake(12, 0.32);
@@ -2219,6 +2683,7 @@ export class GameEngine {
     this.fuses = [];
     this.cutStallTimer = 0;
     this.hesitationFuseLit = false;
+    this.activeCutDurationSec = 0;
     this.hazards.staticArcs = [];
     this.projectiles.clearEnemyBullets();
     this.deathsThisLevel += 1;
@@ -2236,9 +2701,46 @@ export class GameEngine {
       return;
     }
 
+    // Same Fixed Stage & Same Boss — Respawn with 3.0s Anti-Spawn-Kill Shockwave (>=145px)!
     this.ship.respawnAtCutStart(this.activePolygon);
+    this.ship.invulnerableTimer = 3.0;
+    this.juiceSystem.triggerRespawnShockwave(
+      { x: this.ship.x, y: this.ship.y },
+      this.autonomousMinionStates,
+      145
+    );
+    const stateMap = new Map(this.autonomousMinionStates.map((st) => [st.id, st]));
+    for (const m of this.minions) {
+      if (!m.alive || !m.autonomousId) continue;
+      const st = stateMap.get(m.autonomousId);
+      if (st) {
+        m.x = st.pos.x;
+        m.y = st.pos.y;
+        m.vx = st.vel.x;
+        m.vy = st.vel.y;
+        m.enforcePolygonBounds(this.activePolygon);
+        st.pos.x = m.x;
+        st.pos.y = m.y;
+      }
+    }
+    for (const boss of this.bosses) {
+      if (!boss.alive) continue;
+      const dx = boss.x - this.ship.x;
+      const dy = boss.y - this.ship.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      if (dist < 155) {
+        const pushed = resolvePolygonPenetration(
+          { x: this.ship.x + (dx / dist) * 160, y: this.ship.y + (dy / dist) * 160 },
+          boss.boundingRadius,
+          this.activePolygon
+        ).position;
+        boss.x = pushed.x;
+        boss.y = pushed.y;
+      }
+    }
+    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#58F8FF', 0.42);
     this.hazards.spaceMines = this.hazards.spaceMines.filter(
-      (m) => Math.hypot(m.x - this.ship.x, m.y - this.ship.y) > 90
+      (m) => Math.hypot(m.x - this.ship.x, m.y - this.ship.y) > 130
     );
   }
 
@@ -2272,6 +2774,16 @@ export class GameEngine {
       this.cutsThisLevel === 1 &&
       this.claimedPercent >= spec.targetPercent;
 
+    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const earnedStars = recordLevelCompletion(
+      save.campaignV12,
+      runDiff,
+      this.currentWave,
+      this.claimedPercent,
+      this.deathsThisLevel > 0
+    );
+    save.selectedStageByDifficulty[runDiff] = Math.min(24, this.currentWave + 1);
+
     const breakdown = ScoreSystem.computeLevelClearBreakdown(
       reason,
       this.claimedPercent,
@@ -2280,6 +2792,7 @@ export class GameEngine {
       clearedInSingleCut,
       spec.targetPercent
     );
+    breakdown.stars = Math.max(breakdown.stars, earnedStars) as 1 | 2 | 3;
     this.clearBreakdown = breakdown;
     this.addScore(breakdown.totalLevelBonus);
 
@@ -2401,12 +2914,9 @@ export class GameEngine {
     prefix: string;
     isImpossible: boolean;
   } {
-    if (this.currentWaveSpec.threatLabelTr === 'İMKÂNSIZ') {
-      return { prefix: 'İMKÂNSIZ', isImpossible: true };
-    }
     return {
       prefix: DIFFICULTIES[save.difficulty].shortTr,
-      isImpossible: false
+      isImpossible: save.difficulty === 'LEGEND'
     };
   }
 
@@ -2528,8 +3038,8 @@ export class GameEngine {
       ctx.fillRect(innerX + 2, innerY + 2, vitW, 3);
     }
 
-    if (barW >= 520 && this.currentEncounterPlan?.bossDisplayNameTr) {
-      const bossName = this.currentEncounterPlan.bossDisplayNameTr;
+    if (barW >= 520 && this.currentLevelPlan?.bossDisplayNameTr) {
+      const bossName = this.currentLevelPlan.bossDisplayNameTr;
       const nameSc = 2.05;
       const nameW = measurePixelText(bossName, nameSc, 0.45);
       ctx.fillStyle = 'rgba(4, 6, 14, 0.62)';
@@ -2699,6 +3209,44 @@ export class GameEngine {
       cap.render(ctx);
     }
 
+    // Build 12 Collectible Field Power Crystals (`❄️`, `⚡`, `🛡️`, `🔫`)
+    const crysFrame: 0 | 1 = Math.floor(this.timeSeconds * 7) % 2 === 0 ? 0 : 1;
+    const crysTagMap: Record<FieldCrystalType, { tag: string; col: string; tone: 'cyan' | 'gold' | 'crimson' }> = {
+      TIME_FREEZE: { tag: 'DONDUR', col: 'rgba(104, 244, 255, 0.5)', tone: 'cyan' },
+      SPEED_BOOST: { tag: 'TURBO', col: 'rgba(255, 224, 88, 0.5)', tone: 'gold' },
+      TRAIL_SHIELD_1HIT: { tag: 'KALKAN', col: 'rgba(56, 184, 255, 0.55)', tone: 'cyan' },
+      LASER_CANNON: { tag: 'LAZER', col: 'rgba(255, 104, 88, 0.5)', tone: 'crimson' }
+    };
+    for (const crys of this.juiceSystem.crystals) {
+      const bobY = crys.pos.y + Math.sin(this.timeSeconds * 4.2 + crys.pos.x * 0.02) * 5;
+      const meta = crysTagMap[crys.type];
+      const blinkFade =
+        crys.remainingLifetimeSec < 3.0 && Math.floor(this.timeSeconds * 12) % 2 === 1
+          ? 0.48
+          : 1.0;
+      ctx.save();
+      ctx.globalAlpha = blinkFade;
+      ctx.strokeStyle = meta.col;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(Math.round(crys.pos.x), Math.round(bobY), 28 + crysFrame * 3, 0, Math.PI * 2);
+      ctx.stroke();
+      blitArenaPixelSprite(
+        ctx,
+        getFieldCrystalSprite(crys.type, crysFrame),
+        crys.pos.x,
+        bobY,
+        1.15
+      );
+      drawPixelText(ctx, meta.tag, crys.pos.x, bobY + 34, {
+        scale: 1.65,
+        tone: meta.tone,
+        align: 'center',
+        letterGap: 0.35
+      });
+      ctx.restore();
+    }
+
     // TwinNexus energy tether (electrified crimson-gold in Phase 2+)
     if (
       this.bosses.length >= 2 &&
@@ -2754,6 +3302,32 @@ export class GameEngine {
       this.activeBarriers
     );
 
+    // Build 12 Visual Auras: 1-Hit Trail Shield Ring & Respawn Shockwave Shield!
+    const shipPos = this.ship.getRenderPosition(alpha);
+    if (this.juiceSystem.powerState.hasOneHitTrailShield) {
+      ctx.save();
+      const pulse = 32 + Math.sin(this.timeSeconds * 10) * 3;
+      ctx.strokeStyle = '#38C8FF';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(168, 248, 255, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), pulse + 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    } else if (this.juiceSystem.powerState.respawnInvulnRemainingSec > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(120, 248, 255, 0.65)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), 30, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     for (const fuse of this.fuses) {
       fuse.render(ctx, alpha, this.timeSeconds);
     }
@@ -2761,23 +3335,30 @@ export class GameEngine {
     this.particles.renderArenaEffects(ctx);
 
     if (this.roundIntroTimer > 0 && this.screen === 'PLAYING') {
-      const stageLabel = `DALGA ${this.currentWave}`;
-      const bossSubtitle = this.currentEncounterPlan?.bossDisplayNameTr ?? '';
+      const stageLabel = `BÖLÜM ${this.currentWave}`;
+      const bossSubtitle = this.currentLevelPlan?.bossDisplayNameTr ?? '';
       ctx.save();
       ctx.fillStyle = 'rgba(6, 8, 16, 0.92)';
-      ctx.fillRect(190, 514, 520, 134);
+      ctx.fillRect(160, 504, 580, 150);
       ctx.strokeStyle = PALETTE.GOLD_LIGHT;
       ctx.lineWidth = 4;
-      ctx.strokeRect(190, 514, 520, 134);
-      drawPixelText(ctx, stageLabel, 450, 560, {
-        scale: ARENA_PIXEL_SCALE * 1.75,
+      ctx.strokeRect(160, 504, 580, 150);
+      drawPixelText(ctx, stageLabel, 450, 548, {
+        scale: ARENA_PIXEL_SCALE * 1.65,
         tone: 'gold',
         align: 'center'
       });
       if (bossSubtitle) {
-        drawPixelText(ctx, bossSubtitle, 450, 612, {
-          scale: ARENA_PIXEL_SCALE * 1.05,
+        drawPixelText(ctx, bossSubtitle, 450, 598, {
+          scale: ARENA_PIXEL_SCALE * 1.0,
           tone: 'cyan',
+          align: 'center'
+        });
+      }
+      if (this.currentLevelPlan?.sectorNameTr) {
+        drawPixelText(ctx, this.currentLevelPlan.sectorNameTr, 450, 634, {
+          scale: ARENA_PIXEL_SCALE * 0.68,
+          tone: 'silver',
           align: 'center'
         });
       }
@@ -2837,7 +3418,7 @@ export class GameEngine {
     ctx.fillRect(stripX + 2, HUD_BOTTOM_Y, stripW - 4, 2);
 
     const { prefix, isImpossible } = this.getDifficultyHudPrefix(save);
-    const waveLabel = `${prefix} • DALGA `;
+    const waveLabel = `${prefix} • BÖLÜM `;
     const waveNum = String(this.currentWave);
     const shownLives = Math.max(0, Math.min(this.lives, 5));
     const target = this.currentWaveSpec.targetPercent;

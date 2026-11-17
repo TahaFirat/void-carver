@@ -1,4 +1,5 @@
 import { ENRAGE_CLAIM_PERCENT, PALETTE } from '../../core/Config';
+import type { BossSpeciesId } from '../../core/CampaignProgressionV12';
 import {
   computeArea,
   pointInPolygonStrict,
@@ -6,7 +7,7 @@ import {
   resolvePolygonPenetration
 } from '../../geometry/PolygonMath';
 import { Point } from '../../geometry/Types';
-import type { BossSpeciesId, EliteMutationAffix } from '../../levels/EncounterDeck';
+import type { EliteMutationAffix } from '../../levels/EncounterDeck';
 import type { BossCombatPhase, BossPhaseBehavior } from '../../levels/EndlessBossDirector';
 import {
   blitArenaPixelSprite,
@@ -47,7 +48,13 @@ export type BossArchetype =
   | 'GRAVITY_GOLEM'
   | 'HYDRA_BIO_HEAD'
   | 'SAWBLADE_JUGGERNAUT'
-  | 'CHRONO_SPHINX';
+  | 'CHRONO_SPHINX'
+  | 'FROST_LEVIATHAN'
+  | 'PLASMA_SCORPION'
+  | 'SINKHOLE_WORM'
+  | 'QUANTUM_BUTTERFLY'
+  | 'SOLAR_FLARE_CORE'
+  | 'VOID_EMPEROR';
 
 export type BossAimMode = 'FIXED_SPREAD' | 'DIRECT_AIM' | 'PREDICTIVE_LEAD_AIM';
 
@@ -61,6 +68,7 @@ export interface BossUpdateContext {
   playerState: 'ON_BORDER' | 'CUTTING';
   activeTrail: readonly Point[];
   speedScale: number;
+  telegraphLeadSec?: number;
   aimMode?: BossAimMode;
   projectiles: ProjectileManager;
   summonMinion: (minion: InteriorMinion) => void;
@@ -151,6 +159,12 @@ export abstract class BaseBoss {
 
   public combatPhase: BossCombatPhase = 1;
   public phaseBehavior: BossPhaseBehavior | null = null;
+  public telegraphTimer = 0;
+  public telegraphDuration = 0.7;
+  public stunTimer = 0;
+  private pendingTelegraphColor: string | null = null;
+  private pendingTelegraphCallback: ((bctx: BossUpdateContext, speedScale: number) => void) | null =
+    null;
   protected orbitBladeAngle = 0;
   protected moltenTrailTimer = 1.1;
   protected spiralPhaseAngle = 0;
@@ -303,6 +317,24 @@ export abstract class BaseBoss {
     return corridorWidth;
   }
 
+  public applyLaserStun(durationSec = 0.32): void {
+    this.stunTimer = Math.max(this.stunTimer, durationSec);
+    this.hitFlash = Math.max(this.hitFlash, 0.12);
+  }
+
+  public queueTelegraphedAttack(
+    leadSec: number,
+    colorHex: string,
+    executeFn: (bctx: BossUpdateContext, speedScale: number) => void
+  ): void {
+    if (this.telegraphTimer > 0) return;
+    const safeLead = Math.max(0.25, leadSec);
+    this.telegraphDuration = safeLead;
+    this.telegraphTimer = safeLead;
+    this.pendingTelegraphColor = colorHex;
+    this.pendingTelegraphCallback = executeFn;
+  }
+
   public update(bctx: BossUpdateContext): void {
     this.prevX = this.x;
     this.prevY = this.y;
@@ -311,6 +343,9 @@ export abstract class BaseBoss {
     this.enraged = bctx.claimedPercent >= ENRAGE_CLAIM_PERCENT || this.combatPhase >= 2;
     if (this.hitFlash > 0) {
       this.hitFlash = Math.max(0, this.hitFlash - bctx.dt);
+    }
+    if (this.stunTimer > 0) {
+      this.stunTimer = Math.max(0, this.stunTimer - bctx.dt);
     }
 
     const corridorWidth = this.updateCorridorScale(
@@ -344,7 +379,22 @@ export abstract class BaseBoss {
         frenzyMult = 1.45;
       }
     }
-    const effectiveSpeedScale = bctx.speedScale * phaseMult * this.pinballSpeedBoost * frenzyMult;
+    const stunDamp = this.stunTimer > 0 ? 0.35 : 1.0;
+    const cappedPinball =
+      bctx.telegraphLeadSec !== undefined
+        ? Math.min(1.16, this.pinballSpeedBoost)
+        : this.pinballSpeedBoost;
+    const effectiveSpeedScale =
+      bctx.speedScale * phaseMult * cappedPinball * frenzyMult * stunDamp;
+
+    if (this.telegraphTimer > 0) {
+      this.telegraphTimer = Math.max(0, this.telegraphTimer - bctx.dt);
+      if (this.telegraphTimer <= 0 && this.pendingTelegraphCallback) {
+        const cb = this.pendingTelegraphCallback;
+        this.pendingTelegraphCallback = null;
+        cb(bctx, effectiveSpeedScale);
+      }
+    }
 
     if (this.eliteMutation === 'MAGMA_WAKE') {
       this.eliteWakeTimer -= bctx.dt;
@@ -453,6 +503,20 @@ export abstract class BaseBoss {
   }
 
   protected firePhasePattern(
+    bctx: BossUpdateContext,
+    speedScale: number,
+    baseColor: string = PALETTE.CUT_ORANGE
+  ): void {
+    if (bctx.telegraphLeadSec && bctx.telegraphLeadSec > 0 && !this.pendingTelegraphCallback) {
+      this.queueTelegraphedAttack(bctx.telegraphLeadSec, baseColor, (laterCtx, laterScale) => {
+        this.executeFirePhasePatternImmediate(laterCtx, laterScale, baseColor);
+      });
+      return;
+    }
+    this.executeFirePhasePatternImmediate(bctx, speedScale, baseColor);
+  }
+
+  private executeFirePhasePatternImmediate(
     bctx: BossUpdateContext,
     speedScale: number,
     baseColor: string = PALETTE.CUT_ORANGE
@@ -607,6 +671,24 @@ export abstract class BaseBoss {
     py: number,
     radius: number
   ): void {
+    if (this.telegraphTimer > 0) {
+      const progress = 1 - this.telegraphTimer / Math.max(0.1, this.telegraphDuration);
+      const ringR = Math.round(this.boundingRadius * (1.55 - progress * 0.35));
+      const blink = Math.floor(this.telegraphTimer * 24) % 2 === 0;
+      ctx.save();
+      ctx.strokeStyle = blink ? '#FFF498' : (this.pendingTelegraphColor ?? '#FF7820');
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(Math.round(px), Math.round(py), ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(255, 120, 32, 0.55)';
+      ctx.beginPath();
+      ctx.arc(Math.round(px), Math.round(py), ringR + 8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (this.hitFlash <= 0) return;
     ctx.save();
     ctx.globalAlpha = 0.7;

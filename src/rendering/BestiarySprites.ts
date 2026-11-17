@@ -1344,3 +1344,447 @@ export function getWebZoneSprite(frame: 0 | 1): HTMLCanvasElement {
   BESTIARY_CACHE.set(key, out);
   return out;
 }
+
+// ============================================================================
+// PART 4: BUILD 12 EXPANSION — 6 NEW 16-BIT BOSSES, 4 SMOOTH MINIONS & CRYSTALS
+// ============================================================================
+
+/**
+ * Build 12 Boss #5: FrostLeviathan (Buzul Leviathan) — Crystalline ice-cyan & diamond-white sea dragon!
+ */
+export function getFrostLeviathanHeadSprite(frame: 0 | 1, charging = false): HTMLCanvasElement {
+  const key = `boss:frost_leviathan_head:${frame}:${charging ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(42, 34);
+  const rampIce = charging
+    ? [hexToU32('#FFFFFF'), hexToU32('#88FFFF'), hexToU32('#2898F8'), hexToU32('#104088')]
+    : [hexToU32('#F4FCFF'), hexToU32('#6CE4FF'), hexToU32('#1E7CD8'), hexToU32('#0E2E68')];
+  const cCrest = hexToU32('#C8F8FF');
+  const cEye = charging ? hexToU32('#FFF468') : hexToU32('#FFFFFF');
+
+  // Swept crystalline dorsal & ventral fins (facing +X)
+  const finLift = frame === 0 ? 0 : 2;
+  drawLinePx(s, 16, 8, 5, 2 + finLift, cCrest, 3);
+  drawLinePx(s, 16, 25, 5, 31 - finLift, cCrest, 3);
+  drawLinePx(s, 24, 9, 14, 3 + finLift, rampIce[1], 2);
+  drawLinePx(s, 24, 24, 14, 30 - finLift, rampIce[1], 2);
+
+  // Armored glacial dragon skull & snout (+X)
+  fillEllipseDitheredPx(s, 20, 17, 13, 9.5, rampIce);
+  fillDiamondPx(s, 31, 17, 8, 6, rampIce);
+  // Twin ice horns + glowing eyes
+  drawLinePx(s, 26, 12, 36, 9, hexToU32('#FFFFFF'), 2);
+  drawLinePx(s, 26, 22, 36, 25, hexToU32('#FFFFFF'), 2);
+  fillRectPx(s, 27, 13, 3, 2, cEye);
+  fillRectPx(s, 27, 19, 3, 2, cEye);
+
+  applyArcadeOutline(s, '#060A18');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+export function getFrostLeviathanSegmentSprite(isTail: boolean): HTMLCanvasElement {
+  const key = `boss:frost_leviathan_seg:${isTail ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const dim = isTail ? 20 : 26;
+  const s = createPixelSurface(dim, dim);
+  const rampIce = [hexToU32('#E8FAFF'), hexToU32('#58D4F8'), hexToU32('#1A64B8'), hexToU32('#0C2858')];
+  const r = isTail ? 6.5 : 9.5;
+  fillDiamondPx(s, dim * 0.5, dim * 0.5, r, r * 0.85, rampIce);
+  fillRectPx(s, Math.floor(dim * 0.5) - 1, Math.floor(dim * 0.5) - 1, 3, 3, hexToU32('#FFFFFF'));
+
+  applyArcadeOutline(s, '#060A18');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+export function getFrostTrailSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `hazard:frost_trail:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(26, 26);
+  const ramp = [
+    hexToU32('#FFFFFF', 225),
+    hexToU32('#78F0FF', 205),
+    hexToU32('#2088E0', 185)
+  ];
+  fillDiamondPx(s, 12.5, 12.5, 10, 10, ramp);
+  drawLinePx(s, 12, 3, 12, 22, hexToU32('#FFFFFF', 230), 1);
+  drawLinePx(s, 3, 12, 22, 12, hexToU32('#FFFFFF', 230), 1);
+  if (frame === 0) {
+    setPx(s, 7, 7, hexToU32('#FFFFFF'));
+    setPx(s, 18, 17, hexToU32('#FFFFFF'));
+  } else {
+    setPx(s, 17, 7, hexToU32('#FFFFFF'));
+    setPx(s, 7, 18, hexToU32('#FFFFFF'));
+  }
+  applyArcadeOutline(s, '#081428');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Boss #8: PlasmaScorpion (Plazma Akrebi) — Gunmetal & copper-orange mecha-scorpion!
+ * Matches reference art: twin heavy pincers, 8 segmented legs, sequential glowing stinger tail!
+ */
+export function getPlasmaScorpionSprite(frame: 0 | 1, tailLitNodes: number): HTMLCanvasElement {
+  const clampNodes = Math.max(0, Math.min(4, Math.round(tailLitNodes)));
+  const key = `boss:plasma_scorpion:${frame}:${clampNodes}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(60, 56);
+  const rampSteel = [hexToU32('#DCE6F6'), hexToU32('#6E7C94'), hexToU32('#343C4E'), hexToU32('#181C28')];
+  const rampCopper = [hexToU32('#FFF098'), hexToU32('#FF8C24'), hexToU32('#C83C10'), hexToU32('#581808')];
+
+  // 8 articulated side legs (4 left, 4 right)
+  for (let i = 0; i < 4; i++) {
+    const ly = 22 + i * 6;
+    const shift = (i + frame) % 2 === 0 ? -2 : 2;
+    drawLinePx(s, 22, ly, 8, ly - 3 + shift, rampSteel[1], 2);
+    drawLinePx(s, 8, ly - 3 + shift, 4, ly + 3 + shift, rampCopper[1], 2);
+  }
+  mirrorHorizontal(s);
+
+  // Twin heavy front pincers (bottom-left & bottom-right)
+  const pinch = frame === 0 ? 0 : 2;
+  for (const side of [-1, 1]) {
+    const cx = 30 + side * 15;
+    drawLinePx(s, 30 + side * 7, 36, cx, 44, rampSteel[1], 3);
+    fillEllipseDitheredPx(s, cx + side * 2, 47, 6.5, 5, rampSteel);
+    drawLinePx(s, cx, 49, cx + side * (5 - pinch), 53, rampCopper[0], 2);
+    drawLinePx(s, cx + side * 4, 46, cx + side * (7 - pinch), 51, rampCopper[1], 2);
+  }
+
+  // Segmented gunmetal carapace with glowing orange reactor seams
+  fillEllipseDitheredPx(s, 30, 30, 11.5, 13.5, rampSteel);
+  for (const ry of [23, 28, 33, 38]) {
+    fillRectPx(s, 24, ry, 12, 2, rampCopper[1]);
+  }
+  fillRectPx(s, 26, 40, 3, 2, hexToU32('#FF3828'));
+  fillRectPx(s, 31, 40, 3, 2, hexToU32('#FF3828'));
+
+  // Curved 4-node arched scorpion tail + plasma stinger over the back
+  const tailCoords: Array<[number, number, number]> = [
+    [26, 17, 4.8],
+    [23, 11, 4.4],
+    [28, 6, 4.2],
+    [35, 8, 4.6]
+  ];
+  for (let idx = 0; idx < tailCoords.length; idx++) {
+    const [tx, ty, tr] = tailCoords[idx]!;
+    const lit = idx < clampNodes;
+    fillEllipseDitheredPx(s, tx, ty, tr, tr, lit ? rampCopper : rampSteel);
+  }
+  // Stinger barb
+  const stingerHot = clampNodes >= 3;
+  drawLinePx(s, 37, 9, 43, 14, stingerHot ? hexToU32('#FFFFFF') : rampCopper[1], 3);
+  setPx(s, 44, 15, hexToU32('#FFF488'));
+
+  applyArcadeOutline(s, '#080810');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Boss #12: SinkholeWorm (Obruk Solucanı) — Sand-gold & obsidian armored dune wyrm!
+ */
+export function getSinkholeWormSprite(frame: 0 | 1, submerging = false): HTMLCanvasElement {
+  const key = `boss:sinkhole_worm:${frame}:${submerging ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(54, 54);
+  const rampGold = [hexToU32('#FFF4A8'), hexToU32('#E8A830'), hexToU32('#8C5210'), hexToU32('#3C2008')];
+  const rampVoid = [hexToU32('#E088FF'), hexToU32('#8428C8'), hexToU32('#280A48')];
+
+  const outerR = submerging ? 17 : 22;
+  fillEllipseDitheredPx(s, 27, 27, outerR, outerR, rampGold);
+  fillEllipseDitheredPx(s, 27, 27, outerR * 0.68, outerR * 0.68, rampVoid);
+
+  // Rotating ring of 8 crystalline teeth around the gravity maw
+  const rot = frame === 0 ? 0 : Math.PI / 8;
+  for (let i = 0; i < 8; i++) {
+    const a = rot + (i * Math.PI) / 4;
+    const x0 = 27 + Math.cos(a) * (outerR * 0.72);
+    const y0 = 27 + Math.sin(a) * (outerR * 0.72);
+    const x1 = 27 + Math.cos(a) * (outerR * 0.36);
+    const y1 = 27 + Math.sin(a) * (outerR * 0.36);
+    drawLinePx(s, x0, y0, x1, y1, hexToU32('#FFF8D0'), 2);
+  }
+  fillEllipseDitheredPx(s, 27, 27, 4.5, 4.5, [hexToU32('#FFFFFF'), hexToU32('#B848FF'), hexToU32('#140424')]);
+
+  applyArcadeOutline(s, '#08060E');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Boss #15: QuantumButterfly (Kuantum Kelebeği) — Symmetrical neon-cyan & violet astral butterfly!
+ */
+export function getQuantumButterflySprite(frame: 0 | 1, charging = false): HTMLCanvasElement {
+  const key = `boss:quantum_butterfly:${frame}:${charging ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(60, 52);
+  const wingSpan = frame === 0 ? 25 : 18;
+  const rampUpper = charging
+    ? [hexToU32('#FFFFFF'), hexToU32('#FFF078'), hexToU32('#38E8FF'), hexToU32('#1858B8')]
+    : [hexToU32('#E8FFFF'), hexToU32('#48F0FF'), hexToU32('#2878E8'), hexToU32('#142868')];
+  const rampLower = [hexToU32('#FFE0FF'), hexToU32('#E858FF'), hexToU32('#7820B8'), hexToU32('#2C0C54')];
+
+  // Draw left upper & lower stained-glass wings, then mirror horizontally!
+  fillEllipseDitheredPx(s, 30 - wingSpan * 0.55, 18, wingSpan * 0.55, 12, rampUpper);
+  fillEllipseDitheredPx(s, 30 - wingSpan * 0.42, 35, wingSpan * 0.42, 10, rampLower);
+  // Wing circuit eye-spots
+  fillDiamondPx(s, 30 - Math.round(wingSpan * 0.62), 17, 4.5, 4.5, [hexToU32('#FFFFFF'), hexToU32('#FFD848')]);
+  fillDiamondPx(s, 30 - Math.round(wingSpan * 0.45), 35, 3.5, 3.5, [hexToU32('#FFFFFF'), hexToU32('#58FFFF')]);
+  // Left antenna
+  drawLinePx(s, 28, 12, 21, 4, hexToU32('#88F8FF'), 2);
+  setPx(s, 20, 3, hexToU32('#FFF488'));
+
+  mirrorHorizontal(s);
+
+  // Central golden-silver astral thorax
+  fillEllipseDitheredPx(s, 30, 26, 4.5, 14, [hexToU32('#FFFFFF'), hexToU32('#FFE068'), hexToU32('#985810')]);
+
+  applyArcadeOutline(s, '#060814');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Boss #19: SolarFlareCore (Güneş Fırtınası Çekirdeği) — Rotating stellar corona reactor!
+ */
+export function getSolarFlareCoreSprite(frame: 0 | 1, charging = false): HTMLCanvasElement {
+  const key = `boss:solar_flare_core:${frame}:${charging ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(58, 58);
+  const rampSun = charging
+    ? [hexToU32('#FFFFFF'), hexToU32('#FFF898'), hexToU32('#FF7818'), hexToU32('#B81810')]
+    : [hexToU32('#FFF8C0'), hexToU32('#FFD038'), hexToU32('#E85814'), hexToU32('#78180C')];
+  const rampRing = [hexToU32('#DCE6F8'), hexToU32('#7484A0'), hexToU32('#2C3448')];
+
+  // 4 cardinal magnetic prominence spikes
+  for (let i = 0; i < 4; i++) {
+    const a = (i * Math.PI) / 2 + (frame === 0 ? 0 : 0.14);
+    const x1 = 29 + Math.cos(a) * 26;
+    const y1 = 29 + Math.sin(a) * 26;
+    drawLinePx(s, 29, 29, x1, y1, hexToU32('#FF9824'), 4);
+    drawLinePx(s, 29, 29, x1, y1, hexToU32('#FFF898'), 2);
+  }
+
+  // Containment gyro-ring + blazing fusion sphere
+  fillEllipseDitheredPx(s, 29, 29, 20, 20, rampRing);
+  fillEllipseDitheredPx(s, 29, 29, 15.5, 15.5, rampSun);
+  fillDiamondPx(s, 29, 29, 7, 7, [hexToU32('#FFFFFF'), hexToU32('#FFF488'), hexToU32('#FF6818')]);
+
+  applyArcadeOutline(s, '#08060C');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Boss #24: VoidEmperor (Hiçlik İmparatoru) — 2-Stage Final Boss!
+ * Form 1 (`!awakenedCore`): Heavy obsidian-gold armored throne monolith.
+ * Form 2 (`awakenedCore`): Winged astral void sovereign core!
+ */
+export function getVoidEmperorSprite(
+  frame: 0 | 1,
+  awakenedCore: boolean,
+  charging = false
+): HTMLCanvasElement {
+  const key = `boss:void_emperor:${frame}:${awakenedCore ? 1 : 0}:${charging ? 1 : 0}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(64, 60);
+  const rampGold = [hexToU32('#FFF8B8'), hexToU32('#F4B830'), hexToU32('#94580C'), hexToU32('#3E2004')];
+  const rampObsidian = [hexToU32('#98A8C8'), hexToU32('#485470'), hexToU32('#202638'), hexToU32('#0E121E')];
+  const rampAstral = charging
+    ? [hexToU32('#FFFFFF'), hexToU32('#FFE878'), hexToU32('#E848FF'), hexToU32('#581498')]
+    : [hexToU32('#F8E8FF'), hexToU32('#B858FF'), hexToU32('#5820B8'), hexToU32('#1E0848')];
+
+  if (!awakenedCore) {
+    // Form 1: Royal Armored Throne Monolith
+    fillRectPx(s, 14, 12, 36, 38, rampObsidian[2]);
+    strokeRectPx(s, 14, 12, 36, 38, rampGold[1]);
+    strokeRectPx(s, 17, 15, 30, 32, rampObsidian[0]);
+    // Crown spires
+    drawLinePx(s, 18, 12, 14, 4, rampGold[0], 3);
+    drawLinePx(s, 32, 12, 32, 2, rampGold[0], 4);
+    drawLinePx(s, 46, 12, 50, 4, rampGold[0], 3);
+    // Shoulder pauldrons
+    fillDiamondPx(s, 12, 26, 7, 10, rampGold);
+    fillDiamondPx(s, 52, 26, 7, 10, rampGold);
+    // Central void eye
+    fillDiamondPx(s, 32, 30, 9, 11, rampAstral);
+    fillRectPx(s, 30, 28, 4, 5, frame === 0 ? hexToU32('#FFFFFF') : hexToU32('#FFE868'));
+  } else {
+    // Form 2: Awakened Winged Sovereign Core
+    const lift = frame === 0 ? 0 : 3;
+    // Left seraphic energy blades (mirrored)
+    for (let k = 0; k < 3; k++) {
+      const wy = 18 + k * 10;
+      drawLinePx(s, 24, 28, 4, wy - lift + k * 2, rampAstral[1], 4);
+      drawLinePx(s, 24, 28, 6, wy - lift + k * 2, hexToU32('#FFF498'), 2);
+    }
+    mirrorHorizontal(s);
+
+    // Royal crest + radiant core
+    drawLinePx(s, 32, 14, 32, 3, rampGold[0], 3);
+    drawLinePx(s, 27, 15, 22, 6, rampGold[1], 2);
+    drawLinePx(s, 37, 15, 42, 6, rampGold[1], 2);
+    fillDiamondPx(s, 32, 30, 13, 15, rampGold);
+    fillEllipseDitheredPx(s, 32, 30, 9, 10, rampAstral);
+    fillRectPx(s, 30, 28, 4, 4, hexToU32('#FFFFFF'));
+  }
+
+  applyArcadeOutline(s, '#05060C');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Minion #15: CosmicManta (Kozmik Vatoz) — Graceful sapphire-cyan space manta ray!
+ */
+export function getCosmicMantaSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:cosmic_manta:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(26, 24);
+  const rampManta = [hexToU32('#E8FFFF'), hexToU32('#48D8FF'), hexToU32('#1C68C8'), hexToU32('#0E2C64')];
+  const sweep = frame === 0 ? 0 : 2;
+
+  // Tail streamer (-X) + swept manta wings (+X heading)
+  drawLinePx(s, 9, 12, 2, 12 + (frame === 0 ? 1 : -1), hexToU32('#78F8FF'), 2);
+  drawLinePx(s, 15, 12, 10, 3 + sweep, rampManta[1], 4);
+  drawLinePx(s, 15, 12, 10, 21 - sweep, rampManta[1], 4);
+  fillDiamondPx(s, 16, 12, 7.5, 6.5, rampManta);
+  fillRectPx(s, 19, 9, 2, 2, hexToU32('#FFF488'));
+  fillRectPx(s, 19, 13, 2, 2, hexToU32('#FFF488'));
+
+  applyArcadeOutline(s, '#060812');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Minion #16: RicochetCrystal (Seken Kristal Küp) — Iridescent prism diamond!
+ */
+export function getRicochetCrystalSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:ricochet_crystal:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(22, 22);
+  const rampPrism =
+    frame === 0
+      ? [hexToU32('#FFFFFF'), hexToU32('#68F8FF'), hexToU32('#D848FF'), hexToU32('#283898')]
+      : [hexToU32('#FFFFFF'), hexToU32('#98FF98'), hexToU32('#48D8FF'), hexToU32('#2858A8')];
+
+  fillDiamondPx(s, 10.5, 10.5, 8.5, 8.5, rampPrism);
+  drawLinePx(s, 10, 3, 10, 18, hexToU32('#FFFFFF'), 1);
+  drawLinePx(s, 3, 10, 18, 10, hexToU32('#FFFFFF'), 1);
+
+  applyArcadeOutline(s, '#060812');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Minion #17: VortexDrifter (Çekim Girdabı) — Swirling turquoise-violet nebula disc!
+ */
+export function getVortexDrifterSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:vortex_drifter:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(24, 24);
+  const rampNebula = [hexToU32('#FFFFFF'), hexToU32('#58F8D8'), hexToU32('#8848E8'), hexToU32('#241458')];
+  fillEllipseDitheredPx(s, 11.5, 11.5, 8.5, 8.5, rampNebula, frame === 0 ? -0.3 : 0.3, 0.2);
+  fillRectPx(s, 10, 10, 4, 4, hexToU32('#FFF8A8'));
+
+  applyArcadeOutline(s, '#060812');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Minion #18: CometSeed (Kuyruklu Yıldız Tohumu) — Blazing golden-cyan comet core + tail!
+ */
+export function getCometSeedSprite(frame: 0 | 1): HTMLCanvasElement {
+  const key = `minion:comet_seed:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(26, 18);
+  const tailLen = frame === 0 ? 11 : 8;
+  drawLinePx(s, 16, 9, 16 - tailLen, 9, hexToU32('#FF8820'), 5);
+  drawLinePx(s, 16, 9, 17 - tailLen, 9, hexToU32('#FFF898'), 2);
+  fillEllipseDitheredPx(s, 18, 9, 5.5, 5.5, [
+    hexToU32('#FFFFFF'),
+    hexToU32('#78F8FF'),
+    hexToU32('#1888E8')
+  ]);
+
+  applyArcadeOutline(s, '#060812');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
+
+/**
+ * Build 12 Collectible Field Power-Up Crystals (`TIME_FREEZE`, `SPEED_BOOST`, `TRAIL_SHIELD_1HIT`, `LASER_CANNON`)!
+ */
+export function getFieldCrystalSprite(
+  type: 'TIME_FREEZE' | 'SPEED_BOOST' | 'TRAIL_SHIELD_1HIT' | 'LASER_CANNON',
+  frame: 0 | 1
+): HTMLCanvasElement {
+  const key = `powerup:field_crystal:${type}:${frame}`;
+  const cached = BESTIARY_CACHE.get(key);
+  if (cached) return cached;
+
+  const s = createPixelSurface(26, 30);
+  const ramps: Record<typeof type, readonly number[]> = {
+    TIME_FREEZE: [hexToU32('#FFFFFF'), hexToU32('#78F8FF'), hexToU32('#1E88E8'), hexToU32('#0C3478')],
+    SPEED_BOOST: [hexToU32('#FFFFFF'), hexToU32('#FFF068'), hexToU32('#FF9818'), hexToU32('#9C3C08')],
+    TRAIL_SHIELD_1HIT: [hexToU32('#FFFFFF'), hexToU32('#68E0FF'), hexToU32('#2868F0'), hexToU32('#142878')],
+    LASER_CANNON: [hexToU32('#FFFFFF'), hexToU32('#FF9878'), hexToU32('#E82838'), hexToU32('#680C18')]
+  };
+  const ramp = ramps[type];
+
+  // Tall octagonal arcade crystal prism
+  fillDiamondPx(s, 12.5, 14.5, 9.5, 12.5, ramp);
+  drawLinePx(s, 12, 4, 12, 25, hexToU32('#FFFFFF', frame === 0 ? 235 : 170), 2);
+  if (frame === 0) {
+    fillRectPx(s, 8, 9, 3, 3, hexToU32('#FFFFFF'));
+  } else {
+    fillRectPx(s, 14, 17, 3, 3, hexToU32('#FFFFFF'));
+  }
+
+  applyArcadeOutline(s, '#060812');
+  const out = commitPixelSurface(s);
+  BESTIARY_CACHE.set(key, out);
+  return out;
+}
