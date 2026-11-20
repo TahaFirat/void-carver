@@ -202,6 +202,7 @@ export class GameEngine {
   };
 
   private reviveUsedThisLevel = false;
+  private reviveAdLoading = false;
   private deathsThisLevel = 0;
   private clearBreakdown: LevelClearBreakdown | null = null;
 
@@ -245,7 +246,6 @@ export class GameEngine {
     this.syncViewportLayout();
 
     SoundEngine.bindAutoUnlock();
-    await MonetizationService.prepareAdsIfEnabled();
 
     await NativeBridge.initialize({
       onAppPause: () => {
@@ -276,6 +276,12 @@ export class GameEngine {
     this.applyShowcaseFromUrl();
 
     this.gameLoop.start();
+
+    // Defer iOS ATT + AdMob initialization slightly after SplashScreen hides so the app
+    // reaches UIApplicationState.active and cold-start remains 0ms blocked.
+    setTimeout(() => {
+      void MonetizationService.prepareAdsIfEnabled();
+    }, 750);
   }
 
   /**
@@ -720,15 +726,32 @@ export class GameEngine {
     }
 
     if (actionId === 'ACCEPT_REVIVE') {
-      this.reviveUsedThisLevel = true;
+      if (this.reviveAdLoading || this.reviveUsedThisLevel) {
+        return;
+      }
       if (save.premiumUnlocked) {
+        this.reviveUsedThisLevel = true;
         this.completeReviveGrant();
-      } else {
-        const ready = await MonetizationService.triggerRewardedRevive();
-        if (ready) {
-          this.adCountdown = 2.2;
-          this.screen = 'REWARDED_AD_SIM';
+        return;
+      }
+
+      this.reviveAdLoading = true;
+      SoundEngine.suspend();
+      try {
+        const result = await MonetizationService.triggerRewardedReviveWithResult();
+        if (result.outcome === 'REWARDED') {
+          this.reviveUsedThisLevel = true;
+          this.completeReviveGrant();
+          this.showToast('★ +1 GEMİ HAKKI KAZANILDI! ★');
+        } else if (result.outcome === 'DISMISSED_EARLY') {
+          this.showToast('ÖDÜL İÇİN VİDEOYU SONUNA KADAR İZLE');
+        } else {
+          this.showToast('REKLAM HAZIR DEĞİL — İNTERNETİ KONTROL ET');
         }
+      } finally {
+        this.reviveAdLoading = false;
+        SoundEngine.resume();
+        this.gameLoop.resetTiming();
       }
       return;
     }
@@ -749,11 +772,57 @@ export class GameEngine {
     this.lives = 1;
     this.ship.shieldTimer = this.ship.maxShieldDuration;
     this.ship.respawnAtCutStart(this.activePolygon);
+    this.ship.invulnerableTimer = 3.0;
     this.fuses = [];
-    this.hazards.spaceMines = [];
+    this.cutStallTimer = 0;
+    this.hesitationFuseLit = false;
+    this.activeCutDurationSec = 0;
     this.hazards.staticArcs = [];
     this.projectiles.clearEnemyBullets();
+
+    // 3.0s Anti-Spawn-Kill Shockwave (>=145px) so reviving after a video ad is 100% fair!
+    this.juiceSystem.triggerRespawnShockwave(
+      { x: this.ship.x, y: this.ship.y },
+      this.autonomousMinionStates,
+      145
+    );
+    const stateMap = new Map(this.autonomousMinionStates.map((st) => [st.id, st]));
+    for (const m of this.minions) {
+      if (!m.alive || !m.autonomousId) continue;
+      const st = stateMap.get(m.autonomousId);
+      if (st) {
+        m.x = st.pos.x;
+        m.y = st.pos.y;
+        m.vx = st.vel.x;
+        m.vy = st.vel.y;
+        m.enforcePolygonBounds(this.activePolygon);
+        st.pos.x = m.x;
+        st.pos.y = m.y;
+      }
+    }
+    for (const boss of this.bosses) {
+      if (!boss.alive) continue;
+      const dx = boss.x - this.ship.x;
+      const dy = boss.y - this.ship.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      if (dist < 155) {
+        const pushed = resolvePolygonPenetration(
+          { x: this.ship.x + (dx / dist) * 160, y: this.ship.y + (dy / dist) * 160 },
+          boss.boundingRadius,
+          this.activePolygon
+        ).position;
+        boss.x = pushed.x;
+        boss.y = pushed.y;
+      }
+    }
+    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#58F8FF', 0.42);
+    this.hazards.spaceMines = this.hazards.spaceMines.filter(
+      (m) => Math.hypot(m.x - this.ship.x, m.y - this.ship.y) > 130
+    );
+
+    this.input.resetActiveInputs();
     this.screen = 'PLAYING';
+    this.gameLoop.resetTiming();
     SoundEngine.playExtraLife();
   }
 
@@ -1118,6 +1187,7 @@ export class GameEngine {
     this.trapEnrageTimer = 0;
     this.cutsThisLevel = 0;
     this.reviveUsedThisLevel = false;
+    this.reviveAdLoading = false;
     this.deathsThisLevel = 0;
     this.crawlerSpawnTimer = Math.max(36, spec.rules.crawlerDelaySec);
 
@@ -2692,12 +2762,11 @@ export class GameEngine {
     this.persistRunRecords();
 
     if (this.lives <= 0) {
+      void StorageService.save();
       if (MonetizationService.canOfferSecondChance(this.reviveUsedThisLevel)) {
-        this.screen = 'SECOND_CHANCE';
-      } else {
-        void StorageService.save();
-        this.screen = 'GAME_OVER';
+        void MonetizationService.preloadRewardedRevive();
       }
+      this.screen = 'GAME_OVER';
       return;
     }
 
@@ -2883,7 +2952,9 @@ export class GameEngine {
         isNewRecord: this.runIsNewRecord,
         clearBreakdown: this.clearBreakdown,
         adCountdown: this.adCountdown,
-        statusToast: this.statusToast
+        statusToast: this.statusToast,
+        canOfferRevive: MonetizationService.canOfferSecondChance(this.reviveUsedThisLevel),
+        reviveAdLoading: this.reviveAdLoading
       });
     } else if (this.statusToast) {
       const f = layout.arenaFrame;

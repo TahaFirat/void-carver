@@ -347,6 +347,8 @@ export class MenuRenderer {
       clearBreakdown: LevelClearBreakdown | null;
       adCountdown: number;
       statusToast: string | null;
+      canOfferRevive?: boolean;
+      reviveAdLoading?: boolean;
     }
   ): void {
     this.activeButtons.length = 0;
@@ -393,6 +395,8 @@ export class MenuRenderer {
       clearBreakdown: LevelClearBreakdown | null;
       adCountdown: number;
       statusToast: string | null;
+      canOfferRevive?: boolean;
+      reviveAdLoading?: boolean;
     }
   ): void {
     switch (screen) {
@@ -434,7 +438,9 @@ export class MenuRenderer {
           ctx,
           overlayData.currentScore,
           overlayData.currentWave,
-          overlayData.isNewRecord
+          overlayData.isNewRecord,
+          Boolean(overlayData.canOfferRevive),
+          Boolean(overlayData.reviveAdLoading)
         );
         break;
       default:
@@ -508,7 +514,14 @@ export class MenuRenderer {
     y: number,
     w: number,
     h: number,
-    style: 'goldRed' | 'steel' | 'goldSelected' | 'locked' | 'navyBtn' | 'brushedSteel'
+    style:
+      | 'goldRed'
+      | 'emeraldGold'
+      | 'steel'
+      | 'goldSelected'
+      | 'locked'
+      | 'navyBtn'
+      | 'brushedSteel'
   ): void {
     const rx = Math.round(x);
     const ry = Math.round(y);
@@ -523,6 +536,10 @@ export class MenuRenderer {
       fill = '#B81012';
       topRim = '#FFF088';
       botRim = '#B87814';
+    } else if (style === 'emeraldGold') {
+      fill = '#0E7C4B';
+      topRim = '#78FFB8';
+      botRim = '#07462A';
     } else if (style === 'goldSelected') {
       fill = '#181410';
       topRim = '#FFF490';
@@ -1600,11 +1617,108 @@ export class MenuRenderer {
     ctx: CanvasRenderingContext2D,
     currentScore: number,
     waveNumber: number,
-    isNewRecord: boolean
+    isNewRecord: boolean,
+    canOfferRevive = false,
+    reviveAdLoading = false
   ): void {
-    this.drawPixelPanel(ctx, 72, 360, 756, 730, 'steel');
     const stageIdx = (Math.max(1, waveNumber) - 1) % FIXED_CAMPAIGN_STAGES.length;
     const stageSpec = FIXED_CAMPAIGN_STAGES[stageIdx]!;
+
+    if (canOfferRevive) {
+      this.drawPixelPanel(ctx, 72, 290, 756, 882, 'steel');
+
+      drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 368, {
+        scale: 4.8,
+        tone: 'red',
+        align: 'center'
+      });
+
+      drawPixelText(
+        ctx,
+        `BÖLÜM ${String(waveNumber).padStart(2, '0')}: ${stageSpec.bossNameTr}`,
+        CANVAS_WIDTH * 0.5,
+        446,
+        { scale: 3.0, tone: 'cyan', align: 'center' }
+      );
+
+      drawPixelText(
+        ctx,
+        `SKOR ${formatGroupedScore(currentScore)}`,
+        CANVAS_WIDTH * 0.5,
+        516,
+        { scale: 3.8, tone: 'gold', align: 'center' }
+      );
+
+      if (isNewRecord) {
+        drawPixelText(ctx, '★ YENİ KİŞİSEL REKOR! ★', CANVAS_WIDTH * 0.5, 574, {
+          scale: 2.8,
+          tone: 'green',
+          align: 'center'
+        });
+      }
+
+      // Single optional Rewarded Video Revive button (max once per stage — zero ad spam!)
+      const btnW = 620;
+      const btnX = Math.round((CANVAS_WIDTH - btnW) * 0.5);
+      const btnY = 620;
+      const btnH = 114;
+      this.drawPixelPanel(
+        ctx,
+        btnX,
+        btnY,
+        btnW,
+        btnH,
+        reviveAdLoading ? 'locked' : 'emeraldGold'
+      );
+      drawPixelText(
+        ctx,
+        reviveAdLoading ? 'REKLAM YÜKLENİYOR...' : 'VİDEO İZLE: +1 GEMİ HAKKI',
+        CANVAS_WIDTH * 0.5,
+        btnY + 42,
+        {
+          scale: 3.15,
+          tone: reviveAdLoading ? 'silver' : 'gold',
+          align: 'center'
+        }
+      );
+      drawPixelText(
+        ctx,
+        reviveAdLoading
+          ? 'LÜTFEN BEKLEYİN...'
+          : 'AYNI BOSS + 3 SN KALKANLA DEVAM ET',
+        CANVAS_WIDTH * 0.5,
+        btnY + 84,
+        {
+          scale: 2.0,
+          tone: 'white',
+          align: 'center'
+        }
+      );
+      if (!reviveAdLoading) {
+        this.addButton('ACCEPT_REVIVE', btnX, btnY, btnW, btnH);
+      }
+
+      // Build 12 Rule: Retry directly from current fixed level (`BÖLÜM X`) with full lives!
+      this.drawModalActionBtn(
+        ctx,
+        `TEKRAR DENE (BÖLÜM ${waveNumber})`,
+        758,
+        'goldRed',
+        'RETRY_CURRENT_STAGE',
+        98
+      );
+      this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 876, 'navyBtn', 'QUIT_TO_MENU', 90);
+      this.drawModalActionBtn(ctx, 'TÜM 24 BÖLÜM LİSTESİ', 984, 'navyBtn', 'OPEN_STAGE_GRID', 84);
+
+      drawPixelText(ctx, 'İSTEĞE BAĞLI • BÖLÜM BAŞINA 1 KEZ', CANVAS_WIDTH * 0.5, 1118, {
+        scale: 1.9,
+        tone: 'silver',
+        align: 'center'
+      });
+      return;
+    }
+
+    this.drawPixelPanel(ctx, 72, 360, 756, 730, 'steel');
 
     drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 444, {
       scale: 4.8,
