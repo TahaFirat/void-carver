@@ -30,7 +30,8 @@
     "@capacitor/preferences": "^8.0.0",
     "@capacitor/splash-screen": "^8.0.0",
     "@capacitor/status-bar": "^8.0.0",
-    "@capawesome/capacitor-screen-orientation": "^8.0.0"
+    "@capawesome/capacitor-screen-orientation": "^8.0.0",
+    "@capgo/native-purchases": "^8.9.17"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",

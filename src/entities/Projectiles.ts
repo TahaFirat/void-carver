@@ -1,5 +1,9 @@
 import { PALETTE } from '../core/Config';
-import { pointInPolygonStrict, resolvePolygonPenetration } from '../geometry/PolygonMath';
+import {
+  pointInPolygonStrict,
+  projectPointToSegment,
+  resolvePolygonPenetration
+} from '../geometry/PolygonMath';
 import { Direction, DIR_VECTORS, Point } from '../geometry/Types';
 
 export interface PlayerBolt {
@@ -33,9 +37,16 @@ export interface EnemyBullet {
   fromBoss: boolean;
 }
 
+export interface BulletGovernorCaps {
+  maxActiveEnemyBullets: number;
+  maxBulletSpeedPx: number;
+  minDodgeGapPx: number;
+}
+
 export class ProjectileManager {
   public readonly playerBolts: PlayerBolt[] = [];
   public readonly enemyBullets: EnemyBullet[] = [];
+  public governorCaps: BulletGovernorCaps | null = null;
 
   constructor() {
     for (let i = 0; i < 64; i++) {
@@ -79,6 +90,33 @@ export class ProjectileManager {
 
   public clearEnemyBullets(): void {
     for (const b of this.enemyBullets) b.active = false;
+  }
+
+  public countActiveEnemyBullets(): number {
+    let count = 0;
+    for (const b of this.enemyBullets) {
+      if (b.active) count++;
+    }
+    return count;
+  }
+
+  public destroyEnemyBulletsNearSegments(
+    segments: ReadonlyArray<{ p1: Point; p2: Point }>,
+    maxDistPx: number
+  ): number {
+    let cleared = 0;
+    for (const eb of this.enemyBullets) {
+      if (!eb.active) continue;
+      for (const seg of segments) {
+        const proj = projectPointToSegment({ x: eb.x, y: eb.y }, seg.p1, seg.p2);
+        if (proj.distance <= eb.radius + maxDistPx) {
+          eb.active = false;
+          cleared++;
+          break;
+        }
+      }
+    }
+    return cleared;
   }
 
   /**
@@ -150,6 +188,42 @@ export class ProjectileManager {
     fromBoss = false,
     bouncesLeft = 0
   ): void {
+    let finalVx = vx;
+    let finalVy = vy;
+
+    if (this.governorCaps) {
+      const caps = this.governorCaps;
+      if (this.countActiveEnemyBullets() >= caps.maxActiveEnemyBullets) {
+        return;
+      }
+
+      const rawSpd = Math.hypot(finalVx, finalVy);
+      if (rawSpd > caps.maxBulletSpeedPx && rawSpd > 0.001) {
+        const ratio = caps.maxBulletSpeedPx / rawSpd;
+        finalVx *= ratio;
+        finalVy *= ratio;
+      }
+
+      if (caps.minDodgeGapPx > 0 && rawSpd > 1) {
+        const candAng = Math.atan2(finalVy, finalVx);
+        for (const active of this.enemyBullets) {
+          if (!active.active) continue;
+          const dist = Math.hypot(active.x - origin.x, active.y - origin.y);
+          const actSpd = Math.hypot(active.vx, active.vy);
+          if (dist <= 10 && actSpd > 1) {
+            let angDiff = Math.abs(candAng - Math.atan2(active.vy, active.vx));
+            if (angDiff > Math.PI) angDiff = Math.PI * 2 - angDiff;
+            // Enforce >= minDodgeGapPx corridor width at 240px dodge range
+            if (angDiff * 240 < caps.minDodgeGapPx) {
+              return;
+            }
+          } else if (dist > 10 && dist < caps.minDodgeGapPx) {
+            return;
+          }
+        }
+      }
+    }
+
     for (const b of this.enemyBullets) {
       if (!b.active) {
         b.active = true;
@@ -157,8 +231,8 @@ export class ProjectileManager {
         b.y = origin.y;
         b.prevX = origin.x;
         b.prevY = origin.y;
-        b.vx = vx;
-        b.vy = vy;
+        b.vx = finalVx;
+        b.vy = finalVy;
         b.color = color;
         b.radius = radius;
         b.piercesBorderCheck = false;

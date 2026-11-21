@@ -6,7 +6,7 @@ import { StatusBar } from '@capacitor/status-bar';
 import { OrientationType, ScreenOrientation } from '@capawesome/capacitor-screen-orientation';
 
 export interface NativeLifecycleHandlers {
-  onAppPause: () => void;
+  onAppPause: (fullyHidden?: boolean) => void;
   onAppResume: () => void;
   onBackButton: () => void;
 }
@@ -28,17 +28,37 @@ class NativeBridgeImpl {
     if (this.initialized) return;
     this.initialized = true;
 
-    // Web fallback visibility & blur listeners
+    // Web & WKWebView lifecycle listeners: distinguish full backgrounding (`hidden`) vs soft window blur
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        handlers.onAppPause();
+        handlers.onAppPause(true);
       } else {
         handlers.onAppResume();
       }
     });
 
+    window.addEventListener('pagehide', () => {
+      handlers.onAppPause(true);
+    });
+
+    window.addEventListener('beforeunload', () => {
+      handlers.onAppPause(true);
+    });
+
+    window.addEventListener('pageshow', () => {
+      if (!document.hidden) {
+        handlers.onAppResume();
+      }
+    });
+
     window.addEventListener('blur', () => {
-      handlers.onAppPause();
+      handlers.onAppPause(Boolean(document.hidden));
+    });
+
+    window.addEventListener('focus', () => {
+      if (!document.hidden) {
+        handlers.onAppResume();
+      }
     });
 
     if (!this.isNative()) {
@@ -62,7 +82,7 @@ class NativeBridgeImpl {
         if (isActive) {
           handlers.onAppResume();
         } else {
-          handlers.onAppPause();
+          handlers.onAppPause(true);
         }
       });
 

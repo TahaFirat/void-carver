@@ -1,4 +1,8 @@
 import { BossSpeciesId, ResolvedLevelPlan } from '../../core/CampaignProgressionV12';
+import {
+  BossChassisId,
+  ChimeraBossBlueprint
+} from '../../core/ProceduralChimeraBossEngine';
 import { Point } from '../../geometry/Types';
 import { ESCORT_SPAWN } from '../../levels/CampaignGenerator';
 import { WaveEncounterPlan } from '../../levels/EncounterDeck';
@@ -122,6 +126,80 @@ export function instantiateBossBySpeciesId(
     case 'VOID_EMPEROR':
       return [new VoidEmperorBoss(spawn, hp + 5)];
   }
+}
+
+export function mapChimeraChassisToSpeciesId(chassis: BossChassisId): BossSpeciesId {
+  switch (chassis) {
+    case 'WYRM_SEGMENTED':
+      return 'CENTIPEDE_WYRM';
+    case 'CRUSTACEAN_MECH':
+      return 'IRON_CRUSTACEAN';
+    case 'BIO_GYRO_WHEEL':
+      return 'ALL_DIR_BIO_WHEEL';
+    case 'ROYAL_SCARAB':
+      return 'SNIPER_SCARAB';
+    case 'FROST_LEVIATHAN':
+      return 'FROST_LEVIATHAN';
+    case 'NAUTILUS_SHELL':
+      return 'SPIRAL_NAUTILUS';
+    case 'BLADE_MANTIS':
+      return 'PHANTOM_MANTIS';
+    case 'PLASMA_SCORPION':
+      return 'PLASMA_SCORPION';
+    case 'TWIN_REACTOR':
+      return 'SEPARATION_TWIN_CORE';
+    case 'MAGMA_DRAKE':
+      return 'MAGMA_SERPENT';
+    case 'WEB_TARANTULA':
+      return 'MECHA_TARANTULA';
+    case 'ABYSS_SANDWORM':
+      return 'SINKHOLE_WORM';
+    case 'HIVE_DREADNOUGHT':
+      return 'HIVE_CARRIER';
+    case 'CRYSTAL_OBELISK':
+      return 'MIRROR_PRISM';
+    case 'QUANTUM_MONARCH':
+      return 'QUANTUM_BUTTERFLY';
+    case 'VOLT_MEDUSA':
+      return 'ELECTRIC_MEDUSA';
+    case 'GRAVITY_MONOLITH':
+      return 'GRAVITY_GOLEM';
+    case 'CYBER_SKULL':
+      return 'CYBER_TITAN_SKULL';
+    case 'SOLAR_SERAPH':
+      return 'SOLAR_FLARE_CORE';
+    case 'TRI_HYDRA':
+      return 'HYDRA_BIO_HEAD';
+    case 'SAW_JUGGERNAUT':
+      return 'SAWBLADE_JUGGERNAUT';
+    case 'CHRONO_SPHINX':
+      return 'CHRONO_SPHINX';
+    case 'NEURAL_OVERMIND':
+      return 'ABYSSAL_OVERMIND';
+    case 'VOID_EMPEROR':
+      return 'VOID_EMPEROR';
+  }
+}
+
+export function createBossesForChimeraBlueprint(
+  blueprint: ChimeraBossBlueprint,
+  waveNumber: number,
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD',
+  phase1Behavior?: BossPhaseBehavior,
+  isTreasureBoss = false
+): BaseBoss[] {
+  const speciesId = mapChimeraChassisToSpeciesId(blueprint.chassis);
+  const diffHpBonus = difficulty === 'HARD' ? 2 : difficulty === 'MEDIUM' ? 1 : 0;
+  const hp = Math.max(6, Math.round(6 + waveNumber * 0.55 + diffHpBonus + (isTreasureBoss ? 3 : 0)));
+  const bosses = instantiateBossBySpeciesId(speciesId, { x: 450, y: 500 }, hp, waveNumber >= 12);
+  for (const b of bosses) {
+    b.chimeraBlueprint = blueprint;
+    b.isTreasureBoss = isTreasureBoss;
+    if (phase1Behavior) {
+      b.applyPhaseBehavior(phase1Behavior);
+    }
+  }
+  return bosses;
 }
 
 export function createBossesForFixedLevelPlan(

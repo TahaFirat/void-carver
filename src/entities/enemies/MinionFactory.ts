@@ -1,4 +1,8 @@
 import { MinionSpeciesId } from '../../core/CampaignProgressionV12';
+import {
+  MinionArchetypeId,
+  MinionSynergyTraitId
+} from '../../core/ProceduralChimeraBossEngine';
 import { Point } from '../../geometry/Types';
 import { InteriorMinion } from './BaseMinion';
 import {
@@ -69,4 +73,59 @@ export function createMinionBySpecies(
     case 'COMET_SEED':
       return new CometSeedMinion(pos, 156, seedIndex);
   }
+}
+
+export function mapChimeraMinionToSpecies(arch: MinionArchetypeId): MinionSpeciesId {
+  switch (arch) {
+    case 'SCARAB_BOUNCER':
+    case 'TREASURE_SCARAB':
+    case 'MAGMA_BEETLE':
+      return 'SCARAB_BEETLE';
+    case 'COSMIC_MANTA':
+    case 'NEBULA_SERPENT':
+      return 'COSMIC_MANTA';
+    case 'RICOCHET_PRISM':
+    case 'MIRROR_SHARD':
+      return 'RICOCHET_CRYSTAL';
+    case 'ORBIT_GUARD':
+    case 'TESLA_LINK_NODE':
+      return 'ORBIT_SATELLITE';
+    case 'VORTEX_DRIFTER':
+    case 'GRAVITY_WISP':
+      return 'VORTEX_DRIFTER';
+    case 'COMET_SPRINTER':
+    case 'CHRONO_TICK':
+      return 'COMET_SEED';
+    case 'SPLITTER_SLIME':
+      return 'SPLITTER_AMOEBA';
+    case 'PHASE_MOTH':
+      return 'PHASE_GHOST';
+    case 'WASP_INTERCEPTOR':
+      return 'WASP_SWARMER';
+    case 'TRAIL_LEECH':
+      return 'LINE_LEECH';
+    case 'HORN_CHARGER':
+      return 'CHARGER_HORN';
+    case 'POD_SENTRY':
+      return 'POD_TURRET';
+    case 'MINE_DRONE':
+      return 'MINE_LAYER_DRONE';
+    case 'SPARK_PATROLLER':
+      return 'BORDER_SPARK_CRAB';
+    case 'CRYO_PUFFER':
+      return 'KAMIKAZE_SPORE';
+  }
+}
+
+export function createMinionForChimeraSquad(
+  archetype: MinionArchetypeId,
+  synergyTrait: MinionSynergyTraitId,
+  pos: Point,
+  seedIndex = 0
+): InteriorMinion {
+  const species = mapChimeraMinionToSpecies(archetype);
+  const m = createMinionBySpecies(species, pos, seedIndex);
+  m.speciesId = species;
+  m.synergyTrait = archetype === 'TREASURE_SCARAB' ? 'GOLD_PINATA' : synergyTrait;
+  return m;
 }

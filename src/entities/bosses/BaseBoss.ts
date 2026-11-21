@@ -1,5 +1,6 @@
 import { ENRAGE_CLAIM_PERCENT, PALETTE } from '../../core/Config';
 import type { BossSpeciesId } from '../../core/CampaignProgressionV12';
+import type { ChimeraBossBlueprint } from '../../core/ProceduralChimeraBossEngine';
 import {
   computeArea,
   pointInPolygonStrict,
@@ -68,6 +69,8 @@ export interface BossUpdateContext {
   playerState: 'ON_BORDER' | 'CUTTING';
   activeTrail: readonly Point[];
   speedScale: number;
+  maxBossSpeedPx?: number;
+  minVolleyCooldownSec?: number;
   telegraphLeadSec?: number;
   aimMode?: BossAimMode;
   projectiles: ProjectileManager;
@@ -153,6 +156,8 @@ export abstract class BaseBoss {
   public crushedInPocket = false;
   public isEscort = false;
   public speciesId?: BossSpeciesId;
+  public chimeraBlueprint: ChimeraBossBlueprint | null = null;
+  public isTreasureBoss = false;
   public eliteMutation: EliteMutationAffix = 'NONE';
   public armorDamageReduction = 0;
   public cloneVisualScale = 1.0;
@@ -162,6 +167,7 @@ export abstract class BaseBoss {
   public telegraphTimer = 0;
   public telegraphDuration = 0.7;
   public stunTimer = 0;
+  private lastVolleyTimeSec = -99;
   private pendingTelegraphColor: string | null = null;
   private pendingTelegraphCallback: ((bctx: BossUpdateContext, speedScale: number) => void) | null =
     null;
@@ -430,6 +436,26 @@ export abstract class BaseBoss {
     }
 
     this.updateBehavior(bctx, effectiveSpeedScale);
+
+    // Build 14 Single-Source-of-Truth Speed Ceiling (`DifficultyGovernorV13`)
+    if (bctx.maxBossSpeedPx !== undefined && bctx.dt > 0) {
+      const velMag = Math.hypot(this.vx, this.vy);
+      if (velMag > bctx.maxBossSpeedPx && velMag > 0.001) {
+        const vRatio = bctx.maxBossSpeedPx / velMag;
+        this.vx *= vRatio;
+        this.vy *= vRatio;
+      }
+      const stepDx = this.x - this.prevX;
+      const stepDy = this.y - this.prevY;
+      const maxStep = bctx.maxBossSpeedPx * bctx.dt;
+      const stepDist = Math.hypot(stepDx, stepDy);
+      if (stepDist > maxStep && stepDist > 0.001) {
+        const sRatio = maxStep / stepDist;
+        this.x = this.prevX + stepDx * sRatio;
+        this.y = this.prevY + stepDy * sRatio;
+      }
+    }
+
     this.enforceWallBounce(bctx.activePolygon);
 
     // 1.8s Pocket Crush failsafe if polygon shrinks smaller than 0.45x radius
@@ -488,12 +514,22 @@ export abstract class BaseBoss {
     lifeLeftSec = -1,
     bouncesLeft = 0
   ): void {
+    if (bctx.minVolleyCooldownSec !== undefined) {
+      const elapsed = bctx.timeSeconds - this.lastVolleyTimeSec;
+      if (elapsed > 0.12 && elapsed < bctx.minVolleyCooldownSec) {
+        return;
+      }
+      if (elapsed < 0 || elapsed >= bctx.minVolleyCooldownSec) {
+        this.lastVolleyTimeSec = bctx.timeSeconds;
+      }
+    }
+    const bulletCol = this.chimeraBlueprint ? this.chimeraBlueprint.palettePrimaryHex : color;
     const overclock = this.eliteMutation === 'SNIPER_OVERCLOCK' ? 1.28 : 1.0;
     bctx.projectiles.spawnEnemyBullet(
       { x: this.x, y: this.y },
       vx * overclock,
       vy * overclock,
-      color,
+      bulletCol,
       radius,
       homingTurnRate,
       lifeLeftSec,
@@ -730,6 +766,166 @@ export abstract class BaseBoss {
     const visibleSegs = Math.ceil(this.hp);
     for (let i = 0; i < visibleSegs; i++) {
       ctx.fillRect(Math.round(bx + i * (segW + segGap)), by, Math.max(1, Math.round(segW)), barH);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Build 14 Modular 4-Layer Chimera Boss Attachment Renderer (`03-moduler-kimera-boss-ve-kesim-izleri.jpg`):
+   * Renders elemental aura ring (`HEX / SPIKED / ORBITAL / CORONA`), articulated tail stinger,
+   * dual glowing wing-fins, and `1..3` orbiting satellite reactor cores around any Boss chassis.
+   */
+  public renderChimeraUnderlay(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number
+  ): void {
+    const bp = this.chimeraBlueprint;
+    if (!bp) return;
+
+    const pos = this.getRenderPos(alpha);
+    const px = Math.round(pos.x);
+    const py = Math.round(pos.y);
+    const r = Math.max(22, this.boundingRadius);
+    const prim = this.isTreasureBoss ? '#FACC15' : bp.palettePrimaryHex;
+    const acc = this.isTreasureBoss ? '#FEF9C3' : bp.paletteAccentHex;
+    const heading = Math.atan2(this.vy || 1, this.vx || 1);
+
+    ctx.save();
+
+    // 1. Elemental Aura Ring (`HEX` / `SPIKED` / `ORBITAL` / `CORONA`)
+    const auraR = r * 1.26;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = prim;
+    ctx.globalAlpha = 0.62;
+    const style = bp.visualAttachments.auraRingStyle;
+    if (style === 'HEX') {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = timeSeconds * 0.9 + (i * Math.PI) / 3;
+        const hx = px + Math.cos(a) * auraR;
+        const hy = py + Math.sin(a) * auraR;
+        if (i === 0) ctx.moveTo(hx, hy);
+        else ctx.lineTo(hx, hy);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    } else if (style === 'SPIKED') {
+      ctx.beginPath();
+      const teeth = 12;
+      for (let i = 0; i < teeth * 2; i++) {
+        const a = -timeSeconds * 1.2 + (i * Math.PI) / teeth;
+        const rr = i % 2 === 0 ? auraR * 1.08 : auraR * 0.88;
+        const sx = px + Math.cos(a) * rr;
+        const sy = py + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    } else if (style === 'ORBITAL') {
+      for (const tilt of [-0.55, 0.55]) {
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(tilt + timeSeconds * 0.8);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, auraR * 1.18, auraR * 0.62, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } else {
+      const pulse = auraR * (0.96 + Math.sin(timeSeconds * 7) * 0.08);
+      ctx.beginPath();
+      ctx.arc(px, py, pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = acc;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(px, py, pulse + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // 2. Articulated Pixel Tail Stinger (`hasTailStinger`)
+    if (bp.visualAttachments.hasTailStinger) {
+      const backAng = heading + Math.PI;
+      for (let seg = 1; seg <= 4; seg++) {
+        const sway = Math.sin(timeSeconds * 8 - seg * 0.8) * 0.24;
+        const dist = r * 0.65 + seg * 10 * this.renderScale;
+        const tx = Math.round(px + Math.cos(backAng + sway) * dist);
+        const ty = Math.round(py + Math.sin(backAng + sway) * dist);
+        const sz = Math.max(4, Math.round((11 - seg * 1.6) * this.renderScale));
+        ctx.fillStyle = PALETTE.PIXEL_BLACK;
+        ctx.fillRect(tx - sz - 2, ty - sz - 2, (sz + 2) * 2, (sz + 2) * 2);
+        ctx.fillStyle = seg === 4 ? acc : prim;
+        ctx.fillRect(tx - sz, ty - sz, sz * 2, sz * 2);
+      }
+    }
+
+    // 3. Dual Side Laser Wing-Fins (`hasWingFin`)
+    if (bp.visualAttachments.hasWingFin) {
+      const flap = Math.sin(timeSeconds * 9) * 0.14;
+      for (const side of [-1, 1]) {
+        const wingAng = heading + side * (Math.PI * 0.55 + flap);
+        const wx = Math.round(px + Math.cos(wingAng) * (r * 1.16));
+        const wy = Math.round(py + Math.sin(wingAng) * (r * 1.16));
+        const tipX = Math.round(px + Math.cos(wingAng - side * 0.28) * (r * 1.56));
+        const tipY = Math.round(py + Math.sin(wingAng - side * 0.28) * (r * 1.56));
+
+        ctx.strokeStyle = PALETTE.PIXEL_BLACK;
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(wx, wy);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+
+        ctx.strokeStyle = prim;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(wx, wy);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+
+        ctx.fillStyle = acc;
+        ctx.fillRect(tipX - 4, tipY - 4, 8, 8);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  public renderChimeraOverlay(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number
+  ): void {
+    const bp = this.chimeraBlueprint;
+    if (!bp) return;
+
+    const coreCount = bp.visualAttachments.orbitingCoreCount;
+    if (coreCount <= 0 && !this.isTreasureBoss) return;
+
+    const pos = this.getRenderPos(alpha);
+    const px = Math.round(pos.x);
+    const py = Math.round(pos.y);
+    const prim = this.isTreasureBoss ? '#FACC15' : bp.palettePrimaryHex;
+    const acc = this.isTreasureBoss ? '#FFFFFF' : bp.paletteAccentHex;
+    const orbitDist = Math.max(28, this.boundingRadius * 1.34);
+
+    ctx.save();
+    const effectiveCores = this.isTreasureBoss ? Math.max(3, coreCount) : coreCount;
+    for (let i = 0; i < effectiveCores; i++) {
+      const ang = timeSeconds * 2.6 + (i * Math.PI * 2) / effectiveCores;
+      const cx = Math.round(px + Math.cos(ang) * orbitDist);
+      const cy = Math.round(py + Math.sin(ang) * orbitDist);
+      ctx.fillStyle = PALETTE.PIXEL_BLACK;
+      ctx.fillRect(cx - 8, cy - 8, 16, 16);
+      ctx.fillStyle = prim;
+      ctx.fillRect(cx - 6, cy - 6, 12, 12);
+      ctx.fillStyle = acc;
+      ctx.fillRect(cx - 3, cy - 3, 6, 6);
     }
     ctx.restore();
   }

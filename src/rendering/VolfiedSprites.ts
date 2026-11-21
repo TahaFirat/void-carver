@@ -84,6 +84,30 @@ export function getPlayerShipSprite(skin: ShipSkinConfig, dir: Direction): HTMLC
   fillRectPx(base, 8, 8, 2, 8, cLight);
   fillRectPx(base, 7, 13, 3, 3, cDark);
 
+  // Bespoke 16-bit Store hull silhouettes before mirror pass
+  if (skin.id === 'SHIP_PHANTOM') {
+    fillRectPx(base, 4, 3, 1, 6, cPod);
+    fillRectPx(base, 1, 13, 2, 4, cMid);
+  } else if (skin.id === 'SHIP_SAMURAI') {
+    fillRectPx(base, 9, 1, 1, 7, cPod);
+    fillRectPx(base, 1, 11, 2, 2, cLight);
+  } else if (skin.id === 'SHIP_MANTA') {
+    fillRectPx(base, 1, 8, 2, 7, cLight);
+    fillRectPx(base, 2, 7, 2, 3, cPod);
+  } else if (skin.id === 'SHIP_MAGMA') {
+    fillRectPx(base, 3, 6, 2, 10, cMid);
+    fillRectPx(base, 2, 9, 2, 7, cPod);
+  } else if (skin.id === 'SHIP_VIPER') {
+    fillRectPx(base, 8, 1, 2, 8, cLight);
+    fillRectPx(base, 6, 4, 2, 9, cMid);
+  } else if (skin.id === 'SHIP_PHOENIX') {
+    fillRectPx(base, 1, 7, 2, 8, cPod);
+    fillRectPx(base, 3, 5, 2, 5, cLight);
+  } else if (skin.id === 'SHIP_GLACIER') {
+    fillRectPx(base, 2, 8, 2, 5, cLight);
+    fillRectPx(base, 4, 5, 1, 5, cPod);
+  }
+
   // Mirror to right half, then shade right prong slightly for 3D depth
   mirrorLeftToRight(base);
   for (let y = 3; y <= 15; y++) {

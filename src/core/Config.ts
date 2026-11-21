@@ -80,12 +80,14 @@ export const BOSS_DESTROY_BONUS = 100_000;
 export const MASTER_CARVE_BONUS = 500_000;
 export const SHIELD_UNIT_BONUS = 20;
 export const EXTRA_LIFE_SCORE_STEP = 150_000;
+export const MAX_PLAYER_LIVES = 5;
 
-export const UI_FONT_FAMILY = '"Courier New", Consolas, monospace';
-export const ARCADE_FONT_FAMILY = '"Courier New", Consolas, monospace';
+export const UI_FONT_FAMILY =
+  "'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+export const ARCADE_FONT_FAMILY = UI_FONT_FAMILY;
 
 /**
- * 16-Bit 1989 Arcade Pixel Palette
+ * Clean Space Palette
  */
 export const PALETTE = {
   APP_BG: '#04060E',
@@ -309,7 +311,7 @@ export const DIFFICULTIES: Record<DifficultyId, DifficultyPreset> = {
 export type ShipSkinId = 'TITAN' | 'RUST' | 'SAND' | 'BLACK';
 
 export interface ShipSkinConfig {
-  id: ShipSkinId;
+  id: ShipSkinId | string;
   name: string;
   nameTr: string;
   nameEn: string;
@@ -324,6 +326,129 @@ export interface ShipSkinConfig {
   cockpitDarkHex: string;
   wingAccentHex: string;
 }
+
+export const STORE_SHIP_SKINS: Record<string, ShipSkinConfig> = {
+  SHIP_VANGUARD: {
+    id: 'SHIP_VANGUARD',
+    name: 'Vanguard',
+    nameTr: 'Vanguard',
+    nameEn: 'Vanguard',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#E0F2FE',
+    hullMidHex: '#38BDF8',
+    hullDarkHex: '#0369A1',
+    cockpitLightHex: '#FEF08A',
+    cockpitDarkHex: '#F59E0B',
+    wingAccentHex: '#7DD3FC'
+  },
+  SHIP_PHANTOM: {
+    id: 'SHIP_PHANTOM',
+    name: 'Phantom',
+    nameTr: 'Phantom',
+    nameEn: 'Phantom',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#FFE4E6',
+    hullMidHex: '#F43F5E',
+    hullDarkHex: '#881337',
+    cockpitLightHex: '#FEF08A',
+    cockpitDarkHex: '#F59E0B',
+    wingAccentHex: '#FB7185'
+  },
+  SHIP_GLACIER: {
+    id: 'SHIP_GLACIER',
+    name: 'Glacier',
+    nameTr: 'Buzul',
+    nameEn: 'Glacier',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#CFFAFE',
+    hullMidHex: '#22D3EE',
+    hullDarkHex: '#0E7490',
+    cockpitLightHex: '#FFFFFF',
+    cockpitDarkHex: '#38BDF8',
+    wingAccentHex: '#67E8F9'
+  },
+  SHIP_MANTA: {
+    id: 'SHIP_MANTA',
+    name: 'Manta',
+    nameTr: 'Vatoz',
+    nameEn: 'Manta',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#FEF3C7',
+    hullMidHex: '#F59E0B',
+    hullDarkHex: '#92400E',
+    cockpitLightHex: '#FFFBEB',
+    cockpitDarkHex: '#EA580C',
+    wingAccentHex: '#FACC15'
+  },
+  SHIP_SAMURAI: {
+    id: 'SHIP_SAMURAI',
+    name: 'Samurai',
+    nameTr: 'Samuray',
+    nameEn: 'Samurai',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#F3E8FF',
+    hullMidHex: '#A855F7',
+    hullDarkHex: '#581C87',
+    cockpitLightHex: '#67E8F9',
+    cockpitDarkHex: '#0284C7',
+    wingAccentHex: '#E879F9'
+  },
+  SHIP_VIPER: {
+    id: 'SHIP_VIPER',
+    name: 'Viper',
+    nameTr: 'Engerek',
+    nameEn: 'Viper',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#D1FAE5',
+    hullMidHex: '#10B981',
+    hullDarkHex: '#065F46',
+    cockpitLightHex: '#FEF08A',
+    cockpitDarkHex: '#CA8A04',
+    wingAccentHex: '#34D399'
+  },
+  SHIP_MAGMA: {
+    id: 'SHIP_MAGMA',
+    name: 'Magma',
+    nameTr: 'Magma',
+    nameEn: 'Magma',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#FFEDD5',
+    hullMidHex: '#EA580C',
+    hullDarkHex: '#7C2D12',
+    cockpitLightHex: '#FEF08A',
+    cockpitDarkHex: '#DC2626',
+    wingAccentHex: '#FB923C'
+  },
+  SHIP_PHOENIX: {
+    id: 'SHIP_PHOENIX',
+    name: 'Phoenix',
+    nameTr: 'Anka',
+    nameEn: 'Phoenix',
+    starsRequired: 0,
+    waveRequired: 1,
+    scoreRequired: 0,
+    hullLightHex: '#FEF9C3',
+    hullMidHex: '#EAB308',
+    hullDarkHex: '#854D0E',
+    cockpitLightHex: '#FFEDD5',
+    cockpitDarkHex: '#E11D48',
+    wingAccentHex: '#FDE047'
+  }
+};
 
 export const SHIP_SKINS: ShipSkinConfig[] = [
   {

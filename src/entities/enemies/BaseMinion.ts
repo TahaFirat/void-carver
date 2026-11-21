@@ -1,4 +1,6 @@
 import type { MinionSpeciesId } from '../../core/CampaignProgressionV12';
+import type { MinionSynergyTraitId } from '../../core/ProceduralChimeraBossEngine';
+import { PALETTE } from '../../core/Config';
 import { projectPointToPolyline, resolvePolygonPenetration } from '../../geometry/PolygonMath';
 import { SolidRect } from '../../geometry/SolidBoxes';
 import { Point } from '../../geometry/Types';
@@ -63,6 +65,7 @@ export abstract class InteriorMinion {
   public isSwarmAggro = false;
   public currentSpeed = 0;
   public speciesId?: MinionSpeciesId;
+  public synergyTrait: MinionSynergyTraitId = 'STANDARD';
   public autonomousId?: string;
   public isTimeFrozen = false;
   public ignoresSolidBoxes = false;
@@ -161,6 +164,54 @@ export abstract class InteriorMinion {
         this.vy -= 2 * dot * ny;
       }
     }
+  }
+
+  public renderSynergyOverlay(
+    ctx: CanvasRenderingContext2D,
+    alpha: number,
+    timeSeconds: number
+  ): void {
+    if (this.synergyTrait === 'STANDARD') return;
+    const pos = this.getRenderPos(alpha);
+    const px = Math.round(pos.x);
+    const py = Math.round(pos.y);
+
+    ctx.save();
+    if (this.synergyTrait === 'GOLD_PINATA') {
+      const pulse = this.radius + 5 + Math.sin(timeSeconds * 10) * 2;
+      ctx.strokeStyle = '#FACC15';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(px, py, pulse, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Pixel gold crown above minion
+      const cy = py - Math.round(this.radius) - 9;
+      ctx.fillStyle = PALETTE.PIXEL_BLACK;
+      ctx.fillRect(px - 7, cy - 3, 14, 7);
+      ctx.fillStyle = '#FACC15';
+      ctx.fillRect(px - 6, cy, 12, 3);
+      ctx.fillRect(px - 6, cy - 2, 2, 2);
+      ctx.fillRect(px - 1, cy - 3, 2, 3);
+      ctx.fillRect(px + 4, cy - 2, 2, 2);
+    } else if (this.synergyTrait === 'SHIELD_BUBBLE') {
+      ctx.strokeStyle = 'rgba(56, 224, 255, 0.8)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(px, py, this.radius + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (this.synergyTrait === 'ORBIT_LEADER') {
+      const ang = timeSeconds * 5;
+      const sx = Math.round(px + Math.cos(ang) * (this.radius + 8));
+      const sy = Math.round(py + Math.sin(ang) * (this.radius + 8));
+      ctx.fillStyle = '#C084FC';
+      ctx.fillRect(sx - 3, sy - 3, 6, 6);
+    } else if (this.synergyTrait === 'FROST_TRAIL') {
+      ctx.strokeStyle = 'rgba(103, 232, 249, 0.72)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px - this.radius - 3, py - this.radius - 3, (this.radius + 3) * 2, (this.radius + 3) * 2);
+    }
+    ctx.restore();
   }
 
   public abstract update(ctx: MinionContext): void;

@@ -3,6 +3,7 @@ import { ArenaHazardManager } from '../entities/ArenaHazards';
 import { BaseBoss } from '../entities/bosses/BaseBoss';
 import { FrostLeviathanBoss, MagmaSerpentBoss } from '../entities/bosses/BestiaryBosses';
 import {
+  createBossesForChimeraBlueprint,
   createBossesForFixedLevelPlan,
   instantiateBossBySpeciesId
 } from '../entities/bosses/BossFactory';
@@ -18,7 +19,10 @@ import {
 import { InteriorMinion } from '../entities/enemies/BaseMinion';
 import { HomingSeekerMinion } from '../entities/enemies/BestiaryMinions';
 import { BorderCrawler } from '../entities/enemies/BorderCrawler';
-import { createMinionBySpecies } from '../entities/enemies/MinionFactory';
+import {
+  createMinionBySpecies,
+  createMinionForChimeraSquad
+} from '../entities/enemies/MinionFactory';
 import { PlayerShip } from '../entities/PlayerShip';
 import {
   ARMOR_PILLAR_BONUS,
@@ -62,19 +66,19 @@ import {
   WaveEncounterSpec
 } from '../levels/EndlessBossDirector';
 import { NativeBridge } from '../native/NativeBridge';
-import { getFieldCrystalSprite } from '../rendering/BestiarySprites';
 import { LayerRenderer } from '../rendering/LayerRenderer';
 import { ParticlePool } from '../rendering/ParticlePool';
 import {
   ARENA_PIXEL_SCALE,
-  blitArenaPixelSprite,
   blitPixelSprite,
   drawPixelText,
   measurePixelText
 } from '../rendering/PixelArtEngine';
 import { getMiniShipHudSprite } from '../rendering/VolfiedSprites';
+import { createCapacitorStoreDriver } from '../services/CapacitorBillingAdapter';
 import { MonetizationService } from '../services/MonetizationService';
 import {
+  ActiveRunCheckpointV15,
   difficultyIdToRunDifficulty,
   StorageService
 } from '../services/StorageService';
@@ -87,13 +91,17 @@ import {
 import {
   ALL_BOSS_IDS_V12,
   BossSpeciesId,
-  computeCrowdingSpeedDampener,
-  DIFFICULTY_UI_PROFILES,
   FIXED_CAMPAIGN_STAGES,
   getFixedLevelPlan,
   recordLevelCompletion,
   ResolvedLevelPlan
 } from './CampaignProgressionV12';
+import {
+  CleanJetonEconomyAndStore,
+  SHIPS_STORE_CATALOG,
+  StoreIapProductId,
+  TRAILS_STORE_CATALOG
+} from './CleanJetonEconomyAndStore';
 import {
   ARENA_HEIGHT,
   ARENA_VIEW_SCALE,
@@ -113,17 +121,29 @@ import {
   INITIAL_ARENA_AREA,
   JUICE_HITSTOP_DURATION,
   JUICE_HITSTOP_THRESHOLD,
+  MAX_PLAYER_LIVES,
   MIDDLE_ZONE_Y,
   PALETTE,
   PIXEL_SCALE,
   SHIP_SKINS,
-  ShipSkinConfig
+  ShipSkinConfig,
+  STORE_SHIP_SKINS
 } from './Config';
+import {
+  CardinalDir,
+  CleanEndlessPerk,
+  EndUserPolishControllerV15
+} from './EndUserPolishAndControlsV15';
 import { GameLoop } from './GameLoop';
 import {
-  PowerUpAndJuiceSystem,
-  PowerUpType as FieldCrystalType
-} from './PowerUpAndJuiceSystem';
+  HONEST_DIFFICULTIES_V15,
+  HonestDifficultyGovernorV15
+} from './HonestDifficultyAndProgressionV15';
+import { PowerUpAndJuiceSystem } from './PowerUpAndJuiceSystem';
+import {
+  ChimeraBossBlueprint,
+  ProceduralChimeraBossEngine
+} from './ProceduralChimeraBossEngine';
 import { getLayout, pointInRect } from './ResponsiveLayout';
 import {
   ACHIEVEMENTS,
@@ -133,6 +153,7 @@ import {
 } from './ScoreSystem';
 
 const CHAPTER_THEME_IDS = Object.keys(CHAPTER_THEMES) as ChapterThemeId[];
+const CHECKPOINT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export class GameEngine {
   public screen: ScreenState = 'MAIN_MENU';
@@ -146,8 +167,27 @@ export class GameEngine {
   private readonly endlessDirector = new EndlessBossDirector();
   private readonly minionEcology = new AutonomousMinionEcology(0x51f2a9c3);
   private readonly juiceSystem = new PowerUpAndJuiceSystem();
+  private readonly honestGovernor = new HonestDifficultyGovernorV15();
+  private readonly chimeraEngine = new ProceduralChimeraBossEngine();
+  private readonly jetonStore = new CleanJetonEconomyAndStore(50, createCapacitorStoreDriver());
+  private readonly polishController = new EndUserPolishControllerV15();
   private readonly hazards = new ArenaHazardManager();
   private readonly gameLoop: GameLoop;
+
+  private activeGameMode: 'CAMPAIGN' | 'ENDLESS' = 'CAMPAIGN';
+  private activeRunSeed = 0x51f2a9c3;
+  public activeChimeraBlueprint: ChimeraBossBlueprint | null = null;
+  private endlessPerkChoices: [CleanEndlessPerk, CleanEndlessPerk, CleanEndlessPerk] | null = null;
+  private readonly endlessPerkStacks = new Map<string, number>();
+  private lastEarnedJeton = 0;
+  private crushSlowTimer = 0;
+  private hardEnrageTriggeredThisStage = false;
+  private megaCutsThisLevel = 0;
+  private crushedMinionsThisLevel = 0;
+  private comboCount = 1;
+  private comboTimer = 0;
+  private maxComboThisLevel = 1;
+  private grazeCooldownTimer = 0;
 
   private currentWave = 1;
   private currentWaveSpec: WaveEncounterSpec;
@@ -155,8 +195,6 @@ export class GameEngine {
   private autonomousMinionStates: AutonomousMinionState[] = [];
   private minionSeqCounter = 0;
   private activeCutDurationSec = 0;
-  private crystalDropTimer = 10;
-  private crystalCycleIdx = 0;
   private waveElapsedSec = 0;
   private activeCombatPhase: BossCombatPhase = 1;
   private phaseAwakeningTimer = 0;
@@ -178,7 +216,7 @@ export class GameEngine {
 
   private score = 0;
   private nextExtraLifeScore = EXTRA_LIFE_SCORE_STEP;
-  private lives = 4;
+  private lives = 3;
   private runBaselineHighScore = 0;
   private runBaselineBestWave = 0;
   private runIsNewRecord = false;
@@ -191,7 +229,6 @@ export class GameEngine {
   private hesitationFuseLit = false;
   private shieldZeroBeepTimer = 0;
   private shieldPulseTimer = 0;
-  private trapEnrageTimer = 0;
   private cutsThisLevel = 0;
   private lastInputSnapshot: InputState = {
     direction: null,
@@ -213,6 +250,7 @@ export class GameEngine {
   private firstFrameDrawn = false;
   private renderTargetCtx: CanvasRenderingContext2D | null = null;
   private boxContactSfxCooldown = 0;
+  private reconcileInFlight = false;
 
   constructor() {
     this.currentWaveSpec = this.endlessDirector.buildWave(1, 'MEDIUM');
@@ -222,6 +260,11 @@ export class GameEngine {
       (alpha, frameDt) => this.render(alpha, frameDt)
     );
 
+    // Every single Jeton / Ship / Trail / IAP entitlement mutation persists immediately!
+    this.jetonStore.setPersistenceHook(() => {
+      this.persistV15State();
+    });
+
     this.input.touch.setOnSwapSide(() => {
       void this.toggleJoystickSide();
     });
@@ -229,7 +272,9 @@ export class GameEngine {
       if (this.screen === 'PLAYING') {
         SoundEngine.playUiClick();
         this.screen = 'PAUSED';
+        this.polishController.isPaused = true;
         this.input.resetActiveInputs();
+        this.persistV15State();
       }
     });
   }
@@ -238,27 +283,102 @@ export class GameEngine {
     this.input.touch.syncViewportFromLayout(getLayout());
   }
 
+  public notifyUserInteraction(): void {
+    this.gameLoop.wakeFromIdle(1.8);
+  }
+
+  private buildCurrentRunCheckpoint(): ActiveRunCheckpointV15 | null {
+    const inActiveSession =
+      this.screen === 'PLAYING' ||
+      this.screen === 'PAUSED' ||
+      this.screen === 'ROGUELITE_DRAFT' ||
+      this.screen === 'LEVEL_CLEAR' ||
+      this.screen === 'CONTINUE_PROMPT';
+    if (!inActiveSession || this.lives <= 0) {
+      return null;
+    }
+    const save = StorageService.getCurrent();
+    return {
+      mode: this.activeGameMode,
+      wave: this.currentWave,
+      score: this.score,
+      lives: this.lives,
+      difficulty: save.difficulty,
+      runSeed: this.activeRunSeed,
+      perkStacks: Array.from(this.endlessPerkStacks.entries()),
+      usedContinue: this.jetonStore.usedContinueInCurrentRun,
+      savedAtMs: Date.now()
+    };
+  }
+
+  private persistV15State(explicitCheckpoint?: ActiveRunCheckpointV15 | null): void {
+    const checkpoint =
+      explicitCheckpoint !== undefined ? explicitCheckpoint : this.buildCurrentRunCheckpoint();
+    const seenHint = !this.polishController.showFirstLaunchSwipeHint;
+    StorageService.captureV15Store(
+      this.jetonStore,
+      seenHint,
+      StorageService.getCurrent(),
+      checkpoint
+    );
+    void StorageService.save();
+  }
+
+  /**
+   * Reconciles any interrupted StoreKit 2 / Play Billing transactions on cold boot & foreground resume
+   * so a player who paid NEVER misses an item even after a crash, network drop, or Ask-to-Buy approval.
+   */
+  private async reconcileStoreTransactionsQuietly(): Promise<void> {
+    if (this.reconcileInFlight) return;
+    this.reconcileInFlight = true;
+    try {
+      const { recoveredCount } = await this.jetonStore.reconcilePendingEntitlements();
+      if (recoveredCount > 0) {
+        this.persistV15State();
+        this.showToast('Satın alım hesabına tanımlandı ✓');
+      }
+    } finally {
+      this.reconcileInFlight = false;
+    }
+  }
+
   public async boot(ctx: CanvasRenderingContext2D): Promise<void> {
     this.renderTargetCtx = ctx;
 
     const save = await StorageService.load();
+    StorageService.hydrateV15Store(this.jetonStore, save);
+    this.polishController.showFirstLaunchSwipeHint = !save.v15Store.hasSeenSwipeHint;
+
+    void this.jetonStore.syncStorePrices();
+    void this.reconcileStoreTransactionsQuietly();
+
     this.applySavedSettings();
     this.syncViewportLayout();
 
     SoundEngine.bindAutoUnlock();
 
     await NativeBridge.initialize({
-      onAppPause: () => {
+      onAppPause: (fullyHidden = false) => {
         if (this.screen === 'PLAYING') {
+          this.polishController.onAppBackgroundOrBlur();
           this.screen = 'PAUSED';
           this.input.resetActiveInputs();
+          SoundEngine.stopLaserCutLoop();
         }
-        void StorageService.save();
-        SoundEngine.suspend();
+        this.persistV15State();
+        StorageService.flushSyncMirror();
+        if (fullyHidden) {
+          SoundEngine.suspend();
+          this.gameLoop.suspend();
+        }
       },
       onAppResume: () => {
+        this.gameLoop.resume();
         SoundEngine.resume();
-        this.gameLoop.resetTiming();
+        void this.reconcileStoreTransactionsQuietly();
+        if (!MonetizationService.isRewardedAdReady() && !MonetizationService.isPremiumUnlocked()) {
+          void MonetizationService.preloadRewardedRevive();
+        }
       },
       onBackButton: () => {
         this.handleHardwareBack();
@@ -273,20 +393,54 @@ export class GameEngine {
       stageNumber: previewWave
     });
 
-    this.applyShowcaseFromUrl();
+    const hasShowcaseUrl = this.hasShowcaseUrlParams();
+    if (hasShowcaseUrl) {
+      this.applyShowcaseFromUrl();
+    } else {
+      this.tryRestoreInterruptedRunCheckpoint(save.v15Store.activeRunCheckpoint);
+    }
 
     this.gameLoop.start();
+  }
 
-    // Defer iOS ATT + AdMob initialization slightly after SplashScreen hides so the app
-    // reaches UIApplicationState.active and cold-start remains 0ms blocked.
-    setTimeout(() => {
-      void MonetizationService.prepareAdsIfEnabled();
-    }, 750);
+  private hasShowcaseUrlParams(): boolean {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return Boolean(params.get('shot') || params.get('boss') || params.get('wave'));
   }
 
   /**
-   * Store-screenshot & visual QA showcase (`?shot=menu|faz2|kolay|orta|zor`, `?boss=<BossSpeciesId>`, `?wave=<N>`):
-   * Uses an in-memory-only save (`StorageService.persistenceDisabled = true`).
+   * Restores an interrupted Endless or multi-stage session if the OS terminated the background WebView.
+   */
+  private tryRestoreInterruptedRunCheckpoint(cp: ActiveRunCheckpointV15 | null): void {
+    if (!cp || StorageService.persistenceDisabled) return;
+    if (Date.now() - cp.savedAtMs > CHECKPOINT_MAX_AGE_MS) {
+      this.persistV15State(null);
+      return;
+    }
+    if (cp.wave < 2 && cp.score <= 0) return;
+
+    const save = StorageService.getCurrent();
+    save.difficulty = cp.difficulty;
+    this.activeGameMode = cp.mode;
+    this.activeRunSeed = cp.runSeed;
+    this.endlessPerkStacks.clear();
+    for (const [k, v] of cp.perkStacks) {
+      this.endlessPerkStacks.set(k, v);
+    }
+    this.jetonStore.usedContinueInCurrentRun = cp.usedContinue;
+
+    this.loadWave(cp.wave);
+    this.roundIntroTimer = 0;
+    this.score = cp.score;
+    this.lives = Math.max(1, Math.min(MAX_PLAYER_LIVES, cp.lives));
+    this.screen = 'PAUSED';
+    this.polishController.isPaused = true;
+  }
+
+  /**
+   * Visual QA showcase (`?shot=menu|store|jeton|draft|continue|kolay|orta|zor|faz2`, `?boss=<id>`, `?wave=<N>`):
+   * Strictly isolated from persistent user save (`StorageService.persistenceDisabled = true`).
    */
   private applyShowcaseFromUrl(): void {
     if (typeof window === 'undefined') return;
@@ -310,19 +464,18 @@ export class GameEngine {
         MEDIUM_1: 3,
         MEDIUM_2: 3,
         MEDIUM_3: 2,
-        MEDIUM_4: 3,
-        MEDIUM_5: 2,
-        MEDIUM_6: 3,
-        MEDIUM_7: 2
+        MEDIUM_4: 3
       }
     };
-    save.selectedStageByDifficulty = { EASY: 5, MEDIUM: 8, HARD: 9 };
-    save.highScoreEndless = 3_423_594;
-    save.bestEndlessWave = 19;
+    save.v15Store.highestUnlockedStage = { EASY: 12, MEDIUM: 14, HARD: 9 };
+    save.selectedStageByDifficulty = { EASY: 5, MEDIUM: 4, HARD: 9 };
+    this.jetonStore.jetonBalance = 1450;
+    save.v15Store.jetonBalance = 1450;
 
     if (!shot) {
       const startWave = waveParam ? Math.max(1, Math.min(99, Number(waveParam) || 1)) : 1;
-      this.startEndlessRun(startWave);
+      this.activeGameMode = 'CAMPAIGN';
+      this.startRunSession(startWave);
       this.roundIntroTimer = 0;
       if (bossParam && (ALL_BOSS_IDS_V12 as readonly string[]).includes(bossParam)) {
         const forcedBossId = bossParam as BossSpeciesId;
@@ -342,8 +495,37 @@ export class GameEngine {
 
     if (shot === 'menu') {
       save.difficulty = 'COMMANDER';
-      save.selectedStageByDifficulty.MEDIUM = 2;
-      this.menuRenderer.stageStripStart = 1;
+      save.selectedStageByDifficulty.MEDIUM = 4;
+      this.screen = 'MAIN_MENU';
+      return;
+    }
+
+    if (shot === 'store' || shot === 'hangar' || shot === 'jeton' || shot === 'iap') {
+      this.jetonStore.ownedShips.add('SHIP_PHANTOM');
+      this.jetonStore.ownedTrails.add('TRAIL_LIGHTNING');
+      this.menuRenderer.storeTab = shot === 'jeton' || shot === 'iap' ? 'BUY_JETON' : 'SHIPS';
+      this.screen = 'HANGAR';
+      return;
+    }
+
+    if (shot === 'draft') {
+      this.activeGameMode = 'ENDLESS';
+      this.currentWave = 4;
+      this.lastEarnedJeton = 46;
+      this.endlessPerkChoices = this.polishController.rollThreeCleanPerks(
+        this.endlessPerkStacks,
+        77
+      );
+      this.screen = 'ROGUELITE_DRAFT';
+      return;
+    }
+
+    if (shot === 'continue') {
+      this.activeGameMode = 'ENDLESS';
+      this.startRunSession(5);
+      this.roundIntroTimer = 0;
+      this.claimedPercent = 68;
+      this.screen = 'CONTINUE_PROMPT';
       return;
     }
 
@@ -354,13 +536,12 @@ export class GameEngine {
       faz2: 'LEGEND'
     };
     save.difficulty = diffMap[shot] ?? 'COMMANDER';
+    this.polishController.showFirstLaunchSwipeHint = false;
 
-    // Showcase curated Build 12 stages: Stage 5 (Frost Leviathan), Stage 8 (Plasma Scorpion), Stage 15 (Quantum Butterfly), Stage 24 (Void Emperor)!
     const targetWave = shot === 'kolay' ? 5 : shot === 'orta' ? 8 : shot === 'faz2' ? 24 : 15;
-    this.startEndlessRun(targetWave);
+    this.activeGameMode = shot === 'zor' ? 'ENDLESS' : 'CAMPAIGN';
+    this.startRunSession(targetWave);
     this.roundIntroTimer = 0;
-    this.score = shot === 'kolay' ? 128_400 : shot === 'orta' ? 412_600 : 842_500;
-    this.lives = DIFFICULTIES[save.difficulty].startingLives;
 
     const cuts: Point[][] =
       shot === 'kolay'
@@ -375,16 +556,9 @@ export class GameEngine {
       this.processCompletedCut(trail, 1);
     }
 
-    // Showcase Build 12 Field Power Crystals & 1-Hit Shield ring in gameplay screenshots!
     this.juiceSystem.crystals = [];
-    this.juiceSystem.spawnCrystal('show_1', { x: 310, y: 310 }, 'TIME_FREEZE');
-    this.juiceSystem.spawnCrystal('show_2', { x: 640, y: 420 }, 'SPEED_BOOST');
     if (shot === 'orta') {
       this.juiceSystem.powerState.hasOneHitTrailShield = true;
-      for (const b of this.bosses) {
-        b.telegraphDuration = 2.0;
-        b.telegraphTimer = 1.65;
-      }
     }
 
     if (shot === 'faz2' || shot === 'zor') {
@@ -394,21 +568,6 @@ export class GameEngine {
       for (const boss of this.bosses) {
         if (boss.alive) {
           boss.applyPhaseBehavior(this.currentWaveSpec.phases[nextPhase]);
-          if (shot === 'faz2') {
-            boss.update({
-              dt: 0.016,
-              timeSeconds: 1.0,
-              activePolygon: this.activePolygon,
-              claimedPercent: 52,
-              playerPos: { x: this.ship.x, y: this.ship.y },
-              playerState: 'ON_BORDER',
-              activeTrail: [],
-              speedScale: 1.0,
-              projectiles: this.projectiles,
-              summonMinion: () => {},
-              currentMinionCount: this.minions.length
-            });
-          }
         }
       }
     }
@@ -427,11 +586,14 @@ export class GameEngine {
     cssX?: number,
     cssY?: number
   ): void {
+    this.notifyUserInteraction();
     const layout = getLayout();
     if (this.screen === 'PLAYING' && pointInRect(vx, vy, layout.pauseButton, 14)) {
       SoundEngine.playUiClick();
       this.screen = 'PAUSED';
+      this.polishController.isPaused = true;
       this.input.resetActiveInputs();
+      this.persistV15State();
       return;
     }
 
@@ -462,6 +624,7 @@ export class GameEngine {
     cssX?: number,
     cssY?: number
   ): void {
+    this.notifyUserInteraction();
     if (this.screen === 'PLAYING') {
       const s = getLayout().cssScale || 1;
       this.input.touch.handleTouchMoveCss(pointerId, cssX ?? vx * s, cssY ?? vy * s);
@@ -469,17 +632,24 @@ export class GameEngine {
   }
 
   public handlePointerUp(pointerId: number): void {
+    this.notifyUserInteraction();
     this.input.touch.handlePointerUp(pointerId);
   }
 
   private handleHardwareBack(): void {
+    this.notifyUserInteraction();
     if (this.screen === 'PLAYING') {
       this.screen = 'PAUSED';
+      this.polishController.isPaused = true;
       this.input.resetActiveInputs();
+      this.persistV15State();
     } else if (this.screen === 'PAUSED') {
+      this.polishController.requestSmoothResume();
       this.screen = 'PLAYING';
+      this.gameLoop.resetTiming();
+    } else if (this.screen === 'SECTOR_SELECT') {
+      this.screen = 'SETTINGS';
     } else if (
-      this.screen === 'SECTOR_SELECT' ||
       this.screen === 'HANGAR' ||
       this.screen === 'ACHIEVEMENTS' ||
       this.screen === 'SETTINGS'
@@ -515,19 +685,20 @@ export class GameEngine {
     const label =
       s.controlMode === 'SINGLE_HAND_DRAG'
         ? s.joystickSide === 'RIGHT'
-          ? 'SAĞ'
+          ? 'Sağ'
           : s.joystickSide === 'LEFT'
-            ? 'SOL'
-            : 'ORTA'
+            ? 'Sol'
+            : 'Orta'
         : s.joystickSide === 'RIGHT'
-          ? 'SAĞ YÖN / SOL KES'
-          : 'SOL YÖN / SAĞ KES';
-    this.showToast(`KONUM: ${label}`);
+          ? 'Sağ Joystick / Sol Kes'
+          : 'Sol Joystick / Sağ Kes';
+    this.showToast(`Yerleşim: ${label}`);
   }
 
   private showToast(msgTr: string): void {
     this.statusToast = msgTr;
     this.statusToastTimer = 2.0;
+    this.notifyUserInteraction();
   }
 
   private tryUnlockAchievement(id: string): void {
@@ -544,13 +715,137 @@ export class GameEngine {
 
     if (actionId === 'OPEN_SHIPS') {
       this.screen = 'HANGAR';
+      void this.reconcileStoreTransactionsQuietly();
+      return;
+    }
+
+    if (actionId === 'SET_STORE_TAB_SHIPS') {
+      this.menuRenderer.storeTab = 'SHIPS';
+      return;
+    }
+
+    if (actionId === 'SET_STORE_TAB_TRAILS') {
+      this.menuRenderer.storeTab = 'TRAILS';
+      return;
+    }
+
+    if (actionId === 'SET_STORE_TAB_BUY_JETON') {
+      this.menuRenderer.storeTab = 'BUY_JETON';
+      void this.jetonStore.syncStorePrices();
+      return;
+    }
+
+    if (actionId.startsWith('BUY_OR_EQUIP_SHIP_')) {
+      const shipId = actionId.replace('BUY_OR_EQUIP_SHIP_', '');
+      const res = this.jetonStore.buyOrEquipShip(shipId);
+      const item = SHIPS_STORE_CATALOG.find((s) => s.id === shipId);
+      if (res === 'BOUGHT_AND_EQUIPPED' || res === 'EQUIPPED') {
+        NativeBridge.hapticPowerUp();
+        SoundEngine.playExtraLife();
+        this.persistV15State();
+        this.showToast(
+          res === 'BOUGHT_AND_EQUIPPED'
+            ? `${item?.nameTr ?? 'Gemi'} açıldı ve seçildi ✓`
+            : `${item?.nameTr ?? 'Gemi'} seçildi ✓`
+        );
+      } else {
+        this.showToast('Yetersiz Jeton');
+      }
+      return;
+    }
+
+    if (actionId.startsWith('BUY_OR_EQUIP_TRAIL_')) {
+      const trailId = actionId.replace('BUY_OR_EQUIP_TRAIL_', '');
+      const res = this.jetonStore.buyOrEquipTrail(trailId);
+      const item = TRAILS_STORE_CATALOG.find((t) => t.id === trailId);
+      if (res === 'BOUGHT_AND_EQUIPPED' || res === 'EQUIPPED') {
+        NativeBridge.hapticPowerUp();
+        SoundEngine.playExtraLife();
+        this.persistV15State();
+        this.showToast(
+          res === 'BOUGHT_AND_EQUIPPED'
+            ? `${item?.nameTr ?? 'İz'} açıldı ve seçildi ✓`
+            : `${item?.nameTr ?? 'İz'} seçildi ✓`
+        );
+      } else {
+        this.showToast('Yetersiz Jeton');
+      }
+      return;
+    }
+
+    if (actionId.startsWith('BUY_JETON_PACK_')) {
+      const productId = actionId.replace('BUY_JETON_PACK_', '') as StoreIapProductId;
+      const res = await this.jetonStore.purchaseJetonPack(productId);
+      if (res.ok) {
+        NativeBridge.hapticPowerUp();
+        SoundEngine.playExtraLife();
+        this.persistV15State();
+        StorageService.flushSyncMirror();
+        this.showToast(
+          res.restoredExisting
+            ? 'Mevcut paket hesabına tanımlandı ✓'
+            : 'Satın alım tamamlandı ✓'
+        );
+      } else if (res.alreadyOwned) {
+        this.showToast('Başlangıç Paketi zaten aktif ✓');
+      } else if (res.busy) {
+        this.showToast('İşlem devam ediyor, lütfen bekle...');
+      } else if (!res.cancelled) {
+        this.showToast('Satın alım tamamlanamadı');
+      }
+      return;
+    }
+
+    if (actionId === 'RESTORE_IAP_PURCHASES') {
+      const ok = await this.jetonStore.restorePurchases();
+      this.persistV15State();
+      StorageService.flushSyncMirror();
+      NativeBridge.hapticPowerUp();
+      this.showToast(
+        ok ? 'Satın alımlar geri yüklendi ✓' : 'Geri yüklenecek paket bulunamadı'
+      );
+      return;
+    }
+
+    if (actionId.startsWith('PICK_PERK_')) {
+      const slotIdx = Number(actionId.replace('PICK_PERK_', '')) || 0;
+      const chosen = this.endlessPerkChoices?.[slotIdx];
+      if (chosen) {
+        const nextRank = Math.min(chosen.maxStacks, (this.endlessPerkStacks.get(chosen.id) ?? 0) + 1);
+        this.endlessPerkStacks.set(chosen.id, nextRank);
+        if (chosen.id === 'EXTRA_LIFE') {
+          this.lives = Math.min(MAX_PLAYER_LIVES, this.lives + 1);
+        }
+        NativeBridge.hapticPowerUp();
+        SoundEngine.playExtraLife();
+        this.showToast(`${chosen.titleTr} seçildi ✓`);
+      }
+      this.endlessPerkChoices = null;
+      this.loadWave(this.currentWave + 1);
+      this.screen = 'PLAYING';
+      this.persistV15State();
+      this.gameLoop.resetTiming();
+      return;
+    }
+
+    if (actionId === 'USE_JETON_CONTINUE') {
+      if (this.jetonStore.spendJetonForContinue()) {
+        this.reviveUsedThisLevel = true;
+        this.persistV15State();
+        this.completeReviveGrant();
+        this.showToast('Devam ediliyor • +1 Can');
+      } else {
+        this.showToast('Yetersiz Jeton');
+      }
       return;
     }
 
     if (actionId === 'GOTO_CAMPAIGN' || actionId === 'BACK_MAIN' || actionId === 'QUIT_TO_MENU') {
       SoundEngine.stopLaserCutLoop();
-      void StorageService.save();
+      this.polishController.isPaused = false;
+      this.polishController.resumeCountdownSec = 0;
       this.screen = 'MAIN_MENU';
+      this.persistV15State(null);
       return;
     }
 
@@ -561,6 +856,33 @@ export class GameEngine {
 
     if (actionId === 'OPEN_STAGE_GRID') {
       this.screen = 'SECTOR_SELECT';
+      return;
+    }
+
+    if (actionId === 'PREV_STAGE_MAIN') {
+      const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+      const curStage = StorageService.getSelectedStartStage(runDiff, save);
+      if (curStage > 1) {
+        await StorageService.save((d) => {
+          d.selectedStageByDifficulty[runDiff] = curStage - 1;
+        });
+        NativeBridge.hapticPowerUp();
+      }
+      return;
+    }
+
+    if (actionId === 'NEXT_STAGE_MAIN') {
+      const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+      const curStage = StorageService.getSelectedStartStage(runDiff, save);
+      const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
+      if (curStage < maxUnlocked) {
+        await StorageService.save((d) => {
+          d.selectedStageByDifficulty[runDiff] = curStage + 1;
+        });
+        NativeBridge.hapticPowerUp();
+      } else if (curStage < 30) {
+        this.showToast(`ÖNCE BÖLÜM ${curStage} TAMAMLANMALI`);
+      }
       return;
     }
 
@@ -575,7 +897,7 @@ export class GameEngine {
     }
 
     if (actionId.startsWith('SELECT_STAGE_')) {
-      const stageNum = Math.max(1, Math.min(24, Number(actionId.replace('SELECT_STAGE_', '')) || 1));
+      const stageNum = Math.max(1, Math.min(30, Number(actionId.replace('SELECT_STAGE_', '')) || 1));
       const runDiff = difficultyIdToRunDifficulty(save.difficulty);
       const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
       if (stageNum <= maxUnlocked) {
@@ -583,8 +905,6 @@ export class GameEngine {
           d.selectedStageByDifficulty[runDiff] = stageNum;
         });
         NativeBridge.hapticPowerUp();
-        const stSpec = FIXED_CAMPAIGN_STAGES[stageNum - 1];
-        this.showToast(`BÖLÜM ${stageNum}: ${stSpec ? stSpec.bossNameTr : ''}`);
       } else {
         this.showToast(`ÖNCE BÖLÜM ${stageNum - 1} AÇILMALI`);
       }
@@ -592,7 +912,7 @@ export class GameEngine {
     }
 
     if (actionId.startsWith('LAUNCH_STAGE_')) {
-      const stageNum = Math.max(1, Math.min(24, Number(actionId.replace('LAUNCH_STAGE_', '')) || 1));
+      const stageNum = Math.max(1, Math.min(30, Number(actionId.replace('LAUNCH_STAGE_', '')) || 1));
       const runDiff = difficultyIdToRunDifficulty(save.difficulty);
       const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
       if (stageNum <= maxUnlocked) {
@@ -600,22 +920,42 @@ export class GameEngine {
           d.selectedStageByDifficulty[runDiff] = stageNum;
         });
         NativeBridge.hapticPowerUp();
-        this.startEndlessRun(stageNum);
+        this.activeGameMode = 'CAMPAIGN';
+        this.startRunSession(stageNum);
       } else {
-        this.showToast(`BÖLÜM ${stageNum} KİLİTLİ`);
+        this.showToast(`Bölüm ${stageNum} kilitli`);
       }
       return;
     }
 
-    if (actionId === 'START_ENDLESS_RUN' || actionId === 'START_ENDLESS') {
+    if (
+      actionId === 'START_ENDLESS_RUN' ||
+      actionId === 'START_ENDLESS' ||
+      actionId === 'START_CAMPAIGN_RUN'
+    ) {
       const runDiff = difficultyIdToRunDifficulty(save.difficulty);
       const startStage = StorageService.getSelectedStartStage(runDiff, save);
-      this.startEndlessRun(startStage);
+      this.activeGameMode = 'CAMPAIGN';
+      this.startRunSession(startStage);
+      return;
+    }
+
+    if (actionId === 'START_ENDLESS_MODE' || actionId === 'START_ENDLESS_RIFT') {
+      this.activeGameMode = 'ENDLESS';
+      this.activeRunSeed = (Date.now() ^ 0x9e3779b9) >>> 0;
+      this.endlessPerkStacks.clear();
+      this.startRunSession(1);
       return;
     }
 
     if (actionId === 'RETRY_CURRENT_STAGE') {
-      this.startEndlessRun(Math.max(1, this.currentWave));
+      if (this.activeGameMode === 'ENDLESS') {
+        this.activeRunSeed = (Date.now() ^ 0x9e3779b9) >>> 0;
+        this.endlessPerkStacks.clear();
+        this.startRunSession(1);
+      } else {
+        this.startRunSession(Math.max(1, this.currentWave));
+      }
       return;
     }
 
@@ -672,11 +1012,11 @@ export class GameEngine {
       const m = StorageService.getCurrent().settings.controlMode;
       const mLabel =
         m === 'CLASSIC_ARCADE'
-          ? 'KLASİK ATARİ'
+          ? 'Yön Tuşları + Kes'
           : m === 'JOYSTICK_KES'
-            ? 'ATARİ KOLU + KES'
-            : 'TEK EL SÜRÜKLE';
-      this.showToast(`KONTROL: ${mLabel}`);
+            ? 'Joystick + Kes'
+            : 'Tek Parmak Kaydır';
+      this.showToast(`Kontrol: ${mLabel}`);
       return;
     }
 
@@ -684,14 +1024,10 @@ export class GameEngine {
       const skinId = actionId.replace('SELECT_SHIP_', '');
       if (isShipSkinId(skinId)) {
         const skin = SHIP_SKINS.find((s) => s.id === skinId);
-        if (!skin) return;
-        if (StorageService.isShipUnlocked(skin, save)) {
+        if (skin && StorageService.isShipUnlocked(skin, save)) {
           await StorageService.save((d) => {
             d.selectedShip = skinId;
           });
-          this.showToast(`GEMİ: ${skin.nameTr}`);
-        } else {
-          this.showToast(`DALGA ${skin.waveRequired} GEREKLİ`);
         }
       }
       return;
@@ -715,13 +1051,14 @@ export class GameEngine {
     }
 
     if (actionId === 'RESUME_GAME') {
+      this.polishController.requestSmoothResume();
       this.screen = 'PLAYING';
       this.gameLoop.resetTiming();
       return;
     }
 
     if (actionId === 'RESTART_RUN' || actionId === 'RESTART_SECTOR') {
-      this.startEndlessRun(Math.max(1, this.currentWave));
+      this.startRunSession(Math.max(1, this.currentWave));
       return;
     }
 
@@ -729,7 +1066,7 @@ export class GameEngine {
       if (this.reviveAdLoading || this.reviveUsedThisLevel) {
         return;
       }
-      if (save.premiumUnlocked) {
+      if (save.premiumUnlocked || this.jetonStore.hasPermanentDoubleJeton) {
         this.reviveUsedThisLevel = true;
         this.completeReviveGrant();
         return;
@@ -742,11 +1079,13 @@ export class GameEngine {
         if (result.outcome === 'REWARDED') {
           this.reviveUsedThisLevel = true;
           this.completeReviveGrant();
-          this.showToast('★ +1 GEMİ HAKKI KAZANILDI! ★');
+          this.showToast('+1 Can kazanıldı ✓');
         } else if (result.outcome === 'DISMISSED_EARLY') {
-          this.showToast('ÖDÜL İÇİN VİDEOYU SONUNA KADAR İZLE');
+          this.showToast('Ödül için videoyu sonuna kadar izle');
+        } else if (result.errorMessage === 'NATIVE_PLATFORM_REQUIRED') {
+          this.showToast('Video reklam yalnızca iOS/Android uygulamada açılır');
         } else {
-          this.showToast('REKLAM HAZIR DEĞİL — İNTERNETİ KONTROL ET');
+          this.showToast('Reklam şu an doldurulamadı, biraz sonra tekrar dene');
         }
       } finally {
         this.reviveAdLoading = false;
@@ -759,12 +1098,16 @@ export class GameEngine {
     if (actionId === 'DECLINE_REVIVE') {
       this.persistRunRecords();
       this.screen = 'GAME_OVER';
+      this.persistV15State(null);
       return;
     }
 
     if (actionId === 'NEXT_SECTOR') {
-      this.loadWave(this.currentWave + 1);
+      const nextStage = this.currentWave >= 30 ? 1 : this.currentWave + 1;
+      this.loadWave(nextStage);
       this.screen = 'PLAYING';
+      this.persistV15State();
+      this.gameLoop.resetTiming();
     }
   }
 
@@ -780,7 +1123,6 @@ export class GameEngine {
     this.hazards.staticArcs = [];
     this.projectiles.clearEnemyBullets();
 
-    // 3.0s Anti-Spawn-Kill Shockwave (>=145px) so reviving after a video ad is 100% fair!
     this.juiceSystem.triggerRespawnShockwave(
       { x: this.ship.x, y: this.ship.y },
       this.autonomousMinionStates,
@@ -815,27 +1157,36 @@ export class GameEngine {
         boss.y = pushed.y;
       }
     }
-    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#58F8FF', 0.42);
+    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#38BDF8', 0.42);
     this.hazards.spaceMines = this.hazards.spaceMines.filter(
       (m) => Math.hypot(m.x - this.ship.x, m.y - this.ship.y) > 130
     );
 
     this.input.resetActiveInputs();
+    this.polishController.requestSmoothResume();
     this.screen = 'PLAYING';
+    this.persistV15State();
     this.gameLoop.resetTiming();
     SoundEngine.playExtraLife();
   }
 
-  private startEndlessRun(startWave = 1): void {
+  private startRunSession(startWave = 1): void {
     const save = StorageService.getCurrent();
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
-    const prof = DIFFICULTY_UI_PROFILES[runDiff];
+    const diffSpec = HONEST_DIFFICULTIES_V15[runDiff];
     const rec = StorageService.getDifficultyRecord(save.difficulty, save);
+
+    this.jetonStore.onNewRunStart();
+    if (this.activeGameMode === 'CAMPAIGN') {
+      this.endlessPerkStacks.clear();
+    }
+    this.endlessPerkChoices = null;
+    this.lastEarnedJeton = 0;
 
     this.endlessDirector.resetRun();
     this.score = 0;
     this.nextExtraLifeScore = EXTRA_LIFE_SCORE_STEP;
-    this.lives = prof.startingLives;
+    this.lives = Math.min(MAX_PLAYER_LIVES, diffSpec.startingLives);
     this.runBaselineHighScore = rec.highScore;
     this.runBaselineBestWave = rec.bestWave;
     this.runIsNewRecord = false;
@@ -846,6 +1197,8 @@ export class GameEngine {
 
     this.loadWave(startWave);
     this.screen = 'PLAYING';
+    this.persistV15State();
+    this.gameLoop.resetTiming();
   }
 
   private buildWaveBarriers(ratio: number, waveNumber: number): Barrier[] {
@@ -873,7 +1226,6 @@ export class GameEngine {
         const x = Math.round((140 + (seedA / 1000) * 620) / 20) * 20;
         const y = Math.round((190 + (seedB / 1000) * 810) / 20) * 20;
 
-        // Keep central boss spawn pocket & player bottom-center spawn corridor clear
         if (x > 300 && x < 600 && y > 370 && y < 630) continue;
         if (Math.hypot(x - 450, y - ARENA_HEIGHT) < 230) continue;
         if (configs.some((c) => Math.max(Math.abs(c.x - x), Math.abs(c.y - y)) < 145)) continue;
@@ -883,10 +1235,9 @@ export class GameEngine {
       return null;
     };
 
-    // 1. Law 6 Tier 1: Solid Standard Blocks (`S`, `L`, `C`, `P`, `EMPTY_POINTS`, or `ENRAGE_TRAP` on `ZOR`)
     const stdRewards: BlockRewardType[] = spec.rules.enrageTrapEnabled
-      ? ['S', 'L', 'C', 'EMPTY_POINTS', 'ENRAGE_TRAP']
-      : ['S', 'L', 'P', 'C', 'EMPTY_POINTS'];
+      ? ['S', 'L', 'T', 'C', 'EMPTY_POINTS', 'ENRAGE_TRAP']
+      : ['S', 'L', 'P', 'T', 'C', 'EMPTY_POINTS'];
 
     let slotIdx = 0;
     for (let i = 0; i < spec.powerUpBoxCount; i++) {
@@ -904,7 +1255,6 @@ export class GameEngine {
       });
     }
 
-    // 2. Law 6 Tier 2: Blinking Disappearing Blocks (carries rare `T` Time Freeze at most 1 per wave!)
     for (let i = 0; i < spec.disappearingBoxCount; i++) {
       const pos = pickSlot(slotIdx++);
       if (!pos) continue;
@@ -922,7 +1272,6 @@ export class GameEngine {
       });
     }
 
-    // 3. Law 6 Tier 3: 2-Stage Boss Cannon Unlock (`SPECIAL_STAGE_1_RED` -> spawns `SPECIAL_STAGE_2_GOLD`!)
     if (spec.hasSpecialStage1RedBlock) {
       const pos = pickSlot(slotIdx++);
       if (pos) {
@@ -936,7 +1285,6 @@ export class GameEngine {
       }
     }
 
-    // 4. Impassable Steel Armor Pillars
     for (let i = 0; i < spec.solidArmorPillarCount; i++) {
       const pos = pickSlot(slotIdx++);
       if (!pos) continue;
@@ -967,7 +1315,6 @@ export class GameEngine {
     );
     this.syncSolidBoxes();
     this.particles.spawnShockwave(gx, gy, 140, '#DCE6F4', 0.34);
-    this.particles.spawnFloatingText(gx, gy - 26, 'ZIRH ENGELİ!', '#FFE068', 22);
   }
 
   private spawnStage2GoldSpecialBlock(): void {
@@ -999,11 +1346,9 @@ export class GameEngine {
       );
       this.syncSolidBoxes();
       this.particles.spawnShockwave(cand.x, cand.y, 180, '#FFE048', 0.42);
-      this.particles.spawnFloatingText(cand.x, cand.y - 28, '★ ALTIN BLOK!', '#FFE048', 24);
       return;
     }
 
-    // Fallback if remaining polygon is very tight: drop Boss Cannon capsule directly!
     this.capsules.push(new PowerUpCapsule({ x: this.ship.x, y: this.ship.y - 40 }, 'BOSS_CANNON'));
   }
 
@@ -1043,98 +1388,66 @@ export class GameEngine {
     this.autonomousMinionStates.push(st);
   }
 
-  private trySpawnFieldPowerCrystal(): void {
-    if (this.juiceSystem.crystals.length >= 2) return;
-    const crystalOrder: FieldCrystalType[] = [
-      'TRAIL_SHIELD_1HIT',
-      'SPEED_BOOST',
-      'TIME_FREEZE',
-      'LASER_CANNON'
-    ];
-    const chosenType = crystalOrder[this.crystalCycleIdx % crystalOrder.length]!;
-    this.crystalCycleIdx += 1;
-
-    for (let attempt = 0; attempt < 28; attempt++) {
-      const seedA = (Math.round(this.timeSeconds * 83) + attempt * 179 + this.currentWave * 97) % 640;
-      const seedB = (Math.round(this.timeSeconds * 71) + attempt * 151 + this.currentWave * 67) % 820;
-      const cand = { x: 130 + seedA, y: 180 + seedB };
-      if (!pointInPolygonStrict(cand, this.activePolygon)) continue;
-      const wallProj = projectPointToPolygon(cand, this.activePolygon);
-      if (wallProj.distance < 56) continue;
-      if (Math.hypot(this.ship.x - cand.x, this.ship.y - cand.y) < 120) continue;
-      if (
-        this.getActiveSolidBoxes().some(
-          (b) => Math.max(Math.abs(b.x - cand.x), Math.abs(b.y - cand.y)) < SOLID_BOX_HALF + 46
-        )
-      ) {
-        continue;
-      }
-      if (
-        this.juiceSystem.crystals.some(
-          (c) => Math.hypot(c.pos.x - cand.x, c.pos.y - cand.y) < 130
-        )
-      ) {
-        continue;
-      }
-
-      const id = `crys_${Math.round(this.timeSeconds * 100)}_${this.crystalCycleIdx}`;
-      this.juiceSystem.spawnCrystal(id, cand, chosenType);
-      this.particles.spawnShockwave(cand.x, cand.y, 64, '#68F4FF', 0.28);
-      return;
-    }
-  }
-
-  private applyFieldCrystalEffect(type: FieldCrystalType, px: number, py: number): void {
-    const label = this.juiceSystem.activatePowerUp(type, this.autonomousMinionStates);
-    const save = StorageService.getCurrent();
-    save.stats.powerUpsCollected += 1;
-
-    const soundMap: Record<FieldCrystalType, CollectiblePowerUpType> = {
-      TIME_FREEZE: 'T',
-      SPEED_BOOST: 'S',
-      TRAIL_SHIELD_1HIT: 'P',
-      LASER_CANNON: 'L'
-    };
-    SoundEngine.playPowerUp(soundMap[type]);
-    NativeBridge.hapticPowerUp();
-
-    if (type === 'TIME_FREEZE') {
-      this.timeFreezeTimer = Math.max(this.timeFreezeTimer, 5.0);
-      this.particles.spawnShockwave(px, py, 420, '#68F4FF', 0.42);
-    } else if (type === 'SPEED_BOOST') {
-      this.particles.spawnShockwave(px, py, 240, '#FFE058', 0.34);
-    } else if (type === 'TRAIL_SHIELD_1HIT') {
-      this.particles.spawnShockwave(px, py, 260, '#38B8FF', 0.36);
-    } else if (type === 'LASER_CANNON') {
-      this.ship.laserTimer = Math.max(this.ship.laserTimer, 6.0);
-      this.particles.spawnShockwave(px, py, 260, '#FF6858', 0.34);
-    }
-
-    const col =
-      type === 'TIME_FREEZE'
-        ? '#78F8FF'
-        : type === 'SPEED_BOOST'
-          ? '#FFE058'
-          : type === 'TRAIL_SHIELD_1HIT'
-            ? '#58D8FF'
-            : '#FF8868';
-    this.particles.spawnFloatingText(px, py - 28, label, col, 24);
-  }
-
   private loadWave(waveNumber: number): void {
     const save = StorageService.getCurrent();
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const diffSpec = HONEST_DIFFICULTIES_V15[runDiff];
     const spec = this.endlessDirector.buildWave(waveNumber, runDiff);
     const plan = getFixedLevelPlan(waveNumber, runDiff);
 
-    spec.terrainThemeIndex = plan.terrainThemeIndex;
-    spec.targetPercent = plan.targetPercent;
-    spec.shieldSeconds = plan.shieldSeconds;
-    // Build 12 Fairness: Never 0ms instant-detonate trail without fuse/shield counterplay on mobile!
+    // Guarantee clean active timing — never leave pause/countdown stuck across waves!
+    this.polishController.isPaused = false;
+    this.polishController.resumeCountdownSec = 0;
+
+    this.honestGovernor.onStageStart();
+    this.crushSlowTimer = 0;
+    this.hardEnrageTriggeredThisStage = false;
+    this.megaCutsThisLevel = 0;
+    this.crushedMinionsThisLevel = 0;
+    this.comboCount = 1;
+    this.comboTimer = 0;
+    this.maxComboThisLevel = 1;
+    this.grazeCooldownTimer = 0;
+
+    const stageParams = this.honestGovernor.resolveStageParameters({
+      mode: this.activeGameMode,
+      stageOrWave: waveNumber,
+      difficulty: runDiff,
+      capturedPercent: 0,
+      playerSpeedPerkBonusRatio: (this.endlessPerkStacks.get('FAST_ENGINE') ?? 0) * 0.15
+    });
+
+    const targetTrim = (this.endlessPerkStacks.get('TARGET_TRIM') ?? 0) * 2;
+
+    spec.terrainThemeIndex =
+      this.activeGameMode === 'CAMPAIGN'
+        ? (waveNumber - 1) % 16
+        : (waveNumber * 5 + (this.activeRunSeed % 16)) % 16;
+    spec.targetPercent = Math.max(60, stageParams.targetPercent - targetTrim);
+    spec.shieldSeconds = stageParams.borderShieldTimerSec;
     spec.rules = {
       ...spec.rules,
       bossHitTrailInstantDetonation: false
     };
+
+    const chimeraBlueprint =
+      this.activeGameMode === 'CAMPAIGN'
+        ? this.chimeraEngine.buildFixedCampaignEncounter(waveNumber, stageParams.minionCount)
+        : this.chimeraEngine.buildEndlessRiftEncounter(
+            this.activeRunSeed,
+            waveNumber,
+            stageParams.minionCount
+          );
+    this.activeChimeraBlueprint = chimeraBlueprint;
+
+    const isMilestoneWave = this.activeGameMode === 'ENDLESS' && waveNumber % 5 === 0;
+    if (this.activeGameMode === 'ENDLESS') {
+      plan.bossDisplayNameTr = chimeraBlueprint.displayNameTr;
+      plan.sectorNameTr = `Sonsuz Mod • Dalga ${waveNumber}`;
+    } else if (waveNumber > 24) {
+      plan.bossDisplayNameTr = chimeraBlueprint.displayNameTr;
+      plan.sectorNameTr = `Bölüm ${waveNumber}`;
+    }
 
     this.currentWave = waveNumber;
     this.currentWaveSpec = spec;
@@ -1161,6 +1474,11 @@ export class GameEngine {
 
     this.particles.clear();
     this.projectiles.clearAll();
+    this.projectiles.governorCaps = {
+      maxActiveEnemyBullets: stageParams.maxActiveBullets,
+      maxBulletSpeedPx: stageParams.bulletSpeedPx,
+      minDodgeGapPx: diffSpec.minBulletCorridorGapPx
+    };
     this.hazards.clear();
     this.fuses = [];
     this.capsules = [];
@@ -1168,42 +1486,53 @@ export class GameEngine {
     this.minions = [];
     this.autonomousMinionStates = [];
     this.juiceSystem.crystals = [];
+
+    const aegisStacks = this.endlessPerkStacks.get('AEGIS_PULSE') ?? 0;
+    const startWithAegis = aegisStacks > 0 && (aegisStacks >= 2 || waveNumber % 2 === 1);
+
     this.juiceSystem.powerState = {
-      hasOneHitTrailShield: false,
+      hasOneHitTrailShield: startWithAegis,
       speedBoostRemainingSec: 0,
       timeFreezeRemainingSec: 0,
       laserCannonRemainingSec: 0,
       respawnInvulnRemainingSec: 0
     };
-    this.crystalDropTimer = Math.max(5.5, plan.powerUpDropIntervalSec * 0.55);
     this.clearBreakdown = null;
     this.timeFreezeTimer = 0;
     this.dynamicPodTimer = 24;
-    this.roundIntroTimer = 1.05;
+    this.roundIntroTimer = 0.85;
     this.cutStallTimer = 0;
     this.hesitationFuseLit = false;
     this.shieldZeroBeepTimer = 0;
     this.shieldPulseTimer = 0.4;
-    this.trapEnrageTimer = 0;
     this.cutsThisLevel = 0;
     this.reviveUsedThisLevel = false;
     this.reviveAdLoading = false;
     this.deathsThisLevel = 0;
     this.crawlerSpawnTimer = Math.max(36, spec.rules.crawlerDelaySec);
 
-    // 1. Initialize Twin-Prong Fighter at bottom center (450, 1200)
     const shieldUnits = Math.max(200, Math.min(999, Math.round(spec.shieldSeconds * 10)));
     this.ship.initForLevel({ x: 450, y: ARENA_HEIGHT }, spec.shieldSeconds, shieldUnits);
 
-    // 2. Spawn 3-Tier Energy Blocks first so bosses & minions never spawn embedded inside a wall
     const boxDefs = this.buildWaveBoxes(spec);
     this.powerBoxes = boxDefs.map((cfg) => new PowerUpBox(cfg));
     this.syncSolidBoxes();
 
-    // 3. Spawn 100% Deterministic Fixed Stage Boss (`Bölüm 1..24`)!
-    this.bosses = createBossesForFixedLevelPlan(plan, spec.phases[1]);
+    if (this.activeGameMode === 'CAMPAIGN' && waveNumber <= 24) {
+      this.bosses = createBossesForFixedLevelPlan(plan, spec.phases[1]);
+      for (const b of this.bosses) {
+        b.chimeraBlueprint = chimeraBlueprint;
+      }
+    } else {
+      this.bosses = createBossesForChimeraBlueprint(
+        chimeraBlueprint,
+        waveNumber,
+        runDiff,
+        spec.phases[1],
+        isMilestoneWave
+      );
+    }
 
-    // 4. Spawn collision-free Autonomous Minions (`AutonomousMinionEcology`)
     const pickSafeMinionPos = (baseX: number, baseY: number, seedIdx: number): Point => {
       for (let attempt = 0; attempt < 36; attempt++) {
         const px =
@@ -1225,22 +1554,53 @@ export class GameEngine {
     };
 
     let seedIdx = 0;
-    for (const group of plan.minionSpawns) {
-      for (let c = 0; c < group.count; c++) {
-        const pos = pickSafeMinionPos(
-          185 + ((seedIdx * 235) % 540),
-          255 + ((seedIdx * 195) % 490),
-          seedIdx
-        );
-        const m = createMinionBySpecies(group.species, pos, seedIdx);
-        this.minions.push(m);
-        this.attachAutonomousMinion(m, plan.minionSpeedScale);
-        seedIdx++;
+    const maxMinionsNow = stageParams.minionCount;
+    if (this.activeGameMode === 'CAMPAIGN' && waveNumber <= 24) {
+      for (let gi = 0; gi < plan.minionSpawns.length; gi++) {
+        const group = plan.minionSpawns[gi]!;
+        const squadTrait =
+          chimeraBlueprint.minionSquads[gi % chimeraBlueprint.minionSquads.length]?.synergyTrait ??
+          'STANDARD';
+        for (let c = 0; c < group.count && seedIdx < maxMinionsNow; c++) {
+          const pos = pickSafeMinionPos(
+            185 + ((seedIdx * 235) % 540),
+            255 + ((seedIdx * 195) % 490),
+            seedIdx
+          );
+          const m = createMinionBySpecies(group.species, pos, seedIdx);
+          m.speciesId = group.species;
+          m.synergyTrait = c === 0 && waveNumber >= 3 ? squadTrait : 'STANDARD';
+          this.minions.push(m);
+          this.attachAutonomousMinion(m, plan.minionSpeedScale);
+          seedIdx++;
+        }
+      }
+    } else {
+      for (const squad of chimeraBlueprint.minionSquads) {
+        for (let c = 0; c < squad.count && seedIdx < maxMinionsNow; c++) {
+          const pos = pickSafeMinionPos(
+            185 + ((seedIdx * 235) % 540),
+            255 + ((seedIdx * 195) % 490),
+            seedIdx
+          );
+          const m = createMinionForChimeraSquad(
+            squad.archetype,
+            isMilestoneWave && c === 0 ? 'GOLD_PINATA' : squad.synergyTrait,
+            pos,
+            seedIdx
+          );
+          this.minions.push(m);
+          this.attachAutonomousMinion(m, plan.minionSpeedScale);
+          seedIdx++;
+        }
       }
     }
 
     this.persistRunRecords();
     this.input.resetActiveInputs();
+    if (!MonetizationService.isRewardedAdReady() && !MonetizationService.isPremiumUnlocked()) {
+      void MonetizationService.preloadRewardedRevive();
+    }
   }
 
   private syncSolidBoxes(): void {
@@ -1295,6 +1655,14 @@ export class GameEngine {
       bestWave: nextWave
     };
 
+    if (this.activeGameMode === 'ENDLESS') {
+      this.jetonStore.bestEndlessWave[runDiff] = Math.max(
+        this.jetonStore.bestEndlessWave[runDiff],
+        this.currentWave
+      );
+      save.v15Store.bestEndlessWave[runDiff] = this.jetonStore.bestEndlessWave[runDiff];
+    }
+
     if (this.score > save.highScoreEndless) {
       save.highScoreEndless = this.score;
     }
@@ -1310,15 +1678,30 @@ export class GameEngine {
     }
   }
 
+  private spawnSafeArenaText(
+    rawX: number,
+    rawY: number,
+    text: string,
+    color: string,
+    size: number
+  ): void {
+    const safeX = Math.max(175, Math.min(725, rawX));
+    const safeY = Math.max(92, Math.min(1124, rawY));
+    this.particles.spawnFloatingText(safeX, safeY, text, color, size);
+  }
+
   private addScore(points: number): void {
     if (points <= 0) return;
     this.score += points;
 
+    // Strictly cap maximum ships at MAX_PLAYER_LIVES (5) even when extra ships are earned!
     while (this.score >= this.nextExtraLifeScore) {
-      this.lives += 1;
       this.nextExtraLifeScore += EXTRA_LIFE_SCORE_STEP;
-      SoundEngine.playExtraLife();
-      this.particles.spawnFloatingText(this.ship.x, this.ship.y - 30, '+1 GEMİ', '#28E038', 24);
+      if (this.lives < MAX_PLAYER_LIVES) {
+        this.lives = Math.min(MAX_PLAYER_LIVES, this.lives + 1);
+        SoundEngine.playExtraLife();
+        this.spawnSafeArenaText(this.ship.x, this.ship.y - 30, '+1 GEMİ', '#28E038', 24);
+      }
     }
 
     if (this.score >= 1_000_000) {
@@ -1328,16 +1711,16 @@ export class GameEngine {
     this.persistRunRecords();
   }
 
-  private triggerBossPhaseAwakening(nextPhase: BossCombatPhase): void {
+  private triggerBossPhaseAwakening(nextPhase: BossCombatPhase, customLabel?: string): void {
     this.activeCombatPhase = nextPhase;
     this.phaseAwakeningTimer = 0.85;
-    this.phaseAwakeningLabel = nextPhase === 3 ? 'FAZ III • AŞIRI YÜK!' : 'FAZ II • EVRİM!';
+    this.phaseAwakeningLabel =
+      customLabel ?? (nextPhase === 3 ? 'FAZ III • AŞIRI YÜK!' : 'FAZ II • ÖFKE!');
 
-    // Fairness guarantee: wipe mid-air bullets during awakening slow-mo so player can read new phase
     this.projectiles.clearEnemyBullets();
     SoundEngine.playBossHit(false);
     NativeBridge.hapticPolygonShatter(22);
-    this.particles.triggerShake(10, 0.34);
+    this.particles.triggerShake(9, 0.3);
 
     const phaseSpec = this.currentWaveSpec.phases[nextPhase];
     const newlySpawnedBosses: BaseBoss[] = [];
@@ -1350,18 +1733,8 @@ export class GameEngine {
         boss.x,
         boss.y,
         360,
-        nextPhase === 3 ? '#FF3820' : '#FFB028',
-        0.48
-      );
-      this.particles.spawnBurst(
-        boss.x,
-        boss.y,
-        28,
-        nextPhase === 3 ? '#FF3820' : PALETTE.CUT_ORANGE,
-        70,
-        250,
-        7,
-        0.42
+        nextPhase === 3 ? '#EF4444' : '#F59E0B',
+        0.46
       );
 
       if (boss instanceof CentipedeBoss && nextPhase === 2) {
@@ -1369,28 +1742,19 @@ export class GameEngine {
         for (const pt of debris) {
           this.particles.spawnBurst(pt.x, pt.y, 8, '#FFD040', 55, 180, 5, 0.34);
         }
-        if (debris.length > 0) {
-          this.phaseAwakeningLabel = 'KABUK KIRILDI • KIZIL PARAZİT!';
-        }
       } else if (boss instanceof LobsterMechaBoss && nextPhase === 2) {
-        const dropped = boss.triggerShellDrop({
+        boss.triggerShellDrop({
           spawnSolidObstacle: (p) => this.spawnPermanentShellObstacle(p)
         });
-        if (dropped) {
-          this.phaseAwakeningLabel = 'ZIRH BIRAKILDI • MAKAS HÜCUMU!';
-        }
       } else if (boss instanceof CyberSkullBoss && nextPhase === 2) {
         if (boss.triggerLastStand(10.0)) {
-          this.phaseAwakeningTimer = 1.5;
-          this.phaseAwakeningLabel = 'SON DİRENİŞ: 10 SN VEYA %90!';
+          this.phaseAwakeningTimer = 1.4;
+          this.phaseAwakeningLabel = 'SON DİRENİŞ • 10 SN!';
         }
       } else if (boss instanceof AlienBrainBoss && nextPhase === 2) {
-        const spawned = boss.detachArmorSawBlades({
+        boss.detachArmorSawBlades({
           summonMinion: (m) => newlySummonedMinions.push(m)
         });
-        if (spawned > 0) {
-          this.phaseAwakeningLabel = 'TESTERE KAPAKLAR SERBEST!';
-        }
       } else if (
         boss instanceof AlienBrainBoss &&
         nextPhase === 3 &&
@@ -1424,6 +1788,10 @@ export class GameEngine {
     this.timeSeconds += dt;
     this.particles.update(dt);
 
+    // Enable battery-saving 24 FPS idle pacer ONLY when resting on static menus!
+    const isStaticMenu = this.screen !== 'PLAYING' && this.screen !== 'REWARDED_AD_SIM';
+    this.gameLoop.setLowPowerIdleCandidate(isStaticMenu);
+
     if (this.roundIntroTimer > 0) {
       this.roundIntroTimer = Math.max(0, this.roundIntroTimer - dt);
     }
@@ -1450,21 +1818,25 @@ export class GameEngine {
       return;
     }
 
-    const input = this.input.poll(dt);
-    this.lastInputSnapshot = input;
+    const rawInput = this.input.poll(dt);
+    this.lastInputSnapshot = rawInput;
 
-    if (input.debugSectorSelect !== null && import.meta.env.DEV) {
-      this.startEndlessRun(input.debugSectorSelect);
+    if (rawInput.debugSectorSelect !== null && import.meta.env.DEV) {
+      this.startRunSession(rawInput.debugSectorSelect);
       return;
     }
 
-    if (input.pauseJustPressed) {
+    if (rawInput.pauseJustPressed) {
       if (this.screen === 'PLAYING') {
         this.screen = 'PAUSED';
+        this.polishController.isPaused = true;
         SoundEngine.stopLaserCutLoop();
+        this.persistV15State();
         return;
       } else if (this.screen === 'PAUSED') {
+        this.polishController.requestSmoothResume();
         this.screen = 'PLAYING';
+        this.gameLoop.resetTiming();
         return;
       }
     }
@@ -1474,15 +1846,79 @@ export class GameEngine {
       return;
     }
 
-    const save = StorageService.getCurrent();
-    const diff = DIFFICULTIES[save.difficulty];
-    const spec = this.currentWaveSpec;
-
-    if (this.trapEnrageTimer > 0) {
-      this.trapEnrageTimer = Math.max(0, this.trapEnrageTimer - dt);
+    // 1.2s Gentle Resume Breath (`"HAZIR..."`) after returning from Pause / Background!
+    this.polishController.isPaused = false;
+    if (!this.polishController.stepResumeCountdown(dt)) {
+      SoundEngine.stopLaserCutLoop();
+      return;
     }
 
-    // 1. Step Build 12 Power-Up & Juice Timers + Calibrated Player Cutting Speed + 10px Auto-Close Snap
+    const save = StorageService.getCurrent();
+    const diff = DIFFICULTIES[save.difficulty];
+    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
+    const diffSpec = HONEST_DIFFICULTIES_V15[runDiff];
+    const spec = this.currentWaveSpec;
+
+    // 115ms Corner Turn Buffer + 180-Degree Self-Reverse Guard (`EndUserPolishControllerV15`)
+    const nowMs = this.timeSeconds * 1000;
+    const isCuttingNow = this.ship.state === 'CUTTING';
+    const currentCardinal: CardinalDir | null = isCuttingNow
+      ? (this.ship.cutDirection as CardinalDir)
+      : null;
+
+    let effectiveDir = rawInput.direction;
+    if (rawInput.direction) {
+      const hadSwipeHint = this.polishController.showFirstLaunchSwipeHint;
+      effectiveDir = this.polishController.queueDirectionInput(
+        rawInput.direction as CardinalDir,
+        currentCardinal,
+        isCuttingNow,
+        nowMs
+      );
+      if (hadSwipeHint && !this.polishController.showFirstLaunchSwipeHint) {
+        save.v15Store.hasSeenSwipeHint = true;
+        void StorageService.save();
+      }
+    } else {
+      const buffered = this.polishController.consumeBufferedDirection(nowMs);
+      if (buffered) {
+        effectiveDir = buffered;
+      }
+    }
+    const input: InputState =
+      effectiveDir === rawInput.direction ? rawInput : { ...rawInput, direction: effectiveDir };
+
+    // Honest Difficulty Parameters (`HonestDifficultyGovernorV15` — zero secret softening on Hard!)
+    const speedPerkBonus = (this.endlessPerkStacks.get('FAST_ENGINE') ?? 0) * 0.15;
+    const stageParams = this.honestGovernor.resolveStageParameters({
+      mode: this.activeGameMode,
+      stageOrWave: this.currentWave,
+      difficulty: runDiff,
+      capturedPercent: this.claimedPercent,
+      playerSpeedPerkBonusRatio: speedPerkBonus
+    });
+
+    this.projectiles.governorCaps = {
+      maxActiveEnemyBullets: stageParams.maxActiveBullets,
+      maxBulletSpeedPx: stageParams.bulletSpeedPx,
+      minDodgeGapPx: diffSpec.minBulletCorridorGapPx
+    };
+
+    if (this.comboTimer > 0) {
+      this.comboTimer = Math.max(0, this.comboTimer - dt);
+      if (this.comboTimer <= 0) {
+        this.comboCount = 1;
+      }
+    }
+    if (this.grazeCooldownTimer > 0) {
+      this.grazeCooldownTimer = Math.max(0, this.grazeCooldownTimer - dt);
+    }
+
+    if (this.crushSlowTimer > 0) {
+      this.crushSlowTimer = Math.max(0, this.crushSlowTimer - dt);
+    }
+
+    // Step Power-Up & Juice Timers + Calibrated Player Cutting Speed
     this.juiceSystem.stepTimers(dt);
     if (this.juiceSystem.powerState.laserCannonRemainingSec > 0) {
       this.ship.laserTimer = Math.max(
@@ -1500,18 +1936,20 @@ export class GameEngine {
     const isActivelyCutting =
       this.ship.state === 'CUTTING' || Boolean(input.carveHeld || input.autoCarveSwipe);
     if (isActivelyCutting) {
-      const calibratedCutRatio = this.currentLevelPlan.playerCutSpeedPxPerSec / BASE_CUT_SPEED;
-      const turboBoost = this.juiceSystem.powerState.speedBoostRemainingSec > 0 ? 1.6 : 1.0;
-      const hazardSlow = inWebZone ? 0.58 : inFrostZone ? 0.72 : 1.0;
+      const calibratedCutRatio = stageParams.playerSpeedPx / BASE_CUT_SPEED;
+      const turboBoost = this.juiceSystem.powerState.speedBoostRemainingSec > 0 ? 1.55 : 1.0;
+      const hazardSlow = inWebZone ? 0.6 : inFrostZone ? 0.74 : 1.0;
       this.ship.speedMultiplier = Math.max(
-        0.42,
+        0.45,
         savedSpeedMult * calibratedCutRatio * turboBoost * hazardSlow
       );
     }
     let completedCut = this.ship.update(dt, input, this.activePolygon, this.activeBarriers);
     this.ship.speedMultiplier = savedSpeedMult;
 
-    // Build 12 Ergonomic Upgrade: 10px Wall Auto-Close Magnet (`10px Duvar Tamamlama Mıknatısı`)
+    // Ergonomic Wall Auto-Close Magnet (`14px / 11px / 9px` + `WIDE_SNAP` perk)
+    const wideSnapBonus = (this.endlessPerkStacks.get('WIDE_SNAP') ?? 0) * 5;
+    const maxWallSnapPx = Math.round(diffSpec.wallSnapClosePx + wideSnapBonus);
     if (
       !completedCut &&
       this.ship.state === 'CUTTING' &&
@@ -1521,7 +1959,7 @@ export class GameEngine {
       const trailNow = this.ship.getActiveTrail();
       const dirVec = DIR_VECTORS[this.ship.cutDirection];
       const allRects = this.getAllSolidRects();
-      for (let snapDist = 2; snapDist <= 10; snapDist += 2) {
+      for (let snapDist = 2; snapDist <= maxWallSnapPx; snapDist += 2) {
         const probe = {
           x: this.ship.x + dirVec.dx * snapDist,
           y: this.ship.y + dirVec.dy * snapDist
@@ -1545,28 +1983,29 @@ export class GameEngine {
 
     if (this.ship.state === 'CUTTING') {
       this.activeCutDurationSec += dt;
-      if (
-        this.juiceSystem.powerState.speedBoostRemainingSec > 0 &&
-        Math.floor(this.timeSeconds * 30) % 2 === 0
-      ) {
-        this.particles.spawnBurst(this.ship.x, this.ship.y, 2, '#FFE048', 25, 85, 4, 0.18);
-      }
     } else {
       this.activeCutDurationSec = 0;
     }
 
-    // Direct touch collection of Field Power Crystals while cutting across them
-    for (let ci = this.juiceSystem.crystals.length - 1; ci >= 0; ci--) {
-      const crys = this.juiceSystem.crystals[ci]!;
-      if (Math.hypot(crys.pos.x - this.ship.x, crys.pos.y - this.ship.y) <= 26) {
-        this.juiceSystem.crystals.splice(ci, 1);
-        this.applyFieldCrystalEffect(crys.type, crys.pos.x, crys.pos.y);
-      }
+    const movedDist = Math.hypot(this.ship.x - prevX, this.ship.y - prevY);
+    if (
+      this.ship.state === 'CUTTING' &&
+      movedDist > 0.4 &&
+      this.comboCount >= 2 &&
+      Math.floor(this.timeSeconds * 60) % 4 === 0
+    ) {
+      this.particles.spawnBurst(
+        this.ship.x,
+        this.ship.y,
+        2,
+        this.comboCount >= 4 ? '#FF7848' : '#FFE058',
+        25,
+        85,
+        3.5,
+        0.14
+      );
     }
 
-    const movedDist = Math.hypot(this.ship.x - prevX, this.ship.y - prevY);
-
-    // ShieldSapper (`3.0x` shield drain on border) + ElectricMedusa `StaticBorderArc` border hazard
     if (this.ship.state === 'ON_BORDER') {
       const hasLatchedSapper = this.minions.some((m) => m.alive && m.isLatchedToBorder);
       if (hasLatchedSapper && this.ship.shieldLockTimer <= 0 && this.ship.shieldTimer > 0) {
@@ -1591,6 +2030,13 @@ export class GameEngine {
 
     if (this.ship.turnedCornerThisStep) {
       SoundEngine.playCornerClick();
+      if (this.ship.state === 'CUTTING') {
+        this.particles.spawnBurst(this.ship.x, this.ship.y, 4, '#FFE878', 35, 115, 4, 0.16);
+        const ghostStacks = this.endlessPerkStacks.get('GHOST_CORNER') ?? 0;
+        if (ghostStacks > 0) {
+          this.ship.invulnerableTimer = Math.max(this.ship.invulnerableTimer, 0.5 * ghostStacks);
+        }
+      }
     }
 
     if (this.boxContactSfxCooldown > 0) {
@@ -1600,7 +2046,6 @@ export class GameEngine {
     if (this.ship.boxContactThisStep && this.boxContactSfxCooldown <= 0) {
       this.boxContactSfxCooldown = 0.35;
       SoundEngine.playCornerClick();
-      this.particles.spawnBurst(this.ship.x, this.ship.y, 2, '#FFF0A0', 30, 90, 4, 0.16);
       const touched = this.getActiveSolidBoxes().find(
         (b) =>
           Math.abs(b.x - this.ship.x) <= SOLID_BOX_HALF + 12 &&
@@ -1609,7 +2054,7 @@ export class GameEngine {
       if (touched) touched.contactFlash = 0.22;
     }
 
-    // V7 Law 2 + Audio Signature 1: Burglar-Alarm Shield Tick ONLY while `ON_BORDER`; silenced in `CUTTING`!
+    // Border Shield Audio Warning while `ON_BORDER`
     if (this.ship.state === 'ON_BORDER') {
       const shieldUnitsNow = this.ship.getShieldUnits();
       if (this.ship.isShieldInZeroWarning()) {
@@ -1631,7 +2076,7 @@ export class GameEngine {
       this.shieldPulseTimer = 0.25;
     }
 
-    // V7 Law 4: Cumulative Mid-Cut Stall Spark (`4.0s` KOLAY / `2.0s` ORTA / `0.9s` ZOR)
+    // Mid-Cut Stall Spark
     if (this.ship.state === 'CUTTING') {
       if (movedDist > 0.25) {
         SoundEngine.playLaserCutLoop(this.ship.getActiveTrailLength(), this.ship.isBacktracking);
@@ -1663,7 +2108,6 @@ export class GameEngine {
       }
     }
 
-    // Auto-Fire Twin Laser (`L`) or 3-Way Super Plasma (`★`) while on safe border
     const weaponReady = this.ship.canFireWeapon(dt);
     if (weaponReady) {
       const inwardDir = this.ship.getInwardBorderDirection(this.activePolygon);
@@ -1682,17 +2126,27 @@ export class GameEngine {
       }
     }
 
-    // Check Rare Group C Boss Phase Awakening (`FAZ II` / `FAZ III`)
-    const resolvedPhase = this.endlessDirector.resolveActivePhase(
-      this.claimedPercent,
-      this.getPrimaryBossHpRatio(),
-      this.currentWaveSpec
-    );
-    if (resolvedPhase > this.activeCombatPhase && this.getPrimaryBosses().some((b) => b.alive)) {
-      this.triggerBossPhaseAwakening(resolvedPhase);
+    // Hard Mode Phase-2 Boss Enrage at >= 50% area OR Rare Boss Phase Evolution (`FAZ II`)
+    if (
+      stageParams.isBossEnraged &&
+      !this.hardEnrageTriggeredThisStage &&
+      this.getPrimaryBosses().some((b) => b.alive)
+    ) {
+      this.hardEnrageTriggeredThisStage = true;
+      if (this.activeCombatPhase < 2) {
+        this.triggerBossPhaseAwakening(2, 'FAZ II • ÖFKE!');
+      }
+    } else {
+      const resolvedPhase = this.endlessDirector.resolveActivePhase(
+        this.claimedPercent,
+        this.getPrimaryBossHpRatio(),
+        this.currentWaveSpec
+      );
+      if (resolvedPhase > this.activeCombatPhase && this.getPrimaryBosses().some((b) => b.alive)) {
+        this.triggerBossPhaseAwakening(resolvedPhase);
+      }
     }
 
-    // Update homing Power-Up Capsules (`S`, `T`, `P`, `L`, `C`, `★`)
     if (this.capsules.length > 0) {
       for (const cap of this.capsules) {
         if (!cap.alive) continue;
@@ -1704,7 +2158,6 @@ export class GameEngine {
       this.capsules = this.capsules.filter((c) => c.alive);
     }
 
-    // Periodic Mystery Wall Block Spawner on early/medium threat waves while ship is safely on border
     if (spec.threatIndex < 6.5 && this.ship.state === 'ON_BORDER') {
       this.dynamicPodTimer -= dt;
       if (this.dynamicPodTimer <= 0) {
@@ -1716,13 +2169,6 @@ export class GameEngine {
       }
     }
 
-    // Periodic Build 12 Collectible Field Power Crystal Spawner (`11s / 14s / 16s`)
-    this.crystalDropTimer -= dt;
-    if (this.crystalDropTimer <= 0) {
-      this.crystalDropTimer = this.currentLevelPlan.powerUpDropIntervalSec;
-      this.trySpawnFieldPowerCrystal();
-    }
-
     const timeFrozen =
       this.timeFreezeTimer > 0 || this.juiceSystem.powerState.timeFreezeRemainingSec > 0;
     if (this.timeFreezeTimer > 0) {
@@ -1731,10 +2177,11 @@ export class GameEngine {
 
     const activeTrail = this.ship.getActiveTrail();
     const enemyDt = this.phaseAwakeningTimer > 0 ? dt * 0.28 : dt;
-    const crowdingDamp = computeCrowdingSpeedDampener(this.claimedPercent);
-    const bossEffectiveScale = this.currentLevelPlan.bossSpeedScale * crowdingDamp;
+    const crushSlowMult = this.crushSlowTimer > 0 ? 0.58 : 1.0;
+    const maxBossSpeedNow = stageParams.bossSpeedPx * crushSlowMult;
+    const maxMinionSpeedNow = stageParams.minionSpeedPx * crushSlowMult;
+    const bossEffectiveScale = (maxBossSpeedNow / 155) * crushSlowMult;
 
-    // 3. Update 24 Fixed-Campaign Bosses & 18 Autonomous Minions (`AutonomousMinionEcology`)
     if (!timeFrozen) {
       this.waveElapsedSec += enemyDt;
       const spawnedMinions: InteriorMinion[] = [];
@@ -1748,16 +2195,16 @@ export class GameEngine {
         for (let s = 0; s < readySeekers; s++) {
           if (
             hostBoss &&
-            this.minions.filter((m) => m.alive).length + spawnedMinions.length < 6
+            this.minions.filter((m) => m.alive).length + spawnedMinions.length <
+              stageParams.minionCount
           ) {
             spawnedMinions.push(
               new HomingSeekerMinion(
                 { x: hostBoss.x, y: hostBoss.y },
-                156,
+                maxMinionSpeedNow,
                 (this.timeSeconds + s) * 2.1
               )
             );
-            this.particles.spawnShockwave(hostBoss.x, hostBoss.y, 90, '#48E8FF', 0.24);
           }
         }
       }
@@ -1774,22 +2221,21 @@ export class GameEngine {
           playerState: this.ship.state,
           activeTrail,
           speedScale: bossEffectiveScale,
-          telegraphLeadSec: this.currentLevelPlan.telegraphLeadSec,
+          maxBossSpeedPx: maxBossSpeedNow,
+          minVolleyCooldownSec: stageParams.volleyCooldownSec,
+          telegraphLeadSec: stageParams.telegraphLeadSec,
           aimMode: spec.rules.bossAimMode,
           projectiles: this.projectiles,
           summonMinion: (m) => spawnedMinions.push(m),
           spawnSolidObstacle: (pos) => this.spawnPermanentShellObstacle(pos),
           spawnEscortBoss: (escort) => {
             spawnedEscortBosses.push(escort);
-            this.phaseAwakeningLabel = 'HİDRA BAŞI KOPTU!';
-            this.phaseAwakeningTimer = 1.15;
-            this.particles.spawnShockwave(escort.x, escort.y, 240, '#FF4838', 0.36);
+            this.particles.spawnShockwave(escort.x, escort.y, 240, '#EF4444', 0.36);
           },
           hazards: this.hazards,
           currentMinionCount: this.minions.length + spawnedMinions.length
         });
 
-        // CyberTitanSkull Last Stand survival completion (`10.0s` survived OR `>= 90%` claimed!)
         if (boss instanceof CyberSkullBoss && boss.inLastStand && boss.lastStandCompleted) {
           this.triggerLevelVictory('AREA_THRESHOLD');
           return;
@@ -1834,7 +2280,6 @@ export class GameEngine {
         return;
       }
 
-      // Build 12 Autonomous Minion Ecology: ZERO border-camping, continuous organic free-roam!
       const primaryBossAlive =
         this.getPrimaryBosses().find((b) => b.alive) ?? this.bosses.find((b) => b.alive);
       const bossCenter = primaryBossAlive
@@ -1892,6 +2337,9 @@ export class GameEngine {
         stateById.set(st.id, st);
       }
 
+      const shockTrailStacks = this.endlessPerkStacks.get('SHOCK_TRAIL') ?? 0;
+      const shockRange = shockTrailStacks > 0 ? 34 + shockTrailStacks * 12 : 0;
+
       for (const m of this.minions) {
         if (!m.alive || !m.autonomousId) continue;
         const st = stateById.get(m.autonomousId);
@@ -1902,6 +2350,28 @@ export class GameEngine {
         m.isBorderSparkActive = false;
         m.isPetrifiedObstacle = false;
         m.isTimeFrozen = st.frozenTimerSec > 0;
+
+        const rawMspd = Math.hypot(st.vel.x, st.vel.y);
+        if (rawMspd > maxMinionSpeedNow && rawMspd > 0.001) {
+          const r = maxMinionSpeedNow / rawMspd;
+          st.vel.x *= r;
+          st.vel.y *= r;
+        }
+
+        if (shockRange > 0 && this.ship.state === 'CUTTING' && activeTrail.length >= 2) {
+          const proj = projectPointToPolyline({ x: st.pos.x, y: st.pos.y }, activeTrail);
+          if (proj.distance < shockRange + m.radius) {
+            const rx = st.pos.x - proj.point.x;
+            const ry = st.pos.y - proj.point.y;
+            const rLen = Math.hypot(rx, ry) || 1;
+            st.pos.x = proj.point.x + (rx / rLen) * (shockRange + m.radius + 8);
+            st.pos.y = proj.point.y + (ry / rLen) * (shockRange + m.radius + 8);
+            st.vel.x = (rx / rLen) * maxMinionSpeedNow;
+            st.vel.y = (ry / rLen) * maxMinionSpeedNow;
+            this.particles.spawnBurst(proj.point.x, proj.point.y, 3, '#60A5FA', 35, 95, 4, 0.14);
+          }
+        }
+
         m.x = st.pos.x;
         m.y = st.pos.y;
         m.vx = st.vel.x;
@@ -1920,7 +2390,7 @@ export class GameEngine {
       if (spawnedMinions.length > 0) {
         const aliveNow = this.minions.filter((m) => m.alive).length;
         for (const sm of spawnedMinions) {
-          if (aliveNow + 1 > 6) break;
+          if (aliveNow + 1 > stageParams.minionCount) break;
           this.minions.push(sm);
           this.attachAutonomousMinion(sm, this.currentLevelPlan.minionSpeedScale);
         }
@@ -1948,7 +2418,7 @@ export class GameEngine {
           enemyDt,
           this.activePolygon,
           { x: this.ship.x, y: this.ship.y },
-          this.currentLevelPlan.minionSpeedScale * crowdingDamp
+          maxMinionSpeedNow / 130
         );
       }
 
@@ -1979,7 +2449,6 @@ export class GameEngine {
       }
     }
 
-    // 4. Update Projectiles & Check Collisions (including Bullet-vs-Trail Electric Shock!)
     this.projectiles.update(enemyDt, this.activePolygon, timeFrozen, {
       x: this.ship.x,
       y: this.ship.y
@@ -2015,7 +2484,7 @@ export class GameEngine {
   }
 
   private trySpawnDynamicMysteryPod(): void {
-    const pool: PowerUpType[] = ['S', 'P', 'L', 'C'];
+    const pool: PowerUpType[] = ['S', 'P', 'L', 'T', 'C'];
     const chosen = pool[Math.floor(Math.random() * pool.length)];
 
     for (let attempt = 0; attempt < 24; attempt++) {
@@ -2063,7 +2532,6 @@ export class GameEngine {
     this.hesitationFuseLit = false;
     this.activeCutDurationSec = 0;
 
-    // Measure closest enemy/bullet distance to the closing trail for Close-Call (+600) reward!
     let nearestEnemyDistAtClosePx = 999;
     if (trail.length >= 2) {
       for (const eb of this.projectiles.enemyBullets) {
@@ -2119,7 +2587,6 @@ export class GameEngine {
         SoundEngine.playBossHit(false);
         this.particles.spawnShockwave(boss.x, boss.y, 320, '#FFE058', 0.42);
         this.particles.spawnBurst(boss.x, boss.y, 28, PALETTE.CUT_ORANGE, 70, 240, 7, 0.4);
-        this.particles.spawnFloatingText(boss.x, boss.y, '+20000', '#FFD040', 26);
         continue;
       }
       boss.onPolygonShrunk(this.activePolygon);
@@ -2140,18 +2607,42 @@ export class GameEngine {
     }
 
     if (percentDelta >= 25.0) {
+      this.megaCutsThisLevel += 1;
       this.tryUnlockAchievement('MEGA_SLICE');
     }
 
+    // Arcade Combo Chain (`KOMBO x2`..`x5`): 7.5s momentum window on cuts >= 3%
+    if (percentDelta >= 3.0) {
+      if (this.comboTimer > 0) {
+        this.comboCount = Math.min(5, this.comboCount + (percentDelta >= 18 ? 2 : 1));
+      } else {
+        this.comboCount = percentDelta >= 16 ? 2 : 1;
+      }
+      this.comboTimer = 7.5;
+      this.maxComboThisLevel = Math.max(this.maxComboThisLevel, this.comboCount);
+    }
+
     const cutScore = ScoreSystem.computeCutScore(percentDelta, diffMultiplier);
-    this.addScore(cutScore.points);
-    this.particles.spawnFloatingText(
-      this.ship.x,
-      this.ship.y - 26,
-      `+${cutScore.points}`,
-      cutScore.isBigCut ? '#FFD040' : '#FFFFFF',
-      cutScore.isBigCut ? 28 : 22
-    );
+    const totalCutPoints = Math.round(cutScore.points * this.comboCount);
+    this.addScore(totalCutPoints);
+
+    if (percentDelta >= 25.0) {
+      this.spawnSafeArenaText(
+        this.ship.x,
+        this.ship.y - 38,
+        `DEV KESİM! %${Math.round(percentDelta)}`,
+        '#FFE058',
+        26
+      );
+    } else if (this.comboCount >= 2 && percentDelta >= 3.5) {
+      this.spawnSafeArenaText(
+        this.ship.x,
+        this.ship.y - 34,
+        `KOMBO x${this.comboCount}! +${totalCutPoints}`,
+        this.comboCount >= 4 ? '#FF7848' : '#FFE058',
+        23
+      );
+    }
 
     let trappedCount = 0;
     let vortexBonusSec = 0;
@@ -2159,22 +2650,12 @@ export class GameEngine {
       if (!m.alive) continue;
       if (!pointInPolygonStrict(m.position, this.activePolygon)) {
         m.alive = false;
-        const comboPts = ScoreSystem.computeMinionTrapScore(trappedCount);
+        const comboPts = ScoreSystem.computeMinionTrapScore(trappedCount) * this.comboCount;
         trappedCount++;
         this.addScore(comboPts);
         this.particles.spawnBurst(m.x, m.y, 18, PALETTE.CUT_ORANGE, 60, 220, 6, 0.34);
-        this.particles.spawnFloatingText(m.x, m.y, `+${comboPts}`, '#FFD040', 22);
-        if (m.speciesId === 'SHIELD_SAPPER') {
-          const restoreSec =
-            (80 / Math.max(1, this.ship.maxShieldUnits)) * this.ship.maxShieldDuration;
-          this.ship.shieldTimer = Math.min(
-            this.ship.maxShieldDuration,
-            this.ship.shieldTimer + restoreSec
-          );
-          this.particles.spawnFloatingText(m.x, m.y - 26, '+80 KALKAN', '#28E038', 22);
-        } else if (m.speciesId === 'VORTEX_DRIFTER') {
-          vortexBonusSec += 5;
-          this.particles.spawnFloatingText(m.x, m.y - 26, '+5 SN KALKAN!', '#58F8D8', 22);
+        if (m.synergyTrait === 'SHIELD_BUBBLE' || m.speciesId === 'VORTEX_DRIFTER') {
+          vortexBonusSec += 4;
         }
       }
     }
@@ -2183,11 +2664,18 @@ export class GameEngine {
     this.autonomousMinionStates = this.autonomousMinionStates.filter((st) =>
       remainingIds.has(st.id)
     );
+    if (trappedCount > 0) {
+      this.crushedMinionsThisLevel += trappedCount;
+      const crushSlowStacks = this.endlessPerkStacks.get('CRUSH_SLOW') ?? 0;
+      if (crushSlowStacks > 0) {
+        this.crushSlowTimer = 2.2 * crushSlowStacks;
+        this.particles.spawnShockwave(this.ship.x, this.ship.y, 340, '#F43F5E', 0.34);
+      }
+    }
     if (trappedCount >= 3) {
       this.tryUnlockAchievement('COMBO_HUNTER');
     }
 
-    // Build 12 Juice Rewards: Mega Cut, Minion Crush Combo (+3s shield each) & Close-Call (+600)!
     const juiceRewards = this.juiceSystem.computeCutRewards(
       percentDelta,
       trappedCount,
@@ -2206,24 +2694,6 @@ export class GameEngine {
     if (juiceRewards.triggerHitStopMs > 0) {
       this.gameLoop.triggerHitStop(Math.min(0.095, juiceRewards.triggerHitStopMs / 1000));
     }
-    for (let ci = 0; ci < juiceRewards.calloutsTr.length; ci++) {
-      this.particles.spawnFloatingText(
-        this.ship.x,
-        Math.max(90, this.ship.y - 58 - ci * 32),
-        juiceRewards.calloutsTr[ci]!,
-        '#58F8FF',
-        23
-      );
-    }
-
-    // Collect any Field Power Crystals (`❄️`, `⚡`, `🛡️`, `🔫`) enclosed inside the claimed polygon!
-    for (let ci = this.juiceSystem.crystals.length - 1; ci >= 0; ci--) {
-      const crys = this.juiceSystem.crystals[ci]!;
-      if (!pointInPolygonStrict(crys.pos, this.activePolygon)) {
-        this.juiceSystem.crystals.splice(ci, 1);
-        this.applyFieldCrystalEffect(crys.type, crys.pos.x, crys.pos.y);
-      }
-    }
 
     this.hazards.pruneOutsidePolygon(this.activePolygon);
 
@@ -2233,61 +2703,67 @@ export class GameEngine {
       }
     }
 
+    let enclosedBoxesThisCut = 0;
+    let earnedBoxJeton = 0;
+    const jetonMult = this.jetonStore.hasPermanentDoubleJeton ? 2 : 1;
+
     for (const box of this.powerBoxes) {
       if (box.collected) continue;
       if (!pointInPolygonStrict(box.center, this.activePolygon)) {
-        // V7 Law 6: Disappearing block enclosed while invisible grants NOTHING!
         const materializedAtCut = box.isMaterialized(this.timeSeconds);
         box.collected = true;
-        if (!materializedAtCut) {
-          this.particles.spawnFloatingText(box.x, box.y, 'BOŞ', '#8A98B4', 20);
-          continue;
-        }
+        if (!materializedAtCut) continue;
+
+        enclosedBoxesThisCut += 1;
 
         if (box.blockKind === 'ARMOR_PILLAR') {
-          this.addScore(ARMOR_PILLAR_BONUS);
+          const pts = ARMOR_PILLAR_BONUS * this.comboCount;
+          this.addScore(pts);
           this.particles.spawnBurst(box.x, box.y, 18, '#C8D2E4', 55, 200, 7, 0.32);
-          this.particles.spawnFloatingText(box.x, box.y, `+${ARMOR_PILLAR_BONUS}`, '#FFFFFF', 22);
+          this.spawnSafeArenaText(box.x, box.y - 24, `ZIRH +${pts}`, '#DCE6F4', 22);
           continue;
         }
 
         if (box.blockKind === 'SPECIAL_STAGE_1_RED') {
-          this.addScore(4_000);
+          this.addScore(4_000 * this.comboCount);
           this.particles.spawnBurst(box.x, box.y, 20, '#FF4838', 65, 210, 6, 0.34);
-          this.particles.spawnFloatingText(box.x, box.y, 'ALTIN BLOK AÇILDI!', '#FFE048', 22);
+          this.spawnSafeArenaText(box.x, box.y - 24, 'ALTIN KUTU AÇILDI!', '#FFE048', 24);
           this.spawnStage2GoldSpecialBlock();
           continue;
         }
 
         if (box.rewardType === 'EMPTY_POINTS') {
-          this.addScore(EMPTY_BLOCK_POINTS_BONUS);
-          this.particles.spawnBurst(box.x, box.y, 12, '#FFE068', 50, 170, 5, 0.26);
-          this.particles.spawnFloatingText(
+          const vaultJeton = 5 * jetonMult;
+          earnedBoxJeton += vaultJeton;
+          this.addScore(EMPTY_BLOCK_POINTS_BONUS * this.comboCount);
+          this.particles.spawnShockwave(box.x, box.y, 140, '#FFE058', 0.3);
+          this.particles.spawnBurst(box.x, box.y, 16, '#FFE068', 55, 185, 5.5, 0.28);
+          this.spawnSafeArenaText(
             box.x,
-            box.y,
-            `+${EMPTY_BLOCK_POINTS_BONUS}`,
-            '#FFE068',
-            22
+            box.y - 24,
+            `+${vaultJeton} JETON!`,
+            '#FFE058',
+            24
           );
           continue;
         }
 
         if (box.rewardType === 'ENRAGE_TRAP') {
-          this.addScore(2_000);
-          this.trapEnrageTimer = 3.5;
+          this.addScore(3_000 * this.comboCount);
           this.particles.spawnShockwave(box.x, box.y, 150, '#FF2838', 0.32);
-          this.particles.spawnFloatingText(box.x, box.y, 'TUZAK • SÜRÜ ÖFKESİ!', '#FF3848', 22);
+          this.spawnSafeArenaText(box.x, box.y - 24, 'TUZAK KUTU! +3000', '#FF6858', 22);
           continue;
         }
 
         const resolved = box.resolveType(this.timeSeconds);
         if (resolved === 'ARMOR_PILLAR') {
-          this.addScore(ARMOR_PILLAR_BONUS);
+          this.addScore(ARMOR_PILLAR_BONUS * this.comboCount);
           continue;
         }
         const collectible: CollectiblePowerUpType = resolved;
         const blockPts =
-          collectible === 'BOSS_CANNON' ? ScoreSystem.computeSpecialBlockBonus() : 1000;
+          (collectible === 'BOSS_CANNON' ? ScoreSystem.computeSpecialBlockBonus() : 1000) *
+          this.comboCount;
         this.addScore(blockPts);
         this.particles.spawnBurst(
           box.x,
@@ -2301,6 +2777,25 @@ export class GameEngine {
         );
         this.capsules.push(new PowerUpCapsule({ x: box.x, y: box.y }, collectible));
       }
+    }
+
+    if (enclosedBoxesThisCut >= 2) {
+      const multiBoxJeton = 8 * jetonMult;
+      earnedBoxJeton += multiBoxJeton;
+      this.addScore(4_000 * enclosedBoxesThisCut);
+      this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#FFE058', 0.38);
+      this.spawnSafeArenaText(
+        this.ship.x,
+        this.ship.y - 54,
+        `ÇİFTE KUTU! +${multiBoxJeton} JETON`,
+        '#FFE058',
+        25
+      );
+    }
+
+    if (earnedBoxJeton > 0) {
+      this.jetonStore.jetonBalance += earnedBoxJeton;
+      this.persistV15State();
     }
     this.syncSolidBoxes();
 
@@ -2318,17 +2813,14 @@ export class GameEngine {
     }
 
     if (this.claimedPercent >= this.currentWaveSpec.targetPercent) {
-      // V7 Group C #3 (`CyberTitanSkull`): False Victory / 10-Second Last Stand!
       const skull = this.bosses.find(
         (b): b is CyberSkullBoss =>
           b instanceof CyberSkullBoss && b.alive && b.canEvolveLastStand && !b.lastStandCompleted
       );
       if (skull && this.claimedPercent < 90) {
         if (!skull.inLastStand) {
-          this.triggerBossPhaseAwakening(2);
+          this.triggerBossPhaseAwakening(2, 'SON DİRENİŞ • 10 SN!');
           skull.triggerLastStand(10.0);
-          this.phaseAwakeningLabel = 'SON DİRENİŞ: 10 SN VEYA %90!';
-          this.phaseAwakeningTimer = 1.6;
         }
         return;
       }
@@ -2347,22 +2839,22 @@ export class GameEngine {
     switch (type) {
       case 'S':
         this.ship.applySpeedUp();
-        this.particles.spawnFloatingText(px, py - 24, 'HIZ', '#50E8FF', 26);
+        this.spawnSafeArenaText(px, py - 24, 'HIZ', '#38BDF8', 26);
         break;
       case 'T':
         this.timeFreezeTimer = this.currentWaveSpec.rules.timeFreezeDurationSec;
-        this.particles.spawnFloatingText(px, py - 24, 'DONDUR', '#50E8FF', 26);
+        this.spawnSafeArenaText(px, py - 24, 'DONDUR', '#38BDF8', 26);
         break;
       case 'P':
         this.ship.applyShieldLock();
-        this.particles.spawnFloatingText(px, py - 24, 'KALKAN', '#28E038', 26);
+        this.spawnSafeArenaText(px, py - 24, 'KALKAN', '#10B981', 26);
         break;
       case 'L':
         this.ship.laserTimer = 12.0;
-        this.particles.spawnFloatingText(px, py - 24, 'LAZER', '#FFD040', 26);
+        this.spawnSafeArenaText(px, py - 24, 'LAZER', '#F59E0B', 26);
         break;
       case 'C': {
-        this.particles.spawnShockwave(px, py, 760, '#FFB833', 0.42);
+        this.particles.spawnShockwave(px, py, 760, '#F59E0B', 0.42);
         this.particles.triggerShake(8, 0.22);
         this.projectiles.clearEnemyBullets();
         this.hazards.spaceMines = [];
@@ -2375,19 +2867,18 @@ export class GameEngine {
         }
         this.minions = [];
         this.syncSolidBoxes();
-        this.particles.spawnFloatingText(px, py - 24, 'TEMİZLE', '#FF7810', 26);
+        this.spawnSafeArenaText(px, py - 24, 'TEMİZLE', '#F59E0B', 26);
         break;
       }
       case 'BOSS_CANNON':
         this.ship.bossCannonTimer = 11.0;
-        this.particles.spawnShockwave(px, py, 360, '#FFD040', 0.34);
-        this.particles.spawnFloatingText(px, py - 24, 'SÜPER ATIŞ', '#FFD040', 28);
+        this.particles.spawnShockwave(px, py, 360, '#F59E0B', 0.34);
+        this.spawnSafeArenaText(px, py - 24, 'SÜPER ATIŞ', '#F59E0B', 28);
         break;
     }
   }
 
   private evaluateCombatAndHazards(): void {
-    // 1. Player Twin Lasers (`L`) & 3-Way Super Plasma (`★`) vs Bullets, Minions & Bosses
     for (const bolt of this.projectiles.playerBolts) {
       if (!bolt.active) continue;
 
@@ -2425,7 +2916,6 @@ export class GameEngine {
           m.alive = false;
           this.addScore(400);
           this.particles.spawnBurst(m.x, m.y, 14, PALETTE.CUT_ORANGE, 50, 180, 5.5, 0.3);
-          this.particles.spawnFloatingText(m.x, m.y, '+400', '#FFD040', 20);
           break;
         }
       }
@@ -2464,9 +2954,6 @@ export class GameEngine {
               6,
               0.3
             );
-            if (armoredShell) {
-              this.particles.spawnFloatingText(boss.x, boss.y - 32, 'ZIRH %70', '#FFE278', 20);
-            }
             const destroyed = boss.takeCannonHit();
             if (destroyed) {
               this.particles.spawnShockwave(boss.x, boss.y, 520, '#FFE04C', 0.52);
@@ -2486,18 +2973,10 @@ export class GameEngine {
     }
     this.minions = this.minions.filter((m) => m.alive);
 
-    // 2. V7 Law 4: Enemy Body OR Enemy Projectile Touching `activeTrail` -> Electric Line Shock!
-    // On `ZOR` (`bossHitTrailInstantDetonation === true`), Boss body or Boss bullet (`fromBoss`) detonates in `0ms`!
     const activeTrail = this.ship.getActiveTrail();
-    const instantBossDetonation = this.currentWaveSpec.rules.bossHitTrailInstantDetonation;
     if (this.ship.state === 'CUTTING' && activeTrail.length >= 2 && this.timeFreezeTimer <= 0) {
       const totalTrailLen = this.ship.getActiveTrailLength();
-      const igniteTrailShock = (
-        ex: number,
-        ey: number,
-        er: number,
-        isBossSource: boolean
-      ): boolean => {
+      const igniteTrailShock = (ex: number, ey: number, er: number): boolean => {
         const proj = projectPointToPolyline({ x: ex, y: ey }, activeTrail);
         if (proj.distance <= er + 2.5) {
           SoundEngine.playElectricShock();
@@ -2512,11 +2991,6 @@ export class GameEngine {
             0.24
           );
 
-          if (isBossSource && instantBossDetonation) {
-            this.killPlayerShip();
-            return true;
-          }
-
           const safeInitialArc = Math.min(proj.arcLength, Math.max(0, totalTrailLen - 54));
           const alreadyLit = this.fuses.some((f) => f.arcDistance >= safeInitialArc - 36);
           if (!alreadyLit) {
@@ -2528,13 +3002,12 @@ export class GameEngine {
         return false;
       };
 
-      // Check all Enemy Projectiles against `activeTrail`!
       for (const eb of this.projectiles.enemyBullets) {
         if (!eb.active) continue;
         const proj = projectPointToPolyline({ x: eb.x, y: eb.y }, activeTrail);
         if (proj.distance <= eb.radius + 3) {
           eb.active = false;
-          igniteTrailShock(eb.x, eb.y, eb.radius + 1, eb.fromBoss);
+          igniteTrailShock(eb.x, eb.y, eb.radius + 1);
           if (this.screen !== 'PLAYING' || this.ship.state !== 'CUTTING') {
             return;
           }
@@ -2544,7 +3017,7 @@ export class GameEngine {
       for (const boss of this.bosses) {
         if (!boss.alive) continue;
         for (const c of boss.getHitCircles()) {
-          if (igniteTrailShock(c.x, c.y, c.radius, true)) {
+          if (igniteTrailShock(c.x, c.y, c.radius)) {
             if (this.screen !== 'PLAYING' || this.ship.state !== 'CUTTING') {
               return;
             }
@@ -2554,12 +3027,12 @@ export class GameEngine {
 
       for (const m of this.minions) {
         if (m.alive) {
-          igniteTrailShock(m.x, m.y, m.radius, false);
+          igniteTrailShock(m.x, m.y, m.radius);
         }
       }
 
       for (const pool of this.hazards.magmaPools) {
-        if (igniteTrailShock(pool.x, pool.y, pool.radius * 0.85, false)) {
+        if (igniteTrailShock(pool.x, pool.y, pool.radius * 0.85)) {
           if (this.screen !== 'PLAYING' || this.ship.state !== 'CUTTING') {
             return;
           }
@@ -2568,7 +3041,7 @@ export class GameEngine {
 
       for (let i = this.hazards.spaceMines.length - 1; i >= 0; i--) {
         const mine = this.hazards.spaceMines[i];
-        if (igniteTrailShock(mine.x, mine.y, mine.radius, false)) {
+        if (igniteTrailShock(mine.x, mine.y, mine.radius)) {
           this.hazards.spaceMines.splice(i, 1);
           this.particles.spawnBurst(mine.x, mine.y, 14, '#FF4820', 55, 180, 5, 0.28);
           if (this.screen !== 'PLAYING' || this.ship.state !== 'CUTTING') {
@@ -2577,7 +3050,6 @@ export class GameEngine {
         }
       }
 
-      // TwinNexus electrified tether arc ignites trail along 5 sample points
       if (
         this.bosses.length >= 2 &&
         this.bosses[0] instanceof TwinNexus &&
@@ -2590,7 +3062,7 @@ export class GameEngine {
         const b = this.bosses[1];
         if (Math.hypot(a.x - b.x, a.y - b.y) < 280) {
           for (const t of [0.2, 0.35, 0.5, 0.65, 0.8]) {
-            igniteTrailShock(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, 9, true);
+            igniteTrailShock(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, 9);
             if (this.screen !== 'PLAYING' || this.ship.state !== 'CUTTING') {
               return;
             }
@@ -2599,7 +3071,6 @@ export class GameEngine {
       }
     }
 
-    // 3. Direct Hazards vs Player Ship
     if (this.ship.invulnerableTimer > 0 || this.phaseAwakeningTimer > 0) return;
 
     const shipRadius = 9;
@@ -2617,7 +3088,6 @@ export class GameEngine {
       }
     }
 
-    // BorderSparkCrab (`isBorderSparkActive`) pierces perimeter shield on green wall contact!
     for (const m of this.minions) {
       if (!m.alive || !m.isBorderSparkActive) continue;
       if (Math.hypot(m.x - this.ship.x, m.y - this.ship.y) <= shipRadius + m.radius) {
@@ -2646,7 +3116,10 @@ export class GameEngine {
       }
 
       for (const pool of this.hazards.magmaPools) {
-        if (Math.hypot(pool.x - this.ship.x, pool.y - this.ship.y) <= shipRadius + pool.radius * 0.85) {
+        if (
+          Math.hypot(pool.x - this.ship.x, pool.y - this.ship.y) <=
+          shipRadius + pool.radius * 0.85
+        ) {
           this.killPlayerShip();
           return;
         }
@@ -2661,7 +3134,6 @@ export class GameEngine {
         }
       }
 
-      // TwinNexus Phase 2+ electrified tether vs cutting ship
       if (
         this.activeCombatPhase >= 2 &&
         this.bosses.length >= 2 &&
@@ -2694,17 +3166,68 @@ export class GameEngine {
         if (this.ship.isPerimeterShieldActive()) {
           this.ship.shieldHitFlash = 0.24;
           SoundEngine.playShieldDeflect();
-          this.particles.spawnBurst(eb.x, eb.y, 8, '#28E038', 40, 130, 4, 0.2);
+          this.particles.spawnBurst(eb.x, eb.y, 8, '#10B981', 40, 130, 4, 0.2);
         } else {
           this.killPlayerShip();
           return;
         }
       }
     }
+
+    // Near-Miss ("KIL PAYI!") Graze Mastery while actively cutting in the open void!
+    if (
+      this.ship.state === 'CUTTING' &&
+      this.grazeCooldownTimer <= 0 &&
+      this.timeFreezeTimer <= 0 &&
+      this.juiceSystem.powerState.timeFreezeRemainingSec <= 0
+    ) {
+      let minClearancePx = 999;
+      for (const eb of this.projectiles.enemyBullets) {
+        if (!eb.active) continue;
+        const d = Math.hypot(eb.x - this.ship.x, eb.y - this.ship.y) - (shipRadius + eb.radius);
+        if (d < minClearancePx) minClearancePx = d;
+      }
+      for (const m of this.minions) {
+        if (!m.alive) continue;
+        const d = Math.hypot(m.x - this.ship.x, m.y - this.ship.y) - (shipRadius + m.radius);
+        if (d < minClearancePx) minClearancePx = d;
+      }
+      for (const boss of this.bosses) {
+        if (!boss.alive) continue;
+        for (const hc of boss.getHitCircles()) {
+          const d = Math.hypot(hc.x - this.ship.x, hc.y - this.ship.y) - (shipRadius + hc.radius);
+          if (d < minClearancePx) minClearancePx = d;
+        }
+      }
+
+      if (minClearancePx > 0 && minClearancePx <= 26) {
+        this.grazeCooldownTimer = 1.25;
+        const grazePts = 1500 * this.comboCount;
+        this.addScore(grazePts);
+        this.ship.shieldTimer = Math.min(
+          this.ship.maxShieldDuration * 1.15,
+          this.ship.shieldTimer + 1.5
+        );
+        if (this.comboTimer > 0) {
+          this.comboTimer = Math.min(7.5, this.comboTimer + 1.4);
+        }
+        NativeBridge.hapticPowerUp();
+        this.particles.spawnShockwave(this.ship.x, this.ship.y, 84, '#68F4FF', 0.24);
+        this.particles.spawnBurst(this.ship.x, this.ship.y, 8, '#FFE878', 45, 150, 4.5, 0.22);
+        this.spawnSafeArenaText(
+          this.ship.x,
+          this.ship.y - 30,
+          `KIL PAYI! +${grazePts}`,
+          '#78F8FF',
+          22
+        );
+      }
+    }
   }
 
   private killPlayerShip(): void {
-    // Build 12 Protection: Respawn Invulnerability & 1-Hit Trail Shield Rescue!
+    this.comboCount = 1;
+    this.comboTimer = 0;
     const shieldCheck = this.juiceSystem.resolveIncomingPlayerHit(this.ship.cutStartPoint);
     if (!shieldCheck.playerDied) {
       if (shieldCheck.rewindToPos) {
@@ -2721,17 +3244,7 @@ export class GameEngine {
         this.ship.invulnerableTimer = 1.6;
         SoundEngine.playShieldDeflect();
         NativeBridge.hapticPowerUp();
-        this.particles.spawnShockwave(this.ship.x, this.ship.y, 280, '#38D8FF', 0.4);
-        if (shieldCheck.bannerTextTr) {
-          this.showToast(shieldCheck.bannerTextTr);
-          this.particles.spawnFloatingText(
-            this.ship.x,
-            this.ship.y - 36,
-            shieldCheck.bannerTextTr,
-            '#58E8FF',
-            24
-          );
-        }
+        this.particles.spawnShockwave(this.ship.x, this.ship.y, 280, '#38BDF8', 0.4);
       }
       return;
     }
@@ -2757,20 +3270,29 @@ export class GameEngine {
     this.hazards.staticArcs = [];
     this.projectiles.clearEnemyBullets();
     this.deathsThisLevel += 1;
+    // Honest Difficulty: records death ONLY for Easy/Medium gentle assist; NEVER softens Hard!
+    this.honestGovernor.onPlayerDeath();
     this.lives -= 1;
 
     this.persistRunRecords();
 
     if (this.lives <= 0) {
-      void StorageService.save();
       if (MonetizationService.canOfferSecondChance(this.reviveUsedThisLevel)) {
         void MonetizationService.preloadRewardedRevive();
       }
-      this.screen = 'GAME_OVER';
+      if (
+        !this.reviveUsedThisLevel &&
+        this.jetonStore.canOfferContinueModal(this.claimedPercent, this.currentWave)
+      ) {
+        this.screen = 'CONTINUE_PROMPT';
+        this.persistV15State(null);
+      } else {
+        this.screen = 'GAME_OVER';
+        this.persistV15State(null);
+      }
       return;
     }
 
-    // Same Fixed Stage & Same Boss — Respawn with 3.0s Anti-Spawn-Kill Shockwave (>=145px)!
     this.ship.respawnAtCutStart(this.activePolygon);
     this.ship.invulnerableTimer = 3.0;
     this.juiceSystem.triggerRespawnShockwave(
@@ -2807,10 +3329,11 @@ export class GameEngine {
         boss.y = pushed.y;
       }
     }
-    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#58F8FF', 0.42);
+    this.particles.spawnShockwave(this.ship.x, this.ship.y, 260, '#38BDF8', 0.42);
     this.hazards.spaceMines = this.hazards.spaceMines.filter(
       (m) => Math.hypot(m.x - this.ship.x, m.y - this.ship.y) > 130
     );
+    this.persistV15State();
   }
 
   private triggerLevelVictory(reason: LevelWinReason): void {
@@ -2844,26 +3367,76 @@ export class GameEngine {
       this.claimedPercent >= spec.targetPercent;
 
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
-    const earnedStars = recordLevelCompletion(
-      save.campaignV12,
-      runDiff,
-      this.currentWave,
-      this.claimedPercent,
-      this.deathsThisLevel > 0
-    );
-    save.selectedStageByDifficulty[runDiff] = Math.min(24, this.currentWave + 1);
+    if (this.activeGameMode === 'CAMPAIGN') {
+      const earnedStars = recordLevelCompletion(
+        save.campaignV12,
+        runDiff,
+        Math.min(24, this.currentWave),
+        this.claimedPercent,
+        this.deathsThisLevel > 0
+      );
+      if (this.currentWave > 24) {
+        const starKey = `${runDiff}_${this.currentWave}`;
+        const prevSt = save.campaignV12.starsByLevel[starKey] ?? 0;
+        save.campaignV12.starsByLevel[starKey] = Math.max(prevSt, earnedStars) as 1 | 2 | 3;
+      }
+      const nextUnlocked = Math.min(30, this.currentWave + 1);
+      this.jetonStore.highestUnlockedStage[runDiff] = Math.max(
+        this.jetonStore.highestUnlockedStage[runDiff],
+        nextUnlocked
+      );
+      save.v15Store.highestUnlockedStage[runDiff] = this.jetonStore.highestUnlockedStage[runDiff];
+      save.campaignV12.highestUnlockedLevel[runDiff] =
+        this.jetonStore.highestUnlockedStage[runDiff];
+      save.selectedStageByDifficulty[runDiff] = nextUnlocked;
 
-    const breakdown = ScoreSystem.computeLevelClearBreakdown(
-      reason,
-      this.claimedPercent,
-      this.ship.getShieldUnits(),
-      diff.scoreMultiplier * (1 + (spec.threatIndex - 1) * 0.14),
-      clearedInSingleCut,
-      spec.targetPercent
-    );
-    breakdown.stars = Math.max(breakdown.stars, earnedStars) as 1 | 2 | 3;
-    this.clearBreakdown = breakdown;
-    this.addScore(breakdown.totalLevelBonus);
+      const breakdown = ScoreSystem.computeLevelClearBreakdown(
+        reason,
+        this.claimedPercent,
+        this.ship.getShieldUnits(),
+        diff.scoreMultiplier * (1 + (spec.threatIndex - 1) * 0.14),
+        clearedInSingleCut,
+        spec.targetPercent
+      );
+      breakdown.stars = Math.max(breakdown.stars, earnedStars) as 1 | 2 | 3;
+      this.clearBreakdown = breakdown;
+      this.addScore(breakdown.totalLevelBonus);
+      save.stats.totalScore += breakdown.totalLevelBonus;
+    } else {
+      const breakdown = ScoreSystem.computeLevelClearBreakdown(
+        reason,
+        this.claimedPercent,
+        this.ship.getShieldUnits(),
+        diff.scoreMultiplier * (1 + (spec.threatIndex - 1) * 0.14),
+        clearedInSingleCut,
+        spec.targetPercent
+      );
+      this.clearBreakdown = breakdown;
+      this.addScore(breakdown.totalLevelBonus);
+      save.stats.totalScore += breakdown.totalLevelBonus;
+    }
+
+    // Award Unified Single-Currency (`JETON`) with balanced 1.0x / 1.75x / 3.0x difficulty scaling + Combo/Dominance Skill Bonus!
+    const jetonPerkBonus = (this.endlessPerkStacks.get('JETON_MAGNET') ?? 0) * 0.25;
+    const baseEarnedJeton = this.jetonStore.awardStageClearJeton({
+      difficulty: runDiff,
+      finalCapturedPercent: this.claimedPercent,
+      megaCutsCount: this.megaCutsThisLevel,
+      crushedMinionsCount: this.crushedMinionsThisLevel,
+      noDeathClear: this.deathsThisLevel === 0,
+      extraBonusRatio: jetonPerkBonus
+    });
+    const comboSkillJeton = this.maxComboThisLevel >= 2 ? (this.maxComboThisLevel - 1) * 3 : 0;
+    const dominanceJeton =
+      this.claimedPercent >= 90 ? 15 : this.claimedPercent >= spec.targetPercent + 5 ? 7 : 0;
+    const singleCutJeton = clearedInSingleCut ? 20 : 0;
+    const skillBonusJeton =
+      (comboSkillJeton + dominanceJeton + singleCutJeton) *
+      (this.jetonStore.hasPermanentDoubleJeton ? 2 : 1);
+    if (skillBonusJeton > 0) {
+      this.jetonStore.jetonBalance += skillBonusJeton;
+    }
+    this.lastEarnedJeton = baseEarnedJeton + skillBonusJeton;
 
     this.tryUnlockAchievement('FIRST_CARVE');
     if (this.claimedPercent >= 99.0) {
@@ -2880,18 +3453,34 @@ export class GameEngine {
     }
 
     this.persistRunRecords();
-    void StorageService.save((d) => {
-      d.stats.totalScore += breakdown.totalLevelBonus;
-    });
+
+    if (this.activeGameMode === 'ENDLESS') {
+      this.endlessPerkChoices = this.polishController.rollThreeCleanPerks(
+        this.endlessPerkStacks,
+        this.activeRunSeed + this.currentWave * 131,
+        this.lives
+      );
+      this.screen = 'ROGUELITE_DRAFT';
+      this.persistV15State();
+      StorageService.flushSyncMirror();
+      return;
+    }
 
     this.screen = 'LEVEL_CLEAR';
+    this.persistV15State();
+    StorageService.flushSyncMirror();
   }
 
   private getCurrentSkin(): ShipSkinConfig {
+    const storeHull = STORE_SHIP_SKINS[this.jetonStore.equippedShipId];
+    if (storeHull) return storeHull;
     const id = StorageService.getCurrent().selectedShip;
-    return SHIP_SKINS.find((s) => s.id === id) ?? SHIP_SKINS[0];
+    return SHIP_SKINS.find((s) => s.id === id) ?? SHIP_SKINS[0]!;
   }
 
+  // ============================================================================
+  // ORIGINAL VOID CARVER ARCADE IN-GAME HUD (WITH ULTRA-READABLE TYPOGRAPHY!)
+  // ============================================================================
   private render(alpha: number, _frameDt: number): void {
     const ctx = this.renderTargetCtx;
     if (!ctx) return;
@@ -2906,6 +3495,8 @@ export class GameEngine {
     const isGameplayVisible =
       this.screen === 'PLAYING' ||
       this.screen === 'PAUSED' ||
+      this.screen === 'ROGUELITE_DRAFT' ||
+      this.screen === 'CONTINUE_PROMPT' ||
       this.screen === 'SECOND_CHANCE' ||
       this.screen === 'REWARDED_AD_SIM' ||
       this.screen === 'LEVEL_CLEAR' ||
@@ -2943,6 +3534,10 @@ export class GameEngine {
         this.ship.isBacktracking
       );
       this.renderPauseButton(ctx);
+
+      if (this.screen === 'PLAYING' && this.polishController.resumeCountdownSec > 0) {
+        this.renderGentleResumeBanner(ctx);
+      }
     }
 
     if (this.screen !== 'PLAYING') {
@@ -2954,23 +3549,31 @@ export class GameEngine {
         adCountdown: this.adCountdown,
         statusToast: this.statusToast,
         canOfferRevive: MonetizationService.canOfferSecondChance(this.reviveUsedThisLevel),
-        reviveAdLoading: this.reviveAdLoading
+        reviveAdLoading: this.reviveAdLoading,
+        activeGameMode: this.activeGameMode,
+        jetonStore: this.jetonStore,
+        endlessPerkChoices: this.endlessPerkChoices,
+        endlessPerkStacks: this.endlessPerkStacks,
+        claimedPercent: this.claimedPercent,
+        lastEarnedJeton: this.lastEarnedJeton,
+        maxComboReached: this.maxComboThisLevel
       });
     } else if (this.statusToast) {
       const f = layout.arenaFrame;
-      const w = Math.min(600, f.w - 40);
-      const x = f.x + (f.w - w) * 0.5;
-      const y = f.y + 62;
+      const w = Math.min(680, f.w - 32);
+      const x = Math.round(f.x + (f.w - w) * 0.5);
+      const y = Math.round(f.y + 62);
       ctx.save();
       ctx.fillStyle = PALETTE.PIXEL_BLACK;
-      ctx.fillRect(x, y, w, 46);
+      ctx.fillRect(x, y, w, 52);
       ctx.strokeStyle = PALETTE.GOLD_LIGHT;
       ctx.lineWidth = 3;
-      ctx.strokeRect(x + 2, y + 2, w - 4, 42);
-      drawPixelText(ctx, this.statusToast, x + w * 0.5, y + 23, {
+      ctx.strokeRect(x + 2, y + 2, w - 4, 48);
+      drawPixelText(ctx, this.statusToast, x + w * 0.5, y + 26, {
         scale: 3.0,
         tone: 'gold',
-        align: 'center'
+        align: 'center',
+        maxWidth: w - 28
       });
       ctx.restore();
     }
@@ -2978,6 +3581,10 @@ export class GameEngine {
     if (!this.firstFrameDrawn) {
       this.firstFrameDrawn = true;
       void NativeBridge.hideSplashOnceReady();
+      // Request ATT & initialize AdMob safely AFTER the first active frame & splash dismissal!
+      setTimeout(() => {
+        void MonetizationService.prepareAdsIfEnabled();
+      }, 950);
     }
   }
 
@@ -3002,17 +3609,10 @@ export class GameEngine {
     return 'gold';
   }
 
-  /**
-   * Renders ONLY the recessed Top-Bezel Territory Progress Bar (`MIDDLE_ZONE_Y + 3`, strictly inside
-   * the outer Gold Bezel — 0px overlap with `ARENA_VIEW_Y`!) and brief Phase Awakening banner.
-   * The persistent Boss Vitality / Phase Bar now lives in the Top HUD Header ABOVE the arena frame
-   * so the entire top border of the playable arena is 100% unobstructed!
-   */
   private renderArenaTopBars(ctx: CanvasRenderingContext2D): void {
     const target = Math.max(1, this.currentWaveSpec.targetPercent);
     const areaRatio = Math.max(0, Math.min(1, this.claimedPercent / target));
 
-    // Recessed amber territory progress bar inside top gold bezel (strictly above ARENA_VIEW_Y!)
     const topSlotX = 190;
     const topSlotY = MIDDLE_ZONE_Y + 3;
     const topSlotW = 520;
@@ -3031,21 +3631,20 @@ export class GameEngine {
       ctx.fillRect(topSlotX + 2, topSlotY + 2, fillW, 2);
     }
 
-    // Brief dramatic Phase Awakening callout banner (centered safely below top border)
     if (this.phaseAwakeningLabel && this.phaseAwakeningTimer > 0) {
       const flashAlt = Math.floor(this.timeSeconds * 18) % 2 === 0;
       ctx.fillStyle = 'rgba(6, 8, 18, 0.92)';
-      ctx.fillRect(216, ARENA_VIEW_Y + 54, 468, 44);
+      ctx.fillRect(216, ARENA_VIEW_Y + 54, 468, 48);
       ctx.strokeStyle = flashAlt ? '#FFF088' : '#FF5820';
       ctx.lineWidth = 3;
-      ctx.strokeRect(216, ARENA_VIEW_Y + 54, 468, 44);
-      drawPixelText(ctx, this.phaseAwakeningLabel, 450, ARENA_VIEW_Y + 76, {
-        scale: 2.8,
+      ctx.strokeRect(216, ARENA_VIEW_Y + 54, 468, 48);
+      drawPixelText(ctx, this.phaseAwakeningLabel, 450, ARENA_VIEW_Y + 78, {
+        scale: 3.1,
         tone: flashAlt ? 'gold' : 'crimson',
-        align: 'center'
+        align: 'center',
+        maxWidth: 440
       });
     }
-
     ctx.restore();
   }
 
@@ -3111,43 +3710,193 @@ export class GameEngine {
 
     if (barW >= 520 && this.currentLevelPlan?.bossDisplayNameTr) {
       const bossName = this.currentLevelPlan.bossDisplayNameTr;
-      const nameSc = 2.05;
-      const nameW = measurePixelText(bossName, nameSc, 0.45);
-      ctx.fillStyle = 'rgba(4, 6, 14, 0.62)';
-      ctx.fillRect(innerX + 6, innerY + 3, Math.min(maxFillW - 8, nameW + 14), innerH - 6);
-      drawPixelText(ctx, bossName, innerX + 13, barY + barH * 0.5 + 1, {
+      const nameSc = 2.35;
+      const nameW = measurePixelText(bossName, nameSc);
+      ctx.fillStyle = 'rgba(4, 6, 14, 0.68)';
+      ctx.fillRect(innerX + 6, innerY + 2, Math.min(maxFillW - 8, nameW + 16), innerH - 4);
+      drawPixelText(ctx, bossName, innerX + 13, barY + barH * 0.5, {
         scale: nameSc,
         tone: 'white',
         align: 'left',
-        letterGap: 0.45
+        maxWidth: maxFillW - 22
       });
     }
 
-    drawPixelText(ctx, phaseText, barX + barW - 12, barY + barH * 0.5 + 1, {
-      scale: 2.35,
+    drawPixelText(ctx, phaseText, barX + barW - 12, barY + barH * 0.5, {
+      scale: 2.5,
       tone: this.activeCombatPhase === 3 ? 'crimson' : 'gold',
-      align: 'right',
-      letterGap: 0.5
+      align: 'right'
     });
   }
 
-  private renderPauseButton(ctx: CanvasRenderingContext2D): void {
-    const r = getLayout().pauseButton;
-    const pw = Math.min(68, r.w - 6);
-    const ph = Math.min(58, r.h - 6);
-    const px = Math.round(r.x + (r.w - pw) * 0.5);
-    const py = Math.round(r.y + (r.h - ph) * 0.5);
+  private renderTopArcadeScoreBar(
+    ctx: CanvasRenderingContext2D,
+    save: ReturnType<typeof StorageService.getCurrent>
+  ): void {
     ctx.save();
-    ctx.fillStyle = PALETTE.PIXEL_BLACK;
-    ctx.fillRect(px - 3, py - 3, pw + 6, ph + 6);
-    ctx.fillStyle = '#6A7A96';
-    ctx.fillRect(px, py, pw, ph);
-    ctx.fillStyle = '#121A2C';
-    ctx.fillRect(px + 4, py + 4, pw - 8, ph - 8);
-    ctx.fillStyle = '#D8E2F4';
-    const barH = Math.round(ph * 0.46);
-    ctx.fillRect(Math.round(px + pw * 0.31), Math.round(py + (ph - barH) * 0.5), 8, barH);
-    ctx.fillRect(Math.round(px + pw * 0.57), Math.round(py + (ph - barH) * 0.5), 8, barH);
+    ctx.fillStyle = '#03050A';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
+
+    drawPixelText(ctx, 'SKOR', 18, 20, { scale: 3.1, tone: 'silver', align: 'left' });
+    drawPixelText(ctx, String(this.score).padStart(7, '0'), 18, 54, {
+      scale: 4.2,
+      tone: 'white',
+      align: 'left'
+    });
+
+    if (this.comboCount >= 2 && this.comboTimer > 0) {
+      const cbX = 280;
+      const cbY = 10;
+      const cbW = 184;
+      const cbH = 58;
+      const hot = this.comboCount >= 4;
+      ctx.fillStyle = '#080E1E';
+      ctx.fillRect(cbX, cbY, cbW, cbH);
+      ctx.strokeStyle = hot ? '#FF6838' : '#FFE058';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(cbX, cbY, cbW, cbH);
+
+      drawPixelText(ctx, `KOMBO x${this.comboCount}`, cbX + cbW * 0.5, cbY + 21, {
+        scale: 2.65,
+        tone: hot ? 'crimson' : 'gold',
+        align: 'center',
+        maxWidth: cbW - 14
+      });
+
+      const barX = cbX + 14;
+      const barY = cbY + 41;
+      const barW = cbW - 28;
+      const barH = 9;
+      const ratio = Math.max(0, Math.min(1, this.comboTimer / 7.5));
+      ctx.fillStyle = '#04060C';
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = hot ? '#FF5828' : '#F6C438';
+      ctx.fillRect(barX + 1, barY + 1, Math.round((barW - 2) * ratio), barH - 2);
+    }
+
+    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
+    const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rec.highScore, this.score);
+    const rekorCx = 606;
+    drawPixelText(ctx, 'REKOR', rekorCx, 20, { scale: 3.1, tone: 'gold', align: 'center' });
+    drawPixelText(ctx, String(displayHi).padStart(7, '0'), rekorCx, 54, {
+      scale: 4.2,
+      tone: 'gold',
+      align: 'center'
+    });
+
+    this.renderBossVitalityStrip(ctx, 14, 78, CANVAS_WIDTH - 28, 32);
+    ctx.restore();
+  }
+
+  private renderBottomArcadeStatusBar(
+    ctx: CanvasRenderingContext2D,
+    save: ReturnType<typeof StorageService.getCurrent>
+  ): void {
+    ctx.save();
+    const stripX = 2;
+    const stripW = CANVAS_WIDTH - 4;
+    ctx.fillStyle = '#040710';
+    ctx.fillRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
+    ctx.strokeStyle = '#384868';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
+    ctx.fillStyle = 'rgba(248, 200, 48, 0.35)';
+    ctx.fillRect(stripX + 2, HUD_BOTTOM_Y, stripW - 4, 2);
+
+    const { prefix, isImpossible } = this.getDifficultyHudPrefix(save);
+    const waveLabel =
+      this.activeGameMode === 'ENDLESS' ? `${prefix} • DALGA ` : `${prefix} • BÖLÜM `;
+    const waveNum = String(this.currentWave);
+    const shownLives = Math.max(0, Math.min(this.lives, MAX_PLAYER_LIVES));
+    const target = this.currentWaveSpec.targetPercent;
+    const areaLabel = 'ALAN ';
+    const areaVal = `%${Math.floor(this.claimedPercent)}/%${target}`;
+    const shieldLabel = 'KALKAN ';
+    const shieldVal = String(this.ship.getShieldUnits()).padStart(3, '0');
+
+    let sc = 2.95;
+    const shipStep = 28;
+    const shipsBlockW = Math.max(24, shownLives * shipStep);
+    const measureTotal = (s: number): number =>
+      measurePixelText(waveLabel, s) +
+      measurePixelText(waveNum, s) +
+      shipsBlockW +
+      measurePixelText(areaLabel, s) +
+      measurePixelText(areaVal, s) +
+      measurePixelText(shieldLabel, s) +
+      measurePixelText(shieldVal, s) +
+      3 * 22;
+
+    const maxInnerW = CANVAS_WIDTH - 54;
+    const rawW = measureTotal(sc);
+    if (rawW > maxInnerW) {
+      sc = Math.max(2.1, sc * (maxInnerW / rawW));
+    }
+    const finalW = measureTotal(sc);
+    const extraSpace = Math.max(0, maxInnerW - finalW);
+    const sepPad = 10 + extraSpace / 6;
+
+    const cy = HUD_BOTTOM_Y + HUD_BOTTOM_HEIGHT * 0.5 + 1;
+    let x = 14;
+
+    const drawDivider = (dx: number): void => {
+      ctx.fillStyle = '#4A5C80';
+      ctx.fillRect(Math.round(dx), HUD_BOTTOM_Y + 12, 3, HUD_BOTTOM_HEIGHT - 24);
+    };
+
+    drawPixelText(ctx, waveLabel, x, cy, {
+      scale: sc,
+      tone: isImpossible ? 'crimson' : 'silver',
+      align: 'left'
+    });
+    x += measurePixelText(waveLabel, sc);
+    drawPixelText(ctx, waveNum, x, cy, {
+      scale: sc,
+      tone: isImpossible ? 'crimson' : 'gold',
+      align: 'left'
+    });
+    x += measurePixelText(waveNum, sc) + sepPad;
+
+    drawDivider(x);
+    x += 3 + sepPad;
+
+    const miniShip = getMiniShipHudSprite();
+    for (let i = 0; i < shownLives; i++) {
+      blitPixelSprite(ctx, miniShip, x + 12 + i * shipStep, cy, PIXEL_SCALE * 0.92);
+    }
+    x += shipsBlockW + sepPad;
+
+    drawDivider(x);
+    x += 3 + sepPad;
+
+    drawPixelText(ctx, areaLabel, x, cy, {
+      scale: sc,
+      tone: 'silver',
+      align: 'left'
+    });
+    x += measurePixelText(areaLabel, sc);
+    drawPixelText(ctx, areaVal, x, cy, {
+      scale: sc,
+      tone: this.claimedPercent >= target ? 'green' : 'gold',
+      align: 'left'
+    });
+    x += measurePixelText(areaVal, sc) + sepPad;
+
+    drawDivider(x);
+    x += 3 + sepPad;
+
+    drawPixelText(ctx, shieldLabel, x, cy, {
+      scale: sc,
+      tone: 'silver',
+      align: 'left'
+    });
+    x += measurePixelText(shieldLabel, sc);
+    drawPixelText(ctx, shieldVal, x, cy, {
+      scale: sc,
+      tone: this.getShieldTone(),
+      align: 'left'
+    });
+
     ctx.restore();
   }
 
@@ -3202,13 +3951,16 @@ export class GameEngine {
       tone: isImpossible ? 'crimson' : 'gold',
       align: 'center'
     });
-    drawPixelText(ctx, `DALGA ${this.currentWave}`, lcx, lw.y + 14 + panelScale * 28, {
+    const modeLabel =
+      this.activeGameMode === 'ENDLESS' ? `DALGA ${this.currentWave}` : `BÖLÜM ${this.currentWave}`;
+    drawPixelText(ctx, modeLabel, lcx, lw.y + 14 + panelScale * 28, {
       scale: panelScale * 0.92,
       tone: 'white',
-      align: 'center'
+      align: 'center',
+      maxWidth: lw.w - 36
     });
     const miniShip = getMiniShipHudSprite();
-    const shownLives = Math.max(0, Math.min(this.lives, 5));
+    const shownLives = Math.max(0, Math.min(this.lives, MAX_PLAYER_LIVES));
     const shipStep = panelScale * 12;
     for (let i = 0; i < shownLives; i++) {
       blitPixelSprite(
@@ -3237,7 +3989,7 @@ export class GameEngine {
       ['REKOR', 'gold', 38],
       [String(displayHi).padStart(7, '0'), 'gold', 50],
       [
-        `ALAN ${Math.floor(this.claimedPercent)}%/${target}%`,
+        `ALAN %${Math.floor(this.claimedPercent)}/%${target}`,
         this.claimedPercent >= target ? 'green' : 'gold',
         66
       ],
@@ -3245,8 +3997,55 @@ export class GameEngine {
       [String(this.ship.getShieldUnits()).padStart(3, '0'), this.getShieldTone(), 91]
     ];
     for (const [text, tone, off] of lines) {
-      drawPixelText(ctx, text, rx, rPanelTop + rs * off, { scale: rs * 0.9, tone, align: 'left' });
+      drawPixelText(ctx, text, rx, rPanelTop + rs * off, {
+        scale: rs * 0.9,
+        tone,
+        align: 'left',
+        maxWidth: rw.w - 44
+      });
     }
+    ctx.restore();
+  }
+
+  private renderPauseButton(ctx: CanvasRenderingContext2D): void {
+    const r = getLayout().pauseButton;
+    const pw = Math.min(68, r.w - 6);
+    const ph = Math.min(58, r.h - 6);
+    const px = Math.round(r.x + (r.w - pw) * 0.5);
+    const py = Math.round(r.y + (r.h - ph) * 0.5);
+
+    ctx.save();
+    ctx.fillStyle = PALETTE.PIXEL_BLACK;
+    ctx.fillRect(px - 3, py - 3, pw + 6, ph + 6);
+    ctx.fillStyle = '#6A7A96';
+    ctx.fillRect(px, py, pw, ph);
+    ctx.fillStyle = '#121A2C';
+    ctx.fillRect(px + 4, py + 4, pw - 8, ph - 8);
+    ctx.fillStyle = '#D8E2F4';
+    const barH = Math.round(ph * 0.46);
+    ctx.fillRect(Math.round(px + pw * 0.31), Math.round(py + (ph - barH) * 0.5), 8, barH);
+    ctx.fillRect(Math.round(px + pw * 0.57), Math.round(py + (ph - barH) * 0.5), 8, barH);
+    ctx.restore();
+  }
+
+  private renderGentleResumeBanner(ctx: CanvasRenderingContext2D): void {
+    const f = getLayout().arenaFrame;
+    const w = 340;
+    const h = 88;
+    const x = Math.round(f.x + (f.w - w) * 0.5);
+    const y = Math.round(f.y + f.h * 0.44);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(6, 8, 18, 0.94)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = PALETTE.GOLD_LIGHT;
+    ctx.lineWidth = 3.5;
+    ctx.strokeRect(x, y, w, h);
+    drawPixelText(ctx, 'HAZIR...', x + w * 0.5, y + h * 0.5, {
+      scale: 4.2,
+      tone: 'gold',
+      align: 'center'
+    });
     ctx.restore();
   }
 
@@ -3255,7 +4054,14 @@ export class GameEngine {
     const skin = this.getCurrentSkin();
     const bossCannonArmed = this.ship.bossCannonTimer > 0;
 
-    this.layerRenderer.renderUnderFloor(ctx, shake.x, shake.y, this.timeFreezeTimer);
+    this.layerRenderer.renderUnderFloor(
+      ctx,
+      shake.x,
+      shake.y,
+      this.timeFreezeTimer,
+      'FILL_DARK_GRID',
+      this.timeSeconds
+    );
 
     ctx.save();
     ctx.translate(ARENA_VIEW_X + shake.x, ARENA_VIEW_Y + shake.y);
@@ -3280,45 +4086,6 @@ export class GameEngine {
       cap.render(ctx);
     }
 
-    // Build 12 Collectible Field Power Crystals (`❄️`, `⚡`, `🛡️`, `🔫`)
-    const crysFrame: 0 | 1 = Math.floor(this.timeSeconds * 7) % 2 === 0 ? 0 : 1;
-    const crysTagMap: Record<FieldCrystalType, { tag: string; col: string; tone: 'cyan' | 'gold' | 'crimson' }> = {
-      TIME_FREEZE: { tag: 'DONDUR', col: 'rgba(104, 244, 255, 0.5)', tone: 'cyan' },
-      SPEED_BOOST: { tag: 'TURBO', col: 'rgba(255, 224, 88, 0.5)', tone: 'gold' },
-      TRAIL_SHIELD_1HIT: { tag: 'KALKAN', col: 'rgba(56, 184, 255, 0.55)', tone: 'cyan' },
-      LASER_CANNON: { tag: 'LAZER', col: 'rgba(255, 104, 88, 0.5)', tone: 'crimson' }
-    };
-    for (const crys of this.juiceSystem.crystals) {
-      const bobY = crys.pos.y + Math.sin(this.timeSeconds * 4.2 + crys.pos.x * 0.02) * 5;
-      const meta = crysTagMap[crys.type];
-      const blinkFade =
-        crys.remainingLifetimeSec < 3.0 && Math.floor(this.timeSeconds * 12) % 2 === 1
-          ? 0.48
-          : 1.0;
-      ctx.save();
-      ctx.globalAlpha = blinkFade;
-      ctx.strokeStyle = meta.col;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(Math.round(crys.pos.x), Math.round(bobY), 28 + crysFrame * 3, 0, Math.PI * 2);
-      ctx.stroke();
-      blitArenaPixelSprite(
-        ctx,
-        getFieldCrystalSprite(crys.type, crysFrame),
-        crys.pos.x,
-        bobY,
-        1.15
-      );
-      drawPixelText(ctx, meta.tag, crys.pos.x, bobY + 34, {
-        scale: 1.65,
-        tone: meta.tone,
-        align: 'center',
-        letterGap: 0.35
-      });
-      ctx.restore();
-    }
-
-    // TwinNexus energy tether (electrified crimson-gold in Phase 2+)
     if (
       this.bosses.length >= 2 &&
       this.bosses[0] instanceof TwinNexus &&
@@ -3335,11 +4102,11 @@ export class GameEngine {
         ctx.strokeStyle =
           this.activeCombatPhase >= 2
             ? alt
-              ? '#FF5820'
-              : '#FFF088'
+              ? '#EF4444'
+              : '#FDE68A'
             : alt
-              ? '#50E8FF'
-              : '#FFF088';
+              ? '#38BDF8'
+              : '#FDE68A';
         ctx.lineWidth = this.activeCombatPhase >= 2 ? 5 : 3;
         ctx.beginPath();
         ctx.moveTo(Math.round(p1.x), Math.round(p1.y));
@@ -3350,16 +4117,25 @@ export class GameEngine {
     }
 
     for (const m of this.minions) {
-      if (m.alive) m.render(ctx, alpha, this.timeSeconds);
+      if (m.alive) {
+        m.render(ctx, alpha, this.timeSeconds);
+        m.renderSynergyOverlay(ctx, alpha, this.timeSeconds);
+      }
     }
     for (const boss of this.bosses) {
-      if (boss.alive) boss.render(ctx, alpha, this.timeSeconds, bossCannonArmed);
+      if (boss.alive) {
+        boss.renderChimeraUnderlay(ctx, alpha, this.timeSeconds);
+        boss.render(ctx, alpha, this.timeSeconds, bossCannonArmed);
+        boss.renderChimeraOverlay(ctx, alpha, this.timeSeconds);
+      }
     }
     for (const crawler of this.crawlers) {
       crawler.render(ctx, alpha, this.timeSeconds);
     }
 
     this.projectiles.render(ctx, alpha);
+
+    this.renderEquippedCutTrailOverlay(ctx);
 
     const carveArmed =
       this.lastInputSnapshot.carveHeld || this.input.touch.isCarveVisuallyPressed();
@@ -3373,25 +4149,19 @@ export class GameEngine {
       this.activeBarriers
     );
 
-    // Build 12 Visual Auras: 1-Hit Trail Shield Ring & Respawn Shockwave Shield!
     const shipPos = this.ship.getRenderPosition(alpha);
     if (this.juiceSystem.powerState.hasOneHitTrailShield) {
       ctx.save();
       const pulse = 32 + Math.sin(this.timeSeconds * 10) * 3;
-      ctx.strokeStyle = '#38C8FF';
+      ctx.strokeStyle = '#38BDF8';
       ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), pulse, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(168, 248, 255, 0.65)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), pulse + 5, 0, Math.PI * 2);
-      ctx.stroke();
       ctx.restore();
     } else if (this.juiceSystem.powerState.respawnInvulnRemainingSec > 0) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(120, 248, 255, 0.65)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.65)';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(Math.round(shipPos.x), Math.round(shipPos.y), 30, 0, Math.PI * 2);
@@ -3405,8 +4175,21 @@ export class GameEngine {
 
     this.particles.renderArenaEffects(ctx);
 
+    // Wordless 5-Second First-Launch Finger Swipe Hint Animation (vanishes on first input!)
+    if (
+      this.screen === 'PLAYING' &&
+      this.polishController.showFirstLaunchSwipeHint &&
+      this.currentWave === 1 &&
+      this.waveElapsedSec < 5.0
+    ) {
+      this.renderWordlessSwipeHint(ctx);
+    }
+
     if (this.roundIntroTimer > 0 && this.screen === 'PLAYING') {
-      const stageLabel = `BÖLÜM ${this.currentWave}`;
+      const stageLabel =
+        this.activeGameMode === 'CAMPAIGN'
+          ? `BÖLÜM ${this.currentWave}`
+          : `DALGA ${this.currentWave}`;
       const bossSubtitle = this.currentLevelPlan?.bossDisplayNameTr ?? '';
       ctx.save();
       ctx.fillStyle = 'rgba(6, 8, 16, 0.92)';
@@ -3423,14 +4206,16 @@ export class GameEngine {
         drawPixelText(ctx, bossSubtitle, 450, 598, {
           scale: ARENA_PIXEL_SCALE * 1.0,
           tone: 'cyan',
-          align: 'center'
+          align: 'center',
+          maxWidth: 540
         });
       }
       if (this.currentLevelPlan?.sectorNameTr) {
         drawPixelText(ctx, this.currentLevelPlan.sectorNameTr, 450, 634, {
-          scale: ARENA_PIXEL_SCALE * 0.68,
+          scale: ARENA_PIXEL_SCALE * 0.72,
           tone: 'silver',
-          align: 'center'
+          align: 'center',
+          maxWidth: 540
         });
       }
       ctx.restore();
@@ -3439,159 +4224,108 @@ export class GameEngine {
     ctx.restore();
   }
 
-  private renderTopArcadeScoreBar(
-    ctx: CanvasRenderingContext2D,
-    save: ReturnType<typeof StorageService.getCurrent>
-  ): void {
+  /**
+   * Wordless animated finger-swipe tutorial ring (Stage 1 first 5 seconds; disappears on first move).
+   */
+  private renderWordlessSwipeHint(ctx: CanvasRenderingContext2D): void {
+    const cycle = (this.timeSeconds * 0.95) % 1;
+    const startY = 1090;
+    const endY = 930;
+    const curY = startY + (endY - startY) * cycle;
+    const fade = cycle < 0.15 ? cycle / 0.15 : cycle > 0.8 ? (1 - cycle) / 0.2 : 1;
+
     ctx.save();
-    ctx.fillStyle = '#03050A';
-    ctx.fillRect(0, 0, CANVAS_WIDTH, HUD_TOP_HEIGHT);
+    ctx.globalAlpha = Math.max(0, Math.min(0.88, fade));
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(450, startY);
+    ctx.lineTo(450, curY);
+    ctx.stroke();
 
-    drawPixelText(ctx, 'SKOR', 18, 18, { scale: 3.5, tone: 'silver', align: 'left' });
-    drawPixelText(ctx, String(this.score).padStart(7, '0'), 18, 54, {
-      scale: 4.55,
-      tone: 'white',
-      align: 'left'
-    });
+    // Upward chevron
+    ctx.beginPath();
+    ctx.moveTo(432, endY + 22);
+    ctx.lineTo(450, endY);
+    ctx.lineTo(468, endY + 22);
+    ctx.stroke();
 
-    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
-    const displayHi = Math.max(DEFAULT_ARCADE_HIGH_SCORE, rec.highScore, this.score);
-    drawPixelText(ctx, 'REKOR', 456, 18, { scale: 3.5, tone: 'gold', align: 'center' });
-    drawPixelText(ctx, String(displayHi).padStart(7, '0'), 456, 54, {
-      scale: 4.55,
-      tone: 'gold',
-      align: 'center'
-    });
-
-    // Dedicated Boss Vitality & Phase Bar sits cleanly ABOVE the arena frame (y = 78..110)!
-    this.renderBossVitalityStrip(ctx, 14, 78, CANVAS_WIDTH - 28, 32);
+    // Glowing touch circle
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(450, curY, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#38BDF8';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(450, curY, 26, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 
   /**
-   * V8 Full-Width Single-Row Status Strip:
-   * `KOLAY • DALGA 2 | mini ships | ALAN 73% / 80% | KALKAN 645`
-   * Enlarged readable typography with zero overlap on the control deck (`y = 1310..1374`).
+   * Build 15: Renders the 6 Clean Cutting Trails (`TRAILS_STORE_CATALOG`).
    */
-  private renderBottomArcadeStatusBar(
-    ctx: CanvasRenderingContext2D,
-    save: ReturnType<typeof StorageService.getCurrent>
-  ): void {
+  private renderEquippedCutTrailOverlay(ctx: CanvasRenderingContext2D): void {
+    if (this.ship.state !== 'CUTTING') return;
+    const trailId = this.jetonStore.equippedTrailId;
+    if (!trailId || trailId === 'TRAIL_CYAN') return;
+
+    const trail = this.ship.getActiveTrail();
+    if (trail.length < 2) return;
+
+    const item = TRAILS_STORE_CATALOG.find((c) => c.id === trailId);
+    if (!item) return;
+
+    const phaseIdx = Math.floor(this.timeSeconds * 8) % 3;
+    const prim =
+      item.vfxType === 'PRISM'
+        ? phaseIdx === 0
+          ? '#EC4899'
+          : phaseIdx === 1
+            ? '#38BDF8'
+            : '#A3E635'
+        : item.primaryHex;
+    const glow = item.glowHex;
+
     ctx.save();
-    const stripX = 2;
-    const stripW = CANVAS_WIDTH - 4;
-    ctx.fillStyle = '#040710';
-    ctx.fillRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
-    ctx.strokeStyle = '#384868';
+    ctx.strokeStyle = prim;
+    ctx.lineWidth = 8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(trail[0]!.x, trail[0]!.y);
+    for (let i = 1; i < trail.length; i++) {
+      ctx.lineTo(trail[i]!.x, trail[i]!.y);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = glow;
     ctx.lineWidth = 3;
-    ctx.strokeRect(stripX, HUD_BOTTOM_Y, stripW, HUD_BOTTOM_HEIGHT);
-    ctx.fillStyle = 'rgba(248, 200, 48, 0.35)';
-    ctx.fillRect(stripX + 2, HUD_BOTTOM_Y, stripW - 4, 2);
+    ctx.stroke();
 
-    const { prefix, isImpossible } = this.getDifficultyHudPrefix(save);
-    const waveLabel = `${prefix} • BÖLÜM `;
-    const waveNum = String(this.currentWave);
-    const shownLives = Math.max(0, Math.min(this.lives, 5));
-    const target = this.currentWaveSpec.targetPercent;
-    const areaLabel = 'ALAN ';
-    const areaVal = `${Math.floor(this.claimedPercent)}%/${target}%`;
-    const shieldLabel = 'KALKAN ';
-    const shieldVal = String(this.ship.getShieldUnits()).padStart(3, '0');
-
-    const gap = 0.4;
-    let sc = 2.68;
-    const shipStep = 28;
-    const shipsBlockW = Math.max(24, shownLives * shipStep);
-    const measureTotal = (s: number): number =>
-      measurePixelText(waveLabel, s, gap) +
-      measurePixelText(waveNum, s, gap) +
-      shipsBlockW +
-      measurePixelText(areaLabel, s, gap) +
-      measurePixelText(areaVal, s, gap) +
-      measurePixelText(shieldLabel, s, gap) +
-      measurePixelText(shieldVal, s, gap) +
-      3 * 22;
-
-    const maxInnerW = CANVAS_WIDTH - 36;
-    const rawW = measureTotal(sc);
-    if (rawW > maxInnerW) {
-      sc = Math.max(1.9, sc * (maxInnerW / rawW));
+    for (let i = 0; i < trail.length - 1; i++) {
+      const a = trail[i]!;
+      const b = trail[i + 1]!;
+      const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+      if (segLen < 16) continue;
+      const steps = Math.min(10, Math.floor(segLen / 42));
+      for (let s = 1; s <= steps; s++) {
+        const t = s / (steps + 1);
+        const px = a.x + (b.x - a.x) * t;
+        const py = a.y + (b.y - a.y) * t;
+        const jitter =
+          item.vfxType === 'LIGHTNING'
+            ? Math.sin(this.timeSeconds * 24 + s * 2.5 + i) * 7
+            : Math.sin(this.timeSeconds * 14 + s * 1.9 + i) * 4;
+        const horiz = Math.abs(b.x - a.x) > Math.abs(b.y - a.y);
+        const gx = Math.round(horiz ? px : px + jitter);
+        const gy = Math.round(horiz ? py + jitter : py);
+        ctx.fillStyle = s % 2 === 0 ? glow : prim;
+        ctx.fillRect(gx - 3, gy - 3, 6, 6);
+      }
     }
-    const finalW = measureTotal(sc);
-    const extraSpace = Math.max(0, maxInnerW - finalW);
-    const sepPad = 10 + extraSpace / 6;
-
-    const cy = HUD_BOTTOM_Y + HUD_BOTTOM_HEIGHT * 0.5 + 1;
-    let x = 14;
-
-    const drawDivider = (dx: number): void => {
-      ctx.fillStyle = '#4A5C80';
-      ctx.fillRect(Math.round(dx), HUD_BOTTOM_Y + 12, 3, HUD_BOTTOM_HEIGHT - 24);
-    };
-
-    // Group 1: `ZOR • DALGA 14` (or crimson `İMKÂNSIZ • DALGA 18`)
-    drawPixelText(ctx, waveLabel, x, cy, {
-      scale: sc,
-      tone: isImpossible ? 'crimson' : 'silver',
-      align: 'left',
-      letterGap: gap
-    });
-    x += measurePixelText(waveLabel, sc, gap);
-    drawPixelText(ctx, waveNum, x, cy, {
-      scale: sc,
-      tone: isImpossible ? 'crimson' : 'gold',
-      align: 'left',
-      letterGap: gap
-    });
-    x += measurePixelText(waveNum, sc, gap) + sepPad;
-
-    drawDivider(x);
-    x += 3 + sepPad;
-
-    // Group 2: Mini Ship Lives
-    const miniShip = getMiniShipHudSprite();
-    for (let i = 0; i < shownLives; i++) {
-      blitPixelSprite(ctx, miniShip, x + 12 + i * shipStep, cy, PIXEL_SCALE * 0.92);
-    }
-    x += shipsBlockW + sepPad;
-
-    drawDivider(x);
-    x += 3 + sepPad;
-
-    // Group 3: `ALAN 54% / 85%`
-    drawPixelText(ctx, areaLabel, x, cy, {
-      scale: sc,
-      tone: 'silver',
-      align: 'left',
-      letterGap: gap
-    });
-    x += measurePixelText(areaLabel, sc, gap);
-    drawPixelText(ctx, areaVal, x, cy, {
-      scale: sc,
-      tone: this.claimedPercent >= target ? 'green' : 'gold',
-      align: 'left',
-      letterGap: gap
-    });
-    x += measurePixelText(areaVal, sc, gap) + sepPad;
-
-    drawDivider(x);
-    x += 3 + sepPad;
-
-    // Group 4: `KALKAN 610`
-    drawPixelText(ctx, shieldLabel, x, cy, {
-      scale: sc,
-      tone: 'silver',
-      align: 'left',
-      letterGap: gap
-    });
-    x += measurePixelText(shieldLabel, sc, gap);
-    drawPixelText(ctx, shieldVal, x, cy, {
-      scale: sc,
-      tone: this.getShieldTone(),
-      align: 'left',
-      letterGap: gap
-    });
-
     ctx.restore();
   }
 }

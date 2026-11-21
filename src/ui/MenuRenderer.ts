@@ -1,16 +1,25 @@
 import {
-  DIFFICULTY_UI_PROFILES,
   FIXED_CAMPAIGN_STAGES,
   GameDifficulty
 } from '../core/CampaignProgressionV12';
+import {
+  CleanJetonEconomyAndStore,
+  JETON_IAP_PACKS,
+  SHIPS_STORE_CATALOG,
+  TRAILS_STORE_CATALOG
+} from '../core/CleanJetonEconomyAndStore';
 import {
   CANVAS_HEIGHT,
   CANVAS_WIDTH,
   PALETTE,
   PIXEL_SCALE,
   SHIP_SKINS,
-  ShipSkinId
+  ShipSkinId,
+  STORE_SHIP_SKINS
 } from '../core/Config';
+import { CleanEndlessPerk } from '../core/EndUserPolishAndControlsV15';
+import { HONEST_DIFFICULTIES_V15 } from '../core/HonestDifficultyAndProgressionV15';
+import { ColumnTransform, getLayout } from '../core/ResponsiveLayout';
 import { LevelClearBreakdown } from '../core/ScoreSystem';
 import {
   blitPixelSprite,
@@ -19,7 +28,6 @@ import {
   drawPixelText,
   fillRectPx,
   hexToU32,
-  measurePixelText,
   PixelSurface,
   setPx
 } from '../rendering/PixelArtEngine';
@@ -33,7 +41,6 @@ import {
   GameSaveData,
   StorageService
 } from '../services/StorageService';
-import { ColumnTransform, getLayout } from '../core/ResponsiveLayout';
 
 export type ScreenState =
   | 'MAIN_MENU'
@@ -43,6 +50,8 @@ export type ScreenState =
   | 'SETTINGS'
   | 'PLAYING'
   | 'PAUSED'
+  | 'ROGUELITE_DRAFT'
+  | 'CONTINUE_PROMPT'
   | 'SECOND_CHANCE'
   | 'REWARDED_AD_SIM'
   | 'LEVEL_CLEAR'
@@ -55,6 +64,24 @@ export interface UiButtonRect {
   y: number;
   w: number;
   h: number;
+}
+
+export interface MenuOverlayData {
+  currentScore: number;
+  currentWave: number;
+  isNewRecord: boolean;
+  clearBreakdown: LevelClearBreakdown | null;
+  adCountdown: number;
+  statusToast: string | null;
+  canOfferRevive?: boolean;
+  reviveAdLoading?: boolean;
+  activeGameMode?: 'CAMPAIGN' | 'ENDLESS';
+  jetonStore?: CleanJetonEconomyAndStore;
+  endlessPerkChoices?: readonly [CleanEndlessPerk, CleanEndlessPerk, CleanEndlessPerk] | null;
+  endlessPerkStacks?: Map<string, number>;
+  claimedPercent?: number;
+  lastEarnedJeton?: number;
+  maxComboReached?: number;
 }
 
 export function isShipSkinId(val: string): val is ShipSkinId {
@@ -80,7 +107,7 @@ const SPACE_STARS: StarSpec[] = Array.from({ length: 84 }, (_, idx) => {
     size: idx % 9 === 0 ? 6 : 3,
     speed: 9 + (idx % 4) * 6,
     phase: idx * 0.77,
-    color: cols[idx % cols.length]
+    color: cols[idx % cols.length]!
   };
 });
 
@@ -235,7 +262,7 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     if (!glyph) continue;
     for (let gy = 0; gy < 11; gy++) {
       for (let gx = 0; gx < 8; gx++) {
-        if (glyph[gy][gx] !== '#') continue;
+        if (glyph[gy]![gx] !== '#') continue;
         const px = cursorX + gx * 2;
         const py = 6 + gy * 2;
         fillRectPx(s, px - 2, py - 2, 6, 6, cBlack);
@@ -255,7 +282,7 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     if (!glyph) continue;
     for (let gy = 0; gy < 11; gy++) {
       for (let gx = 0; gx < 8; gx++) {
-        if (glyph[gy][gx] !== '#') continue;
+        if (glyph[gy]![gx] !== '#') continue;
         const px = cursorX + gx * 2;
         const py = 6 + gy * 2;
         fillRectPx(s, px - 1, py - 1, 4, 5, gy < 5 ? cOrangeBevel : cRedBevel);
@@ -273,9 +300,9 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
     const glyph = LOGO_FONT_8X11[ch];
     if (!glyph) continue;
     for (let gy = 0; gy < 11; gy++) {
-      const col = chromeRows[gy];
+      const col = chromeRows[gy]!;
       for (let gx = 0; gx < 8; gx++) {
-        if (glyph[gy][gx] !== '#') continue;
+        if (glyph[gy]![gx] !== '#') continue;
         const px = cursorX + gx * 2;
         const py = 6 + gy * 2;
         fillRectPx(s, px, py, 2, 2, col);
@@ -291,24 +318,39 @@ function getVoidCarverLogoSprite(): HTMLCanvasElement {
   return cachedTitleLogo;
 }
 
+function getStageBossNameTr(stageNum: number): string {
+  const fixed = FIXED_CAMPAIGN_STAGES[stageNum - 1];
+  if (fixed) return fixed.bossNameTr;
+  const extraNames: Record<number, string> = {
+    25: 'KARA DELİK MİMARI',
+    26: 'PLAZMA LEJİSYONU',
+    27: 'KRİSTAL HÜKÜMDAR',
+    28: 'KIZIL HİDRA ÇEKİRDEĞİ',
+    29: 'OMEGA SENTEZÖRÜ',
+    30: 'SONSUZ YARIK İMPARATORU'
+  };
+  return extraNames[stageNum] ?? `KİMERİK BOSS ${stageNum}`;
+}
+
 export class MenuRenderer {
   public readonly activeButtons: UiButtonRect[] = [];
+  public storeTab: 'SHIPS' | 'TRAILS' | 'BUY_JETON' = 'SHIPS';
   public stageStripStart = 1;
   private lastSyncedDiff: GameDifficulty | null = null;
   private lastSyncedSelStage = -1;
   private cur: ColumnTransform = { tx: 0, ty: 0, s: 1 };
 
   public shiftStageStrip(delta: number): void {
-    this.stageStripStart = Math.max(1, Math.min(22, this.stageStripStart + delta));
+    this.stageStripStart = Math.max(1, Math.min(28, this.stageStripStart + delta));
   }
 
   public centerStageStripOn(stageNum: number): void {
-    this.stageStripStart = Math.max(1, Math.min(22, stageNum - 1));
+    this.stageStripStart = Math.max(1, Math.min(28, stageNum - 1));
   }
 
   public hitTest(vx: number, vy: number): string | null {
     for (let i = this.activeButtons.length - 1; i >= 0; i--) {
-      const b = this.activeButtons[i];
+      const b = this.activeButtons[i]!;
       if (vx >= b.x && vx <= b.x + b.w && vy >= b.y && vy <= b.y + b.h) {
         return b.id;
       }
@@ -318,7 +360,13 @@ export class MenuRenderer {
 
   private addButton(id: string, x: number, y: number, w: number, h: number): void {
     const t = this.cur;
-    this.activeButtons.push({ id, x: t.tx + x * t.s, y: t.ty + y * t.s, w: w * t.s, h: h * t.s });
+    this.activeButtons.push({
+      id,
+      x: t.tx + x * t.s,
+      y: t.ty + y * t.s,
+      w: w * t.s,
+      h: h * t.s
+    });
   }
 
   private withTransform(ctx: CanvasRenderingContext2D, t: ColumnTransform, fn: () => void): void {
@@ -340,16 +388,7 @@ export class MenuRenderer {
     screen: ScreenState,
     save: GameSaveData,
     timeSeconds: number,
-    overlayData: {
-      currentScore: number;
-      currentWave: number;
-      isNewRecord: boolean;
-      clearBreakdown: LevelClearBreakdown | null;
-      adCountdown: number;
-      statusToast: string | null;
-      canOfferRevive?: boolean;
-      reviveAdLoading?: boolean;
-    }
+    overlayData: MenuOverlayData
   ): void {
     this.activeButtons.length = 0;
     const layout = getLayout();
@@ -368,7 +407,9 @@ export class MenuRenderer {
     }
 
     if (screen === 'MAIN_MENU' && layout.menuHero && layout.menuSelector) {
-      this.withTransform(ctx, layout.menuHero, () => this.renderMenuHero(ctx, save, timeSeconds));
+      this.withTransform(ctx, layout.menuHero, () =>
+        this.renderMenuHero(ctx, save, timeSeconds, overlayData)
+      );
       this.withTransform(ctx, layout.menuSelector, () => this.renderMenuSelector(ctx, save));
     } else {
       this.withTransform(ctx, layout.menuColumn, () => {
@@ -388,26 +429,17 @@ export class MenuRenderer {
     screen: ScreenState,
     save: GameSaveData,
     timeSeconds: number,
-    overlayData: {
-      currentScore: number;
-      currentWave: number;
-      isNewRecord: boolean;
-      clearBreakdown: LevelClearBreakdown | null;
-      adCountdown: number;
-      statusToast: string | null;
-      canOfferRevive?: boolean;
-      reviveAdLoading?: boolean;
-    }
+    overlayData: MenuOverlayData
   ): void {
     switch (screen) {
       case 'MAIN_MENU':
-        this.renderEndlessMainMenu(ctx, save, timeSeconds);
+        this.renderEndlessMainMenu(ctx, save, timeSeconds, overlayData);
         break;
       case 'SECTOR_SELECT':
         this.renderCampaignStageGridScreen(ctx, save);
         break;
       case 'HANGAR':
-        this.renderShipsScreen(ctx, save);
+        this.renderStoreScreen(ctx, save, overlayData);
         break;
       case 'SETTINGS':
       case 'ACHIEVEMENTS':
@@ -415,6 +447,12 @@ export class MenuRenderer {
         break;
       case 'PAUSED':
         this.renderPauseModal(ctx, save);
+        break;
+      case 'ROGUELITE_DRAFT':
+        this.renderEndlessPerkDraftModal(ctx, overlayData);
+        break;
+      case 'CONTINUE_PROMPT':
+        this.renderContinueModal(ctx, overlayData);
         break;
       case 'SECOND_CHANCE':
         this.renderSecondChanceModal(ctx);
@@ -428,7 +466,9 @@ export class MenuRenderer {
             ctx,
             overlayData.clearBreakdown,
             overlayData.currentScore,
-            overlayData.currentWave
+            overlayData.currentWave,
+            overlayData.lastEarnedJeton ?? 0,
+            overlayData.maxComboReached ?? 1
           );
         }
         break;
@@ -440,7 +480,8 @@ export class MenuRenderer {
           overlayData.currentWave,
           overlayData.isNewRecord,
           Boolean(overlayData.canOfferRevive),
-          Boolean(overlayData.reviveAdLoading)
+          Boolean(overlayData.reviveAdLoading),
+          overlayData.activeGameMode ?? 'CAMPAIGN'
         );
         break;
       default:
@@ -460,19 +501,42 @@ export class MenuRenderer {
     ctx.fillStyle = '#04060E';
     ctx.fillRect(0, 0, width, height);
 
+    // Subtle deep-space cobalt horizon band for richer 16-bit depth
+    ctx.fillStyle = 'rgba(20, 38, 82, 0.16)';
+    ctx.fillRect(0, Math.round(height * 0.18), width, Math.round(height * 0.34));
+
     const tilesX = Math.ceil(width / CANVAS_WIDTH);
     const tilesY = Math.ceil(height / CANVAS_HEIGHT);
     for (let ty = 0; ty < tilesY; ty++) {
       for (let tx = 0; tx < tilesX; tx++) {
         for (let i = 0; i < SPACE_STARS.length; i++) {
-          const st = SPACE_STARS[i];
-          const py = Math.floor((st.y + timeSeconds * st.speed) % CANVAS_HEIGHT) + ty * CANVAS_HEIGHT;
-          const on = Math.sin(timeSeconds * 3.4 + st.phase + tx * 1.7) > -0.35;
-          if (!on) continue;
+          const st = SPACE_STARS[i]!;
+          const py =
+            Math.floor((st.y + timeSeconds * st.speed) % CANVAS_HEIGHT) + ty * CANVAS_HEIGHT;
+          const tw = Math.sin(timeSeconds * 3.4 + st.phase + tx * 1.7);
+          if (tw <= -0.35) continue;
+          const sx = st.x + tx * CANVAS_WIDTH;
           ctx.fillStyle = st.color;
-          ctx.fillRect(st.x + tx * CANVAS_WIDTH, py, st.size, st.size);
+          ctx.fillRect(sx, py, st.size, st.size);
+          // Crisp 16-bit cross-glint on bright hero stars
+          if (st.size >= 6 && tw > 0.55) {
+            ctx.fillRect(sx - 3, py + 2, 12, 2);
+            ctx.fillRect(sx + 2, py - 3, 2, 12);
+          }
         }
       }
+    }
+
+    // Periodic 16-bit pixel shooting star across deep space
+    const meteorCycle = (timeSeconds * 0.22) % 1;
+    if (meteorCycle < 0.18) {
+      const t = meteorCycle / 0.18;
+      const mx = Math.round(width * 0.85 - t * width * 0.65);
+      const my = Math.round(height * 0.08 + t * height * 0.24);
+      ctx.fillStyle = 'rgba(136, 224, 255, 0.35)';
+      ctx.fillRect(mx + 12, my - 6, 28, 3);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(mx, my, 6, 4);
     }
   }
 
@@ -482,7 +546,6 @@ export class MenuRenderer {
     const w = CANVAS_WIDTH - m * 2;
     const h = CANVAS_HEIGHT - m * 2;
 
-    // Steel cabinet outer rim (`01-hedef-sonsuz-menu.jpg`)
     ctx.strokeStyle = '#5C687E';
     ctx.lineWidth = 10;
     ctx.strokeRect(m, m, w, h);
@@ -490,7 +553,6 @@ export class MenuRenderer {
     ctx.lineWidth = 3;
     ctx.strokeRect(m + 4, m + 4, w - 8, h - 8);
 
-    // 4 Corner steel L-brackets with rivets
     const corners: Array<[number, number]> = [
       [m, m],
       [CANVAS_WIDTH - m - 96, m],
@@ -579,44 +641,69 @@ export class MenuRenderer {
   }
 
   // ============================================================================
-  // V6 ENDLESS MYSTERY MAIN MENU (`01-hedef-sonsuz-menu.jpg` 1:1 MATCH!)
+  // 1. ORIGINAL VOID CARVER ARCADE MAIN MENU (CLEANED & ULTRA-READABLE!)
   // ============================================================================
   private renderEndlessMainMenu(
     ctx: CanvasRenderingContext2D,
     save: GameSaveData,
-    timeSeconds: number
+    timeSeconds: number,
+    overlayData?: MenuOverlayData
   ): void {
     this.drawCabinetOuterBezel(ctx);
-    this.renderMenuHero(ctx, save, timeSeconds);
+    this.renderMenuHero(ctx, save, timeSeconds, overlayData);
     this.renderMenuSelector(ctx, save);
   }
 
-  /**
-   * Hero section (`y: 36..588`):
-   * Green wireframe planet + diagonal twin-prong fighter + chrome `VOID CARVER` logo + personal best strip!
-   */
   private renderMenuHero(
     ctx: CanvasRenderingContext2D,
     save: GameSaveData,
-    timeSeconds = 0
+    timeSeconds = 0,
+    overlayData?: MenuOverlayData
   ): void {
+    const store = overlayData?.jetonStore;
+    const jeton = store ? store.jetonBalance : (save.v15Store?.jetonBalance ?? 50);
+    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
+
+    // Clean Top Bar (`y: 40..98`) — Jeton on Left, Personal Best on Right (zero overlap with Logo/Planet!)
+    this.drawPixelPanel(ctx, 56, 40, 252, 58, 'goldSelected');
+    drawPixelText(ctx, `${formatGroupedScore(jeton)} JETON`, 56 + 126, 69, {
+      scale: 2.95,
+      tone: 'gold',
+      align: 'center',
+      maxWidth: 222
+    });
+    this.addButton('OPEN_SHIPS', 56, 40, 252, 58);
+
+    this.drawPixelPanel(ctx, 560, 40, 284, 58, 'navyBtn');
+    drawPixelText(ctx, `REKOR ${formatGroupedScore(Math.max(0, rec.highScore))}`, 560 + 142, 69, {
+      scale: 2.75,
+      tone: 'cyan',
+      align: 'center',
+      maxWidth: 254
+    });
+
+    // Spacious Hero Centerpiece (`y: 112..556` — pure starry void around Logo, Planet & Fighter!)
     const planetHero = getMenuPlanetHeroSprite();
-    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 286, PIXEL_SCALE * 1.18);
+    blitPixelSprite(ctx, planetHero, CANVAS_WIDTH * 0.5, 382, PIXEL_SCALE * 1.04);
 
     const titleLogo = getVoidCarverLogoSprite();
-    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 168, PIXEL_SCALE * 1.06);
+    blitPixelSprite(ctx, titleLogo, CANVAS_WIDTH * 0.5, 166, PIXEL_SCALE * 1.05);
 
-    const skin = SHIP_SKINS.find((s) => s.id === save.selectedShip) ?? SHIP_SKINS[0];
+    const equippedShipId = store?.equippedShipId ?? save.v15Store?.equippedShipId ?? 'SHIP_VANGUARD';
+    const skin =
+      STORE_SHIP_SKINS[equippedShipId] ??
+      SHIP_SKINS.find((s) => s.id === save.selectedShip) ??
+      SHIP_SKINS[0]!;
     const shipSprite = getPlayerShipSprite(skin, 'UP');
     const bob = Math.sin(timeSeconds * 3.2) * 5;
     const sx = CANVAS_WIDTH * 0.5 + 18;
-    const sy = 372 + bob;
+    const sy = 436 + bob;
 
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(1.12);
 
-    const flameLen = 74 + Math.round(Math.sin(timeSeconds * 22) * 9);
+    const flameLen = 72 + Math.round(Math.sin(timeSeconds * 22) * 9);
     for (const exOff of [-22, 22]) {
       ctx.fillStyle = 'rgba(255, 160, 48, 0.35)';
       ctx.fillRect(exOff - 12, 46, 24, flameLen + 16);
@@ -627,60 +714,19 @@ export class MenuRenderer {
     }
 
     ctx.imageSmoothingEnabled = false;
-    const scale = 5.6;
+    const scale = 5.5;
     const dw = shipSprite.width * scale;
     const dh = shipSprite.height * scale;
     ctx.drawImage(shipSprite, -dw * 0.5, -dh * 0.5, dw, dh);
     ctx.restore();
-
-    // Compact Personal Record Ribbon
-    const runDiff = difficultyIdToRunDifficulty(save.difficulty);
-    const rec = StorageService.getDifficultyRecord(save.difficulty, save);
-    const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
-    const totalStars = StorageService.getTotalCampaignStarsV12(save);
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(7, 11, 22, 0.9)';
-    ctx.fillRect(66, 502, 768, 86);
-    ctx.strokeStyle = '#3E5278';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(66, 502, 768, 86);
-    ctx.restore();
-
-    drawPixelText(
-      ctx,
-      `REKOR: ${formatGroupedScore(Math.max(0, rec.highScore))}  •  ★ ${totalStars}/72`,
-      CANVAS_WIDTH * 0.5,
-      528,
-      { scale: 2.75, tone: 'gold', align: 'center' }
-    );
-    drawPixelText(
-      ctx,
-      `ULAŞILAN DERİNLİK: BÖLÜM ${String(maxUnlocked).padStart(2, '0')} / 24`,
-      CANVAS_WIDTH * 0.5,
-      564,
-      { scale: 2.65, tone: 'cyan', align: 'center' }
-    );
   }
 
-  private shortenBossTitle(nameTr: string): string {
-    if (nameTr.length <= 16) return nameTr;
-    const map: Record<string, string> = {
-      'ÇELİK PEYGAMBERDEVESİ': 'ÇELİK PEYGAMBER',
-      'ELEKTRİK DENİZANASI': 'ELEKT. DENİZANASI',
-      'GÜNEŞ FIRTINASI ÇEKİRDEĞİ': 'GÜNEŞ ÇEKİRDEĞİ'
-    };
-    return map[nameTr] ?? nameTr.slice(0, 16);
-  }
-
-  /**
-   * Build 12 Crystal-Clear Difficulty Selector + Live Summary Box + 24-Stage Strip + `OYNA` (`y: 610..1548`)
-   */
   private renderMenuSelector(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
-    const activeProf = DIFFICULTY_UI_PROFILES[runDiff];
+    const diffSpec = HONEST_DIFFICULTIES_V15[runDiff];
     const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
     const selectedStage = StorageService.getSelectedStartStage(runDiff, save);
+    const stars = StorageService.getCampaignStageStars(runDiff, selectedStage, save);
 
     if (this.lastSyncedDiff !== runDiff || this.lastSyncedSelStage !== selectedStage) {
       this.lastSyncedDiff = runDiff;
@@ -688,105 +734,99 @@ export class MenuRenderer {
       this.centerStageStripOn(selectedStage);
     }
 
-    // =========================================================================
-    // 1. ZORLUK SEÇİMİ — 100% UNMISTAKABLE HIGH-CONTRAST ACTIVE PILL + BADGE
-    // =========================================================================
-    drawPixelText(ctx, 'ZORLUK SEÇİMİ', CANVAS_WIDTH * 0.5, 622, {
-      scale: 2.95,
-      tone: 'silver',
-      align: 'center'
-    });
-
+    // 1. ZORLUK SEÇİMİ (`y: 604..718`) — Tactile Beveled Arcade Cards with Embedded Spec Badge!
     const rowX = 66;
     const rowW = 768;
     const diffGap = 21;
-    const diffW = Math.floor((rowW - diffGap * 2) / 3); // 242
-    const baseDiffY = 660;
-    const baseDiffH = 104;
+    const diffW = Math.floor((rowW - diffGap * 2) / 3);
+    const baseDiffY = 608;
+    const baseDiffH = 108;
 
     const diffs: Array<{
       saveId: 'EXPLORER' | 'COMMANDER' | 'LEGEND';
       runId: GameDifficulty;
       topBevel: string;
       botShade: string;
+      shortBadge: string;
     }> = [
-      { saveId: 'EXPLORER', runId: 'EASY', topBevel: '#6EE7B7', botShade: '#047857' },
-      { saveId: 'COMMANDER', runId: 'MEDIUM', topBevel: '#FDE68A', botShade: '#B45309' },
-      { saveId: 'LEGEND', runId: 'HARD', topBevel: '#FCA5A5', botShade: '#B91C1C' }
+      {
+        saveId: 'EXPLORER',
+        runId: 'EASY',
+        topBevel: '#6EE7B7',
+        botShade: '#047857',
+        shortBadge: '4 GEMİ • %75'
+      },
+      {
+        saveId: 'COMMANDER',
+        runId: 'MEDIUM',
+        topBevel: '#FDE68A',
+        botShade: '#B45309',
+        shortBadge: '3 GEMİ • %78'
+      },
+      {
+        saveId: 'LEGEND',
+        runId: 'HARD',
+        topBevel: '#FCA5A5',
+        botShade: '#B91C1C',
+        shortBadge: '3 GEMİ • %80'
+      }
     ];
-
-    let activeCenterX = CANVAS_WIDTH * 0.5;
 
     for (let i = 0; i < diffs.length; i++) {
       const d = diffs[i]!;
-      const prof = DIFFICULTY_UI_PROFILES[d.runId];
+      const spec = HONEST_DIFFICULTIES_V15[d.runId];
       const active = save.difficulty === d.saveId;
 
-      // Selected card scales up (`scale(1.06)` feel) while unselected cards sit recessed & matte!
       const bx = active ? rowX + i * (diffW + diffGap) - 6 : rowX + i * (diffW + diffGap) + 4;
       const bw = active ? diffW + 12 : diffW - 8;
-      const by = active ? baseDiffY - 10 : baseDiffY + 4;
-      const bh = active ? baseDiffH + 22 : baseDiffH - 6;
-
-      if (active) {
-        activeCenterX = bx + bw * 0.5;
-      }
+      const by = active ? baseDiffY - 8 : baseDiffY + 4;
+      const bh = active ? baseDiffH + 16 : baseDiffH - 8;
 
       ctx.save();
       if (active) {
-        ctx.shadowColor = prof.glowRgba;
-        ctx.shadowBlur = 26;
-        ctx.fillStyle = prof.accentHex;
+        ctx.fillStyle = spec.accentHex;
         ctx.fillRect(bx, by, bw, bh);
-        ctx.shadowBlur = 0;
-
-        // Top specular highlight + lower bevel for tactile arcade punch
         ctx.fillStyle = d.topBevel;
         ctx.fillRect(bx + 4, by + 4, bw - 8, 6);
         ctx.fillStyle = d.botShade;
         ctx.fillRect(bx + 4, by + bh - 12, bw - 8, 8);
-
         ctx.strokeStyle = '#FFFFFF';
         ctx.lineWidth = 4;
         ctx.strokeRect(bx + 2, by + 2, bw - 4, bh - 4);
 
-        drawPixelText(ctx, prof.titleTr, bx + bw * 0.5, by + 46, {
-          scale: 4.35,
+        drawPixelText(ctx, spec.labelTr, bx + bw * 0.5, by + 42, {
+          scale: 4.1,
           tone: 'white',
           align: 'center'
         });
 
-        // Crisp dark pill badge inside active card: `✓ SEÇİLİ`
-        const badgeW = 166;
+        const badgeW = bw - 26;
         const badgeH = 34;
         const badgeX = Math.round(bx + (bw - badgeW) * 0.5);
         const badgeY = by + bh - 46;
-        ctx.fillStyle = 'rgba(6, 10, 18, 0.86)';
+        ctx.fillStyle = 'rgba(6, 10, 18, 0.90)';
         ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
         ctx.strokeStyle = d.topBevel;
         ctx.lineWidth = 2;
         ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
-        drawPixelText(ctx, '✓ SEÇİLİ', bx + bw * 0.5, badgeY + 18, {
+        drawPixelText(ctx, d.shortBadge, bx + bw * 0.5, badgeY + 17, {
           scale: 2.35,
           tone: d.runId === 'EASY' ? 'green' : d.runId === 'MEDIUM' ? 'gold' : 'white',
-          align: 'center'
+          align: 'center',
+          maxWidth: badgeW - 12
         });
       } else {
-        // Matte low-distraction unselected button (`rgba(18, 24, 34, 0.65)`, `#7C8B9E` muted label)
-        ctx.fillStyle = 'rgba(18, 24, 34, 0.68)';
+        ctx.fillStyle = 'rgba(18, 24, 38, 0.84)';
         ctx.fillRect(bx, by, bw, bh);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#3E5278';
+        ctx.lineWidth = 2.5;
         ctx.strokeRect(bx, by, bw, bh);
-        // Subtle colored bottom indicator strip so player knows each button's tier color
-        ctx.fillStyle = prof.accentHex;
-        ctx.globalAlpha = 0.42;
-        ctx.fillRect(bx + 12, by + bh - 6, bw - 24, 3);
-        ctx.globalAlpha = 1;
+        ctx.fillStyle = spec.accentHex;
+        ctx.fillRect(bx + 14, by + bh - 6, bw - 28, 3);
 
-        drawPixelText(ctx, prof.titleTr, bx + bw * 0.5, by + bh * 0.5, {
-          scale: 3.45,
-          tone: 'muted',
+        drawPixelText(ctx, spec.labelTr, bx + bw * 0.5, by + bh * 0.5, {
+          scale: 3.5,
+          tone: 'silver',
           align: 'center'
         });
       }
@@ -795,237 +835,73 @@ export class MenuRenderer {
       this.addButton(`SET_DIFF_${d.saveId}`, bx, by, bw, bh);
     }
 
-    // =========================================================================
-    // 2. LIVE DIFFICULTY SUMMARY BOX (Framed in `activeProf.accentHex` + Pointer)
-    // =========================================================================
-    const infoX = 66;
-    const infoY = 796;
-    const infoW = 768;
-    const infoH = 96;
+    // 2. SLEEK SINGLE-ROW INTEGRATED STAGE SELECTOR (`y: 762..872` — 40px breathing room!)
+    const deckY = 762;
+    const deckH = 110;
+    const navW = 72;
+    const canPrev = selectedStage > 1;
+    const canNext = selectedStage < maxUnlocked;
 
-    ctx.save();
-    ctx.shadowColor = activeProf.glowRgba;
-    ctx.shadowBlur = 14;
-    ctx.fillStyle = '#070C18';
-    ctx.fillRect(infoX, infoY, infoW, infoH);
-    ctx.strokeStyle = activeProf.accentHex;
-    ctx.lineWidth = 3.5;
-    ctx.strokeRect(infoX, infoY, infoW, infoH);
-    ctx.shadowBlur = 0;
-
-    // Upward pointer triangle pointing straight to the selected difficulty button!
-    ctx.fillStyle = activeProf.accentHex;
-    ctx.beginPath();
-    ctx.moveTo(activeCenterX - 14, infoY);
-    ctx.lineTo(activeCenterX + 14, infoY);
-    ctx.lineTo(activeCenterX, infoY - 13);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-
-    const headerTone =
-      runDiff === 'EASY' ? 'green' : runDiff === 'MEDIUM' ? 'gold' : 'crimson';
-    const headerLine = `✓ SEÇİLEN: ${activeProf.titleTr} • ${activeProf.badgeTr}`;
-    const rawHdrW = measurePixelText(headerLine, 2.3, 0.45);
-    const hdrScale = rawHdrW > infoW - 32 ? 2.3 * ((infoW - 32) / rawHdrW) : 2.3;
-    drawPixelText(ctx, headerLine, CANVAS_WIDTH * 0.5, infoY + 31, {
-      scale: hdrScale,
-      tone: headerTone,
-      align: 'center',
-      letterGap: 0.45
-    });
-
-    const rawSumW = measurePixelText(activeProf.summaryLineTr, 2.05, 0.35);
-    const sumScale = rawSumW > infoW - 32 ? 2.05 * ((infoW - 32) / rawSumW) : 2.05;
-    drawPixelText(ctx, activeProf.summaryLineTr, CANVAS_WIDTH * 0.5, infoY + 68, {
-      scale: sumScale,
-      tone: 'white',
-      align: 'center',
-      letterGap: 0.35
-    });
-
-    // =========================================================================
-    // 3. HORIZONTAL 24-STAGE SELECTOR STRIP (`BÖLÜM 1..24`) + `TÜMÜ 24` GRID BTN
-    // =========================================================================
-    drawPixelText(ctx, 'BÖLÜM SEÇİCİ (SABİT 1-24)', 68, 926, {
-      scale: 2.55,
-      tone: 'silver',
-      align: 'left',
-      letterGap: 0.5
-    });
-
-    // `[TÜM 24 BÖLÜM]` quick grid button on right of header
-    const allBtnX = 626;
-    const allBtnY = 904;
-    const allBtnW = 208;
-    const allBtnH = 42;
-    ctx.save();
-    ctx.fillStyle = '#121E36';
-    ctx.fillRect(allBtnX, allBtnY, allBtnW, allBtnH);
-    ctx.strokeStyle = '#58C8FF';
-    ctx.lineWidth = 2.5;
-    ctx.strokeRect(allBtnX, allBtnY, allBtnW, allBtnH);
-    ctx.restore();
-    drawPixelText(ctx, 'TÜM 24 BÖLÜM >', allBtnX + allBtnW * 0.5, allBtnY + 22, {
-      scale: 2.05,
-      tone: 'cyan',
-      align: 'center',
-      letterGap: 0.4
-    });
-    this.addButton('OPEN_STAGE_GRID', allBtnX, allBtnY, allBtnW, allBtnH);
-
-    const stripY = 956;
-    const stripH = 172;
-    const navW = 58;
-
-    // Left `<` pager button
-    const canPrev = this.stageStripStart > 1;
-    ctx.save();
-    ctx.fillStyle = canPrev ? '#142038' : '#0A0E18';
-    ctx.fillRect(54, stripY, navW, stripH);
-    ctx.strokeStyle = canPrev ? '#7A92B8' : '#263044';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(54, stripY, navW, stripH);
-    ctx.restore();
-    drawPixelText(ctx, '◄', 54 + navW * 0.5, stripY + stripH * 0.5, {
-      scale: 3.4,
+    this.drawPixelPanel(ctx, rowX, deckY, navW, deckH, canPrev ? 'navyBtn' : 'locked');
+    drawPixelText(ctx, '◄', rowX + navW * 0.5, deckY + deckH * 0.5, {
+      scale: 3.6,
       tone: canPrev ? 'white' : 'muted',
       align: 'center'
     });
-    this.addButton('STAGE_STRIP_PREV', 54, stripY, navW, stripH);
+    this.addButton('PREV_STAGE_MAIN', rowX, deckY, navW, deckH);
 
-    // Right `>` pager button
-    const canNext = this.stageStripStart < 22;
-    ctx.save();
-    ctx.fillStyle = canNext ? '#142038' : '#0A0E18';
-    ctx.fillRect(788, stripY, navW, stripH);
-    ctx.strokeStyle = canNext ? '#7A92B8' : '#263044';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(788, stripY, navW, stripH);
-    ctx.restore();
-    drawPixelText(ctx, '►', 788 + navW * 0.5, stripY + stripH * 0.5, {
-      scale: 3.4,
+    const nextX = rowX + rowW - navW;
+    this.drawPixelPanel(ctx, nextX, deckY, navW, deckH, canNext ? 'navyBtn' : 'locked');
+    drawPixelText(ctx, '►', nextX + navW * 0.5, deckY + deckH * 0.5, {
+      scale: 3.6,
       tone: canNext ? 'white' : 'muted',
       align: 'center'
     });
-    this.addButton('STAGE_STRIP_NEXT', 788, stripY, navW, stripH);
+    this.addButton('NEXT_STAGE_MAIN', nextX, deckY, navW, deckH);
 
-    // 3 visible Stage Cards in `[stageStripStart .. stageStripStart + 2]`
-    const cardsAreaX = 122;
-    const cardGap = 12;
-    const stageCardW = 210; // 3 * 210 + 2 * 12 = 654 (122 + 654 = 776)
-
-    for (let slot = 0; slot < 3; slot++) {
-      const stageNum = this.stageStripStart + slot;
-      const spec = FIXED_CAMPAIGN_STAGES[stageNum - 1];
-      if (!spec) continue;
-
-      const cx = cardsAreaX + slot * (stageCardW + cardGap);
-      const unlocked = stageNum <= maxUnlocked;
-      const isSelected = stageNum === selectedStage;
-      const stars = StorageService.getCampaignStageStars(runDiff, stageNum, save);
-
-      ctx.save();
-      if (isSelected) {
-        ctx.shadowColor = activeProf.glowRgba;
-        ctx.shadowBlur = 16;
-        ctx.fillStyle = '#141B2E';
-        ctx.fillRect(cx, stripY - 4, stageCardW, stripH + 8);
-        ctx.strokeStyle = activeProf.accentHex;
-        ctx.lineWidth = 4.5;
-        ctx.strokeRect(cx, stripY - 4, stageCardW, stripH + 8);
-      } else if (unlocked) {
-        ctx.fillStyle = '#0D1424';
-        ctx.fillRect(cx, stripY, stageCardW, stripH);
-        ctx.strokeStyle = '#4A5E82';
-        ctx.lineWidth = 2.5;
-        ctx.strokeRect(cx, stripY, stageCardW, stripH);
-      } else {
-        ctx.fillStyle = 'rgba(10, 14, 24, 0.72)';
-        ctx.fillRect(cx, stripY, stageCardW, stripH);
-        ctx.strokeStyle = '#242E42';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(cx, stripY, stageCardW, stripH);
+    const midCardX = rowX + navW + 14;
+    const midCardW = rowW - (navW + 14) * 2;
+    const chosenBoss = getStageBossNameTr(selectedStage);
+    const starTag =
+      stars >= 3 ? ' ★★★' : stars === 2 ? ' ★★☆' : stars === 1 ? ' ★☆☆' : '';
+    this.drawPixelPanel(ctx, midCardX, deckY, midCardW, deckH, 'steel');
+    drawPixelText(
+      ctx,
+      `BÖLÜM ${String(selectedStage).padStart(2, '0')}: ${chosenBoss}${starTag}`,
+      midCardX + midCardW * 0.5,
+      deckY + 38,
+      {
+        scale: 2.9,
+        tone: 'gold',
+        align: 'center',
+        maxWidth: midCardW - 28
       }
-      ctx.restore();
-
-      const midX = cx + stageCardW * 0.5;
-      drawPixelText(
-        ctx,
-        unlocked ? `BÖLÜM ${stageNum}` : `BÖLÜM ${stageNum} 🔒`,
-        midX,
-        stripY + 32,
-        {
-          scale: 2.55,
-          tone: isSelected ? headerTone : unlocked ? 'white' : 'muted',
-          align: 'center'
-        }
-      );
-
-      drawPixelText(
-        ctx,
-        unlocked ? this.shortenBossTitle(spec.bossNameTr) : 'KİLİTLİ BOSS',
-        midX,
-        stripY + 76,
-        {
-          scale: 1.85,
-          tone: isSelected ? 'gold' : unlocked ? 'cyan' : 'muted',
-          align: 'center',
-          letterGap: 0.35
-        }
-      );
-
-      if (unlocked) {
-        const starStr =
-          stars >= 3 ? '★★★' : stars === 2 ? '★★☆' : stars === 1 ? '★☆☆' : '☆☆☆';
-        drawPixelText(ctx, starStr, midX, stripY + 116, {
-          scale: 2.6,
-          tone: stars > 0 ? 'gold' : 'muted',
-          align: 'center'
-        });
-        drawPixelText(
-          ctx,
-          isSelected ? '✓ BAŞLANGIÇ' : 'DOKUN SEÇ',
-          midX,
-          stripY + 150,
-          {
-            scale: 1.85,
-            tone: isSelected ? 'green' : 'silver',
-            align: 'center',
-            letterGap: 0.4
-          }
-        );
-      } else {
-        drawPixelText(ctx, `BÖLÜM ${stageNum - 1} GEREKLİ`, midX, stripY + 132, {
-          scale: 1.75,
-          tone: 'muted',
-          align: 'center',
-          letterGap: 0.35
-        });
+    );
+    drawPixelText(
+      ctx,
+      `AÇIK: 1-${maxUnlocked}/30  •  TÜM BÖLÜMLER >`,
+      midCardX + midCardW * 0.5,
+      deckY + 80,
+      {
+        scale: 2.35,
+        tone: 'cyan',
+        align: 'center',
+        maxWidth: midCardW - 28
       }
+    );
+    this.addButton('OPEN_STAGE_GRID', midCardX, deckY, midCardW, deckH);
 
-      this.addButton(`SELECT_STAGE_${stageNum}`, cx, stripY, stageCardW, stripH);
-    }
-
-    // =========================================================================
-    // 4. GIANT ARCADE `OYNA` BUTTON (`BÖLÜM X: <BOSS>`)
-    // =========================================================================
-    const chosenSpec = FIXED_CAMPAIGN_STAGES[selectedStage - 1] ?? FIXED_CAMPAIGN_STAGES[0]!;
-    const playW = 636;
-    const playH = 174;
-    const playX = Math.round((CANVAS_WIDTH - playW) * 0.5);
-    const playY = 1156;
+    // 3. GIANT ICONIC RED-GOLD ARCADE `OYUNA BAŞLA` BUTTON (`y: 912..1074` — 40px gap!)
+    const playW = 768;
+    const playH = 162;
+    const playX = rowX;
+    const playY = 912;
 
     ctx.save();
-    ctx.shadowColor = 'rgba(255, 208, 64, 0.55)';
-    ctx.shadowBlur = 24;
     ctx.fillStyle = '#FFF078';
-    ctx.fillRect(playX - 6, playY - 6, playW + 12, playH + 12);
-    ctx.shadowBlur = 0;
-
+    ctx.fillRect(playX - 5, playY - 5, playW + 10, playH + 10);
     ctx.fillStyle = '#080810';
     ctx.fillRect(playX, playY, playW, playH);
-
     ctx.fillStyle = '#E01818';
     ctx.fillRect(playX + 6, playY + 6, playW - 12, playH - 12);
     ctx.fillStyle = '#B40C10';
@@ -1035,85 +911,433 @@ export class MenuRenderer {
     ctx.strokeRect(playX + 10, playY + 10, playW - 20, playH - 20);
     ctx.restore();
 
-    drawPixelText(ctx, 'OYUNA BAŞLA', CANVAS_WIDTH * 0.5, playY + 66, {
-      scale: 5.5,
+    drawPixelText(ctx, 'OYUNA BAŞLA', CANVAS_WIDTH * 0.5, playY + 58, {
+      scale: 5.4,
       tone: 'gold',
       align: 'center'
     });
     drawPixelText(
       ctx,
-      `BÖLÜM ${selectedStage}: ${chosenSpec.bossNameTr} • ${activeProf.titleTr}`,
+      `BÖLÜM ${selectedStage} • ${diffSpec.labelTr} MOD`,
       CANVAS_WIDTH * 0.5,
-      playY + 132,
-      { scale: 2.3, tone: 'white', align: 'center', letterGap: 0.45 }
+      playY + 118,
+      { scale: 2.85, tone: 'white', align: 'center', maxWidth: playW - 44 }
     );
     this.addButton('START_ENDLESS_RUN', playX, playY, playW, playH);
 
-    // =========================================================================
-    // 5. BOTTOM `GEMİLER` & `AYARLAR` BUTTONS
-    // =========================================================================
-    const botY = 1366;
-    const botH = 100;
-    const botW = 342;
+    // 4. EMERALD-GOLD `SONSUZ MOD` ARCADE BUTTON (`y: 1110..1234` — 36px gap!)
+    const endY = 1110;
+    const endH = 124;
+    const bestEndless = save.v15Store?.bestEndlessWave?.[runDiff] ?? 0;
+    this.drawPixelPanel(ctx, playX, endY, playW, endH, 'emeraldGold');
+    drawPixelText(ctx, 'SONSUZ MOD', CANVAS_WIDTH * 0.5, endY + 44, {
+      scale: 4.2,
+      tone: 'gold',
+      align: 'center'
+    });
+    drawPixelText(
+      ctx,
+      bestEndless > 0
+        ? `EN İYİ DALGA: ${bestEndless}  •  KİMERİK BOSS VE GÜÇ SEÇİMİ`
+        : 'KİMERİK BOSS DALGALARI VE GÜÇ SEÇİMİ',
+      CANVAS_WIDTH * 0.5,
+      endY + 90,
+      {
+        scale: 2.45,
+        tone: 'white',
+        align: 'center',
+        maxWidth: playW - 44
+      }
+    );
+    this.addButton('START_ENDLESS_MODE', playX, endY, playW, endH);
 
-    this.drawPixelPanel(ctx, 90, botY, botW, botH, 'brushedSteel');
-    drawPixelText(ctx, 'GEMİLER', 90 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.7,
+    // 5. BOTTOM `MAĞAZA` & `AYARLAR` BRUSHED-STEEL RIVETED BUTTONS (`y: 1272..1384` — 38px gap!)
+    const botY = 1272;
+    const botH = 112;
+    const botW = 370;
+
+    this.drawPixelPanel(ctx, playX, botY, botW, botH, 'brushedSteel');
+    drawPixelText(ctx, 'MAĞAZA', playX + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.9,
+      tone: 'gold',
+      align: 'center'
+    });
+    this.addButton('OPEN_SHIPS', playX, botY, botW, botH);
+
+    const setX = playX + playW - botW;
+    this.drawPixelPanel(ctx, setX, botY, botW, botH, 'brushedSteel');
+    drawPixelText(ctx, 'AYARLAR', setX + botW * 0.5, botY + botH * 0.5, {
+      scale: 3.9,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('OPEN_SHIPS', 90, botY, botW, botH);
-
-    this.drawPixelPanel(ctx, 468, botY, botW, botH, 'brushedSteel');
-    drawPixelText(ctx, 'AYARLAR', 468 + botW * 0.5, botY + botH * 0.5, {
-      scale: 3.7,
-      tone: 'white',
-      align: 'center'
-    });
-    this.addButton('GOTO_SETTINGS', 468, botY, botW, botH);
+    this.addButton('GOTO_SETTINGS', setX, botY, botW, botH);
   }
 
-  /**
-   * Full 24-Stage Fixed Campaign Grid (`Bölüm 1..24` across 4 Sectors)
-   */
+  // ============================================================================
+  // 2. 3-TAB ARCADE `MAĞAZA` (`GEMİLER | İZLER | JETON AL`)
+  // ============================================================================
+  private renderStoreScreen(
+    ctx: CanvasRenderingContext2D,
+    save: GameSaveData,
+    overlayData: MenuOverlayData
+  ): void {
+    this.drawCabinetOuterBezel(ctx);
+    const store = overlayData.jetonStore ?? new CleanJetonEconomyAndStore();
+    if (!overlayData.jetonStore) {
+      StorageService.hydrateV15Store(store, save);
+    }
+
+    drawPixelText(ctx, 'MAĞAZA', 220, 82, {
+      scale: 4.8,
+      tone: 'gold',
+      align: 'center'
+    });
+
+    this.drawPixelPanel(ctx, 520, 46, 316, 72, 'goldSelected');
+    drawPixelText(ctx, `${formatGroupedScore(store.jetonBalance)} JETON`, 520 + 158, 82, {
+      scale: 3.2,
+      tone: 'gold',
+      align: 'center',
+      maxWidth: 286
+    });
+
+    // 3 Arcade Tabs: `GEMİLER` | `İZLER` | `JETON AL`
+    const tabs: Array<{ id: 'SHIPS' | 'TRAILS' | 'BUY_JETON'; label: string }> = [
+      { id: 'SHIPS', label: 'GEMİLER' },
+      { id: 'TRAILS', label: 'İZLER' },
+      { id: 'BUY_JETON', label: 'JETON AL' }
+    ];
+    const tabStartX = 64;
+    const tabGap = 14;
+    const tabW = Math.floor((772 - tabGap * 2) / 3);
+    const tabY = 142;
+    const tabH = 82;
+
+    for (let i = 0; i < tabs.length; i++) {
+      const t = tabs[i]!;
+      const tx = tabStartX + i * (tabW + tabGap);
+      const active = this.storeTab === t.id;
+      this.drawPixelPanel(ctx, tx, tabY, tabW, tabH, active ? 'goldRed' : 'navyBtn');
+      drawPixelText(ctx, t.label, tx + tabW * 0.5, tabY + tabH * 0.5, {
+        scale: 3.2,
+        tone: active ? 'gold' : 'silver',
+        align: 'center'
+      });
+      this.addButton(`SET_STORE_TAB_${t.id}`, tx, tabY, tabW, tabH);
+    }
+
+    if (this.storeTab === 'SHIPS') {
+      this.renderArcadeShipsTab(ctx, store);
+    } else if (this.storeTab === 'TRAILS') {
+      this.renderArcadeTrailsTab(ctx, store);
+    } else {
+      this.renderArcadeBuyJetonTab(ctx, store);
+    }
+
+    this.drawPixelPanel(ctx, 250, 1416, 400, 96, 'navyBtn');
+    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1464, {
+      scale: 3.8,
+      tone: 'white',
+      align: 'center'
+    });
+    this.addButton('BACK_MAIN', 250, 1416, 400, 96);
+  }
+
+  private renderArcadeShipsTab(
+    ctx: CanvasRenderingContext2D,
+    store: CleanJetonEconomyAndStore
+  ): void {
+    const startX = 64;
+    const startY = 250;
+    const cardW = 372;
+    const cardH = 266;
+    const gapX = 28;
+    const gapY = 20;
+
+    for (let i = 0; i < SHIPS_STORE_CATALOG.length; i++) {
+      const item = SHIPS_STORE_CATALOG[i]!;
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cx = startX + col * (cardW + gapX);
+      const cy = startY + row * (cardH + gapY);
+
+      const owned = store.ownedShips.has(item.id);
+      const equipped = store.equippedShipId === item.id;
+      const affordable = store.jetonBalance >= item.jetonCost;
+
+      this.drawPixelPanel(
+        ctx,
+        cx,
+        cy,
+        cardW,
+        cardH,
+        equipped ? 'goldSelected' : owned ? 'steel' : affordable ? 'navyBtn' : 'locked'
+      );
+
+      const skin = STORE_SHIP_SKINS[item.id] ?? SHIP_SKINS[0]!;
+      const sprite = getPlayerShipSprite(skin, 'UP');
+      blitPixelSprite(ctx, sprite, cx + cardW * 0.5, cy + 78, 4.5);
+
+      drawPixelText(ctx, item.nameTr.toUpperCase(), cx + cardW * 0.5, cy + 158, {
+        scale: 3.3,
+        tone: equipped ? 'gold' : 'white',
+        align: 'center',
+        maxWidth: cardW - 32
+      });
+
+      const statusText = equipped
+        ? '✓ SEÇİLİ'
+        : owned
+          ? 'KUŞAN'
+          : `${formatGroupedScore(item.jetonCost)} JETON`;
+      const statusTone = equipped ? 'green' : owned ? 'cyan' : affordable ? 'gold' : 'muted';
+
+      drawPixelText(ctx, statusText, cx + cardW * 0.5, cy + 216, {
+        scale: 2.9,
+        tone: statusTone,
+        align: 'center',
+        maxWidth: cardW - 32
+      });
+
+      this.addButton(`BUY_OR_EQUIP_SHIP_${item.id}`, cx, cy, cardW, cardH);
+    }
+  }
+
+  private renderArcadeTrailsTab(
+    ctx: CanvasRenderingContext2D,
+    store: CleanJetonEconomyAndStore
+  ): void {
+    const startX = 64;
+    const startY = 266;
+    const cardW = 372;
+    const cardH = 340;
+    const gapX = 28;
+    const gapY = 28;
+
+    for (let i = 0; i < TRAILS_STORE_CATALOG.length; i++) {
+      const item = TRAILS_STORE_CATALOG[i]!;
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cx = startX + col * (cardW + gapX);
+      const cy = startY + row * (cardH + gapY);
+
+      const owned = store.ownedTrails.has(item.id);
+      const equipped = store.equippedTrailId === item.id;
+      const affordable = store.jetonBalance >= item.jetonCost;
+
+      this.drawPixelPanel(
+        ctx,
+        cx,
+        cy,
+        cardW,
+        cardH,
+        equipped ? 'goldSelected' : owned ? 'steel' : affordable ? 'navyBtn' : 'locked'
+      );
+
+      ctx.save();
+      const lx1 = cx + 56;
+      const lx2 = cx + cardW - 56;
+      const ly = cy + 96;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      if (item.vfxType === 'LIGHTNING') {
+        ctx.moveTo(lx1, ly + 8);
+        ctx.lineTo(lx1 + 64, ly - 12);
+        ctx.lineTo(lx1 + 128, ly + 12);
+        ctx.lineTo(lx1 + 192, ly - 10);
+        ctx.lineTo(lx2, ly + 6);
+      } else {
+        ctx.moveTo(lx1, ly);
+        ctx.lineTo(lx2, ly);
+      }
+      ctx.globalAlpha = 0.28;
+      ctx.strokeStyle = item.primaryHex;
+      ctx.lineWidth = 18;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = item.primaryHex;
+      ctx.lineWidth = 8;
+      ctx.stroke();
+      ctx.strokeStyle = item.glowHex;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.restore();
+
+      drawPixelText(ctx, item.nameTr.toUpperCase(), cx + cardW * 0.5, cy + 194, {
+        scale: 3.4,
+        tone: equipped ? 'gold' : 'white',
+        align: 'center',
+        maxWidth: cardW - 32
+      });
+
+      const statusText = equipped
+        ? '✓ SEÇİLİ'
+        : owned
+          ? 'KUŞAN'
+          : `${formatGroupedScore(item.jetonCost)} JETON`;
+      const statusTone = equipped ? 'green' : owned ? 'cyan' : affordable ? 'gold' : 'muted';
+
+      drawPixelText(ctx, statusText, cx + cardW * 0.5, cy + 266, {
+        scale: 3.0,
+        tone: statusTone,
+        align: 'center',
+        maxWidth: cardW - 32
+      });
+
+      this.addButton(`BUY_OR_EQUIP_TRAIL_${item.id}`, cx, cy, cardW, cardH);
+    }
+  }
+
+  private renderArcadeBuyJetonTab(
+    ctx: CanvasRenderingContext2D,
+    store: CleanJetonEconomyAndStore
+  ): void {
+    const startX = 64;
+    const startY = 266;
+    const cardW = 372;
+    const cardH = 440;
+    const gapX = 28;
+    const gapY = 30;
+
+    for (let i = 0; i < JETON_IAP_PACKS.length; i++) {
+      const pack = JETON_IAP_PACKS[i]!;
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cx = startX + col * (cardW + gapX);
+      const cy = startY + row * (cardH + gapY);
+
+      const isStarter = pack.productId === 'com.tahafirat.voidcarver.starter_x2';
+      const starterOwned = isStarter && store.hasPermanentDoubleJeton;
+      const priceStr = store.localizedPrices[pack.productId] || pack.defaultDisplayPriceTr;
+
+      this.drawPixelPanel(
+        ctx,
+        cx,
+        cy,
+        cardW,
+        cardH,
+        starterOwned ? 'emeraldGold' : isStarter ? 'goldSelected' : 'steel'
+      );
+
+      const midX = cx + cardW * 0.5;
+      if (!isStarter) {
+        drawPixelText(ctx, formatGroupedScore(pack.jetonAmount), midX, cy + 114, {
+          scale: 5.8,
+          tone: 'gold',
+          align: 'center',
+          maxWidth: cardW - 36
+        });
+        drawPixelText(ctx, 'JETON', midX, cy + 188, {
+          scale: 3.4,
+          tone: 'white',
+          align: 'center'
+        });
+        drawPixelText(ctx, pack.detailTr.toUpperCase(), midX, cy + 252, {
+          scale: 2.35,
+          tone: 'cyan',
+          align: 'center',
+          maxWidth: cardW - 36
+        });
+      } else {
+        drawPixelText(ctx, 'BAŞLANGIÇ PAKETİ', midX, cy + 86, {
+          scale: 3.4,
+          tone: 'gold',
+          align: 'center',
+          maxWidth: cardW - 32
+        });
+        drawPixelText(ctx, 'KALICI x2 JETON', midX, cy + 154, {
+          scale: 3.1,
+          tone: 'green',
+          align: 'center',
+          maxWidth: cardW - 32
+        });
+        drawPixelText(ctx, '+ PHANTOM GEMİSİ', midX, cy + 206, {
+          scale: 2.6,
+          tone: 'cyan',
+          align: 'center',
+          maxWidth: cardW - 32
+        });
+        drawPixelText(ctx, '+ 750 JETON', midX, cy + 252, {
+          scale: 2.8,
+          tone: 'white',
+          align: 'center',
+          maxWidth: cardW - 32
+        });
+      }
+
+      // Bottom price button strip inside card
+      this.drawPixelPanel(
+        ctx,
+        cx + 26,
+        cy + 318,
+        cardW - 52,
+        90,
+        starterOwned ? 'emeraldGold' : 'goldRed'
+      );
+      drawPixelText(ctx, starterOwned ? 'AKTİF ✓' : priceStr, midX, cy + 363, {
+        scale: 3.5,
+        tone: starterOwned ? 'white' : 'gold',
+        align: 'center',
+        maxWidth: cardW - 76
+      });
+
+      this.addButton(`BUY_JETON_PACK_${pack.productId}`, cx, cy, cardW, cardH);
+    }
+
+    // Restore Purchases Arcade Button
+    this.drawPixelPanel(ctx, 170, 1218, 560, 82, 'brushedSteel');
+    drawPixelText(ctx, 'SATIN ALIMLARI GERİ YÜKLE', CANVAS_WIDTH * 0.5, 1259, {
+      scale: 2.85,
+      tone: 'white',
+      align: 'center',
+      maxWidth: 520
+    });
+    this.addButton('RESTORE_IAP_PURCHASES', 170, 1218, 560, 82);
+  }
+
+  // ============================================================================
+  // 3. 30-STAGE CAMPAIGN GRID (`BÖLÜM 1..30`)
+  // ============================================================================
   private renderCampaignStageGridScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     this.drawCabinetOuterBezel(ctx);
     const runDiff = difficultyIdToRunDifficulty(save.difficulty);
-    const prof = DIFFICULTY_UI_PROFILES[runDiff];
+    const diffSpec = HONEST_DIFFICULTIES_V15[runDiff];
     const maxUnlocked = StorageService.getHighestUnlockedStage(runDiff, save);
     const selectedStage = StorageService.getSelectedStartStage(runDiff, save);
 
-    drawPixelText(ctx, `24 SABİT BÖLÜM • ${prof.titleTr}`, CANVAS_WIDTH * 0.5, 86, {
-      scale: 4.1,
+    drawPixelText(ctx, `30 BÖLÜM • ${diffSpec.labelTr}`, CANVAS_WIDTH * 0.5, 82, {
+      scale: 4.3,
       tone: runDiff === 'EASY' ? 'green' : runDiff === 'MEDIUM' ? 'gold' : 'crimson',
       align: 'center'
     });
     drawPixelText(
       ctx,
-      `AÇIK BÖLÜMLER: 1 - ${maxUnlocked} / 24  •  DOKUN VE HEMEN BAŞLA`,
+      `ULAŞILAN DERİNLİK: BÖLÜM ${maxUnlocked} / 30  •  DOKUN VE BAŞLA`,
       CANVAS_WIDTH * 0.5,
-      142,
-      { scale: 2.35, tone: 'cyan', align: 'center', letterGap: 0.45 }
+      138,
+      { scale: 2.5, tone: 'cyan', align: 'center', maxWidth: 800 }
     );
 
-    const cols = 4;
-    const cardW = 186;
+    const cols = 5;
+    const cardW = 144;
     const cardH = 166;
-    const gapX = 16;
-    const gapY = 18;
+    const gapX = 14;
+    const gapY = 16;
     const startX = Math.round((CANVAS_WIDTH - (cols * cardW + (cols - 1) * gapX)) * 0.5);
-    const startY = 186;
+    const startY = 184;
 
-    for (let idx = 0; idx < FIXED_CAMPAIGN_STAGES.length; idx++) {
-      const st = FIXED_CAMPAIGN_STAGES[idx]!;
+    for (let stNum = 1; stNum <= 30; stNum++) {
+      const idx = stNum - 1;
       const col = idx % cols;
       const row = Math.floor(idx / cols);
       const cx = startX + col * (cardW + gapX);
       const cy = startY + row * (cardH + gapY);
 
-      const unlocked = st.levelNumber <= maxUnlocked;
-      const isSelected = st.levelNumber === selectedStage;
-      const stars = StorageService.getCampaignStageStars(runDiff, st.levelNumber, save);
+      const unlocked = stNum <= maxUnlocked;
+      const isSelected = stNum === selectedStage;
+      const stars = StorageService.getCampaignStageStars(runDiff, stNum, save);
 
       this.drawPixelPanel(
         ctx,
@@ -1124,30 +1348,11 @@ export class MenuRenderer {
         isSelected ? 'goldSelected' : unlocked ? 'steel' : 'locked'
       );
 
-      drawPixelText(
-        ctx,
-        unlocked ? `BÖLÜM ${st.levelNumber}` : `BÖLÜM ${st.levelNumber} 🔒`,
-        cx + cardW * 0.5,
-        cy + 34,
-        {
-          scale: 2.35,
-          tone: isSelected ? 'gold' : unlocked ? 'white' : 'muted',
-          align: 'center'
-        }
-      );
-
-      drawPixelText(
-        ctx,
-        unlocked ? this.shortenBossTitle(st.bossNameTr) : 'KİLİTLİ',
-        cx + cardW * 0.5,
-        cy + 80,
-        {
-          scale: 1.65,
-          tone: unlocked ? 'cyan' : 'muted',
-          align: 'center',
-          letterGap: 0.3
-        }
-      );
+      drawPixelText(ctx, `${stNum}`, cx + cardW * 0.5, cy + 56, {
+        scale: 3.9,
+        tone: isSelected ? 'gold' : unlocked ? 'white' : 'muted',
+        align: 'center'
+      });
 
       const starStr = unlocked
         ? stars >= 3
@@ -1156,107 +1361,29 @@ export class MenuRenderer {
             ? '★★☆'
             : stars === 1
               ? '★☆☆'
-              : '☆☆☆'
-        : '---';
-      drawPixelText(ctx, starStr, cx + cardW * 0.5, cy + 126, {
-        scale: 2.45,
-        tone: stars > 0 ? 'gold' : 'muted',
-        align: 'center'
+              : 'AÇIK'
+        : 'KİLİTLİ';
+      drawPixelText(ctx, starStr, cx + cardW * 0.5, cy + 122, {
+        scale: 2.25,
+        tone: stars > 0 ? 'gold' : unlocked ? 'cyan' : 'muted',
+        align: 'center',
+        maxWidth: cardW - 20
       });
 
-      this.addButton(`LAUNCH_STAGE_${st.levelNumber}`, cx, cy, cardW, cardH);
+      this.addButton(`LAUNCH_STAGE_${stNum}`, cx, cy, cardW, cardH);
     }
 
-    this.drawPixelPanel(ctx, 250, 1320, 400, 104, 'navyBtn');
-    drawPixelText(ctx, 'ANA MENÜYE DÖN', CANVAS_WIDTH * 0.5, 1372, {
+    this.drawPixelPanel(ctx, 250, 1320, 400, 100, 'navyBtn');
+    drawPixelText(ctx, 'ANA MENÜYE DÖN', CANVAS_WIDTH * 0.5, 1370, {
       scale: 3.3,
       tone: 'white',
       align: 'center'
     });
-    this.addButton('BACK_MAIN', 250, 1320, 400, 104);
+    this.addButton('BACK_MAIN', 250, 1320, 400, 100);
   }
 
   // ============================================================================
-  // CLEAN 4-SHIP `GEMİLER` SCREEN (UNLOCKED VIA ENDLESS WAVE DEPTH / SCORE!)
-  // ============================================================================
-  private renderShipsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
-    this.drawCabinetOuterBezel(ctx);
-    const bestWave = Math.max(1, StorageService.getBestWaveOverall(save));
-
-    drawPixelText(ctx, 'GEMİLER', CANVAS_WIDTH * 0.5, 96, {
-      scale: 4.9,
-      tone: 'gold',
-      align: 'center'
-    });
-
-    drawPixelText(ctx, `EN DERİN DALGA: ${String(bestWave).padStart(2, '0')}`, CANVAS_WIDTH * 0.5, 168, {
-      scale: 3.4,
-      tone: 'cyan',
-      align: 'center'
-    });
-
-    const cardW = 356;
-    const cardH = 420;
-    const startX = 76;
-    const startY = 236;
-    const gapX = 36;
-    const gapY = 36;
-
-    for (let i = 0; i < SHIP_SKINS.length; i++) {
-      const skin = SHIP_SKINS[i];
-      const col = i % 2;
-      const row = Math.floor(i / 2);
-      const cx = startX + col * (cardW + gapX);
-      const cy = startY + row * (cardH + gapY);
-
-      const unlocked = StorageService.isShipUnlocked(skin, save);
-      const selected = save.selectedShip === skin.id;
-
-      this.drawPixelPanel(
-        ctx,
-        cx,
-        cy,
-        cardW,
-        cardH,
-        selected ? 'goldSelected' : unlocked ? 'steel' : 'locked'
-      );
-
-      const shipSprite = getPlayerShipSprite(skin, 'UP');
-      blitPixelSprite(ctx, shipSprite, cx + cardW * 0.5, cy + 145, 6);
-
-      drawPixelText(ctx, skin.nameTr, cx + cardW * 0.5, cy + 275, {
-        scale: 4.1,
-        tone: selected ? 'gold' : 'white',
-        align: 'center'
-      });
-
-      const statusText = selected
-        ? 'SEÇİLİ'
-        : unlocked
-          ? 'SEÇ'
-          : `DALGA ${String(skin.waveRequired).padStart(2, '0')}`;
-      const statusTone = selected ? 'green' : unlocked ? 'gold' : 'muted';
-
-      drawPixelText(ctx, statusText, cx + cardW * 0.5, cy + 350, {
-        scale: 3.4,
-        tone: statusTone,
-        align: 'center'
-      });
-
-      this.addButton(`SELECT_SHIP_${skin.id}`, cx, cy, cardW, cardH);
-    }
-
-    this.drawPixelPanel(ctx, 250, 1250, 400, 104, 'navyBtn');
-    drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1302, {
-      scale: 4.0,
-      tone: 'white',
-      align: 'center'
-    });
-    this.addButton('BACK_MAIN', 250, 1250, 400, 104);
-  }
-
-  // ============================================================================
-  // CLEAN `AYARLAR` SCREEN (V7 ZERO-INERTIA 3 CONTROL MODES + LIVE PREVIEW!)
+  // 4. ORIGINAL `AYARLAR` SCREEN WITH LIVE CONTROLLER PREVIEW
   // ============================================================================
   private renderSettingsScreen(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     this.drawCabinetOuterBezel(ctx);
@@ -1270,7 +1397,6 @@ export class MenuRenderer {
     const rowW = 768;
     const rowH = 108;
 
-    // 1. KONTROL ŞEMASI: KLASİK ATARİ / ATARİ KOLU + KES / TEK EL SÜRÜKLE
     const y0 = 166;
     const ctrlLabel =
       save.settings.controlMode === 'CLASSIC_ARCADE'
@@ -1282,11 +1408,11 @@ export class MenuRenderer {
     drawPixelText(ctx, `KONTROL: ${ctrlLabel} ⇄`, CANVAS_WIDTH * 0.5, y0 + rowH * 0.5, {
       scale: 3.3,
       tone: 'gold',
-      align: 'center'
+      align: 'center',
+      maxWidth: rowW - 36
     });
     this.addButton('CYCLE_CONTROL_MODE', rowX, y0, rowW, rowH);
 
-    // 2. KONTROL KONUMU: SOL / SAĞ (veya TEK EL modunda SOL / ORTA / SAĞ)
     const y1 = y0 + rowH + 18;
     const sideLabel =
       save.settings.controlMode === 'SINGLE_HAND_DRAG'
@@ -1302,15 +1428,15 @@ export class MenuRenderer {
     drawPixelText(ctx, `KONUM: ${sideLabel} ⇄`, CANVAS_WIDTH * 0.5, y1 + rowH * 0.5, {
       scale: 3.2,
       tone: 'cyan',
-      align: 'center'
+      align: 'center',
+      maxWidth: rowW - 36
     });
     this.addButton('TOGGLE_JOYSTICK_SIDE', rowX, y1, rowW, rowH);
 
-    // 3. LIVE CONTROLLER MINI-PREVIEW DECK + PC KEYBOARD BINDING HINT
     const prevY = y1 + rowH + 20;
     const prevH = 216;
     this.drawPixelPanel(ctx, rowX, prevY, rowW, prevH, 'steel');
-    drawPixelText(ctx, 'CANLI KONTROL ÖNİZLEME', CANVAS_WIDTH * 0.5, prevY + 30, {
+    drawPixelText(ctx, 'CANLI KONTROL ÖNİZLEME', CANVAS_WIDTH * 0.5, prevY + 32, {
       scale: 2.5,
       tone: 'silver',
       align: 'center'
@@ -1381,10 +1507,9 @@ export class MenuRenderer {
       'PC KLAVYE: OK TUŞLARI  •  KESİM: BOŞLUK',
       CANVAS_WIDTH * 0.5,
       prevY + prevH - 22,
-      { scale: 2.1, tone: 'gold', align: 'center' }
+      { scale: 2.2, tone: 'gold', align: 'center' }
     );
 
-    // 4. ZORLUK: KOLAY / ORTA / ZOR
     const y2 = prevY + prevH + 20;
     const diffName =
       save.difficulty === 'EXPLORER'
@@ -1406,7 +1531,6 @@ export class MenuRenderer {
     });
     this.addButton('CYCLE_DIFFICULTY', rowX, y2, rowW, rowH);
 
-    // 5. SES & TİTREŞİM
     const y3 = y2 + rowH + 18;
     const halfW = 374;
     const soundOn = !save.settings.muted;
@@ -1432,7 +1556,6 @@ export class MenuRenderer {
     );
     this.addButton('TOGGLE_HAPTICS', rightColX, y3, halfW, rowH);
 
-    // Bottom `GERİ` Button
     this.drawPixelPanel(ctx, 250, 1280, 400, 104, 'navyBtn');
     drawPixelText(ctx, 'GERİ', CANVAS_WIDTH * 0.5, 1332, {
       scale: 4.0,
@@ -1443,13 +1566,158 @@ export class MenuRenderer {
   }
 
   // ============================================================================
-  // IN-GAME PIXEL MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`)
+  // 5. ENDLESS MODE 3-CARD PERK DRAFT & CONTINUE MODALS (ARCADE STEEL STYLE!)
+  // ============================================================================
+  private renderEndlessPerkDraftModal(
+    ctx: CanvasRenderingContext2D,
+    overlayData: MenuOverlayData
+  ): void {
+    const cards = overlayData.endlessPerkChoices ?? [];
+    const stacks = overlayData.endlessPerkStacks;
+    const earned = overlayData.lastEarnedJeton ?? 0;
+
+    this.drawPixelPanel(ctx, 56, 200, 788, 1140, 'steel');
+
+    drawPixelText(ctx, `DALGA ${overlayData.currentWave} TAMAMLANDI!`, CANVAS_WIDTH * 0.5, 274, {
+      scale: 4.2,
+      tone: 'gold',
+      align: 'center'
+    });
+    drawPixelText(
+      ctx,
+      earned > 0 ? `+${earned} JETON KAZANILDI  •  BİR GÜÇ SEÇ` : 'DEVAM İÇİN BİR GÜÇ SEÇ',
+      CANVAS_WIDTH * 0.5,
+      336,
+      { scale: 2.9, tone: 'cyan', align: 'center', maxWidth: 720 }
+    );
+
+    const cardX = 94;
+    const cardW = 712;
+    const cardH = 264;
+    const gapY = 26;
+    const startY = 398;
+
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i]!;
+      const cy = startY + i * (cardH + gapY);
+      const curLv = stacks?.get(c.id) ?? 0;
+
+      this.drawPixelPanel(ctx, cardX, cy, cardW, cardH, 'goldSelected');
+
+      drawPixelText(ctx, c.titleTr.toUpperCase(), cardX + 38, cy + 72, {
+        scale: 3.8,
+        tone: 'gold',
+        align: 'left',
+        maxWidth: cardW - 220
+      });
+
+      drawPixelText(ctx, c.shortDescTr, cardX + 38, cy + 144, {
+        scale: 2.9,
+        tone: 'white',
+        align: 'left',
+        maxWidth: cardW - 220
+      });
+
+      drawPixelText(ctx, `KADEME ${curLv + 1} / ${c.maxStacks}`, cardX + 38, cy + 206, {
+        scale: 2.5,
+        tone: 'cyan',
+        align: 'left'
+      });
+
+      this.drawPixelPanel(ctx, cardX + cardW - 178, cy + 84, 146, 96, 'goldRed');
+      drawPixelText(ctx, 'SEÇ', cardX + cardW - 105, cy + 132, {
+        scale: 3.5,
+        tone: 'gold',
+        align: 'center'
+      });
+
+      this.addButton(`PICK_PERK_${i}`, cardX, cy, cardW, cardH);
+    }
+  }
+
+  private renderContinueModal(ctx: CanvasRenderingContext2D, overlayData: MenuOverlayData): void {
+    const store = overlayData.jetonStore;
+    const balance = store ? store.jetonBalance : 0;
+    const canAfford = balance >= CleanJetonEconomyAndStore.CONTINUE_COST_JETON;
+    const pct = Math.floor(overlayData.claimedPercent ?? 0);
+    const canAd = Boolean(overlayData.canOfferRevive);
+    const adLoading = Boolean(overlayData.reviveAdLoading);
+
+    this.drawPixelPanel(ctx, 76, 320, 748, 840, 'steel');
+
+    drawPixelText(ctx, 'SON ŞANS • DEVAM ET?', CANVAS_WIDTH * 0.5, 408, {
+      scale: 4.3,
+      tone: 'gold',
+      align: 'center',
+      maxWidth: 680
+    });
+
+    drawPixelText(
+      ctx,
+      `KESİLEN ALAN: %${pct}  •  MEVCUT: ${formatGroupedScore(balance)} JETON`,
+      CANVAS_WIDTH * 0.5,
+      484,
+      { scale: 2.8, tone: 'cyan', align: 'center', maxWidth: 680 }
+    );
+
+    const btnW = 616;
+    const btnX = Math.round((CANVAS_WIDTH - btnW) * 0.5);
+
+    this.drawPixelPanel(ctx, btnX, 558, btnW, 118, canAfford ? 'goldRed' : 'locked');
+    drawPixelText(
+      ctx,
+      canAfford ? 'DEVAM ET • 100 JETON' : 'YETERSİZ JETON (100 GEREKLİ)',
+      CANVAS_WIDTH * 0.5,
+      558 + 59,
+      {
+        scale: 3.4,
+        tone: canAfford ? 'gold' : 'muted',
+        align: 'center',
+        maxWidth: btnW - 36
+      }
+    );
+    if (canAfford) {
+      this.addButton('USE_JETON_CONTINUE', btnX, 558, btnW, 118);
+    }
+
+    let nextY = 706;
+    if (canAd) {
+      this.drawPixelPanel(ctx, btnX, nextY, btnW, 114, adLoading ? 'locked' : 'emeraldGold');
+      drawPixelText(
+        ctx,
+        adLoading ? 'REKLAM YÜKLENİYOR...' : 'VİDEO İZLE • +1 GEMİ HAKKI',
+        CANVAS_WIDTH * 0.5,
+        nextY + 57,
+        {
+          scale: 3.2,
+          tone: adLoading ? 'silver' : 'gold',
+          align: 'center',
+          maxWidth: btnW - 36
+        }
+      );
+      if (!adLoading) {
+        this.addButton('ACCEPT_REVIVE', btnX, nextY, btnW, 114);
+      }
+      nextY += 142;
+    }
+
+    this.drawPixelPanel(ctx, btnX, nextY, btnW, 102, 'navyBtn');
+    drawPixelText(ctx, 'VAZGEÇ', CANVAS_WIDTH * 0.5, nextY + 51, {
+      scale: 3.4,
+      tone: 'white',
+      align: 'center'
+    });
+    this.addButton('DECLINE_REVIVE', btnX, nextY, btnW, 102);
+  }
+
+  // ============================================================================
+  // 6. ORIGINAL IN-GAME ARCADE MODALS (`PAUSED`, `LEVEL_CLEAR`, `GAME_OVER`)
   // ============================================================================
   private renderPauseModal(ctx: CanvasRenderingContext2D, save: GameSaveData): void {
     this.drawPixelPanel(ctx, 76, 286, 748, 800, 'steel');
 
     drawPixelText(ctx, 'DURAKLATILDI', CANVAS_WIDTH * 0.5, 362, {
-      scale: 4.3,
+      scale: 4.4,
       tone: 'gold',
       align: 'center'
     });
@@ -1471,11 +1739,11 @@ export class MenuRenderer {
           ? 'SAĞ YÖN'
           : 'SOL YÖN';
 
-    this.drawModalActionBtn(ctx, 'DEVAM ET', 432, 'goldRed', 'RESUME_GAME', 94);
+    this.drawModalActionBtn(ctx, 'DEVAM ET', 432, 'goldRed', 'RESUME_GAME', 96);
     this.drawModalActionBtn(
       ctx,
       `KONTROL: ${ctrlShort} ⇄`,
-      544,
+      546,
       'navyBtn',
       'CYCLE_CONTROL_MODE',
       92
@@ -1483,18 +1751,17 @@ export class MenuRenderer {
     this.drawModalActionBtn(
       ctx,
       `KONUM: ${sideLabel} ⇄`,
-      654,
+      656,
       'navyBtn',
       'TOGGLE_JOYSTICK_SIDE',
       92
     );
-    this.drawModalActionBtn(ctx, 'BU BÖLÜMÜ TEKRARLA', 764, 'navyBtn', 'RETRY_CURRENT_STAGE', 92);
-    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 874, 'navyBtn', 'QUIT_TO_MENU', 92);
+    this.drawModalActionBtn(ctx, 'BU BÖLÜMÜ TEKRARLA', 766, 'navyBtn', 'RETRY_CURRENT_STAGE', 92);
+    this.drawModalActionBtn(ctx, 'ANA MENÜYE DÖN', 876, 'navyBtn', 'QUIT_TO_MENU', 92);
   }
 
   private renderSecondChanceModal(ctx: CanvasRenderingContext2D): void {
     this.drawPixelPanel(ctx, 84, 450, 732, 540, 'steel');
-
     drawPixelText(ctx, 'SON ŞANS', CANVAS_WIDTH * 0.5, 538, {
       scale: 4.5,
       tone: 'gold',
@@ -1528,18 +1795,21 @@ export class MenuRenderer {
     ctx: CanvasRenderingContext2D,
     bd: LevelClearBreakdown,
     currentScore: number,
-    waveNumber: number
+    waveNumber: number,
+    earnedJeton: number,
+    maxComboReached = 1
   ): void {
-    this.drawPixelPanel(ctx, 64, 270, 772, 956, 'steel');
+    this.drawPixelPanel(ctx, 64, 270, 772, 960, 'steel');
 
     const title =
-      waveNumber === 24
-        ? 'BÖLÜM 24 FİNAL ZAFERİ!'
+      waveNumber >= 30
+        ? 'BÖLÜM 30 FİNAL ZAFERİ!'
         : `BÖLÜM ${String(waveNumber).padStart(2, '0')} TAMAMLANDI!`;
     drawPixelText(ctx, title, CANVAS_WIDTH * 0.5, 348, {
-      scale: 3.9,
+      scale: 4.0,
       tone: 'gold',
-      align: 'center'
+      align: 'center',
+      maxWidth: 700
     });
 
     for (let i = 0; i < 3; i++) {
@@ -1552,65 +1822,53 @@ export class MenuRenderer {
     const shownPct =
       bd.winReason === 'TWIN_SPLIT' || bd.winReason === 'BOSS_DESTROYED'
         ? 'TAM ZAFER'
-        : `${bd.claimedPercent.toFixed(1)}%`;
+        : `%${bd.claimedPercent.toFixed(1)}`;
 
     const bonusRows: Array<[string, string, 'white' | 'gold' | 'green' | 'cyan']> = [
-      ['ALAN', shownPct, 'green'],
-      ['BÖLÜM BONUSU', `+${bd.baseBonus}`, 'white']
+      ['KESİLEN ALAN', shownPct, 'green'],
+      ['BÖLÜM BONUSU', `+${formatGroupedScore(bd.baseBonus)}`, 'white'],
+      ['KALKAN BONUSU', `+${formatGroupedScore(bd.shieldBonus)}`, 'cyan'],
+      ['JETON ÖDÜLÜ', `+${formatGroupedScore(earnedJeton)} JETON`, 'gold']
     ];
-    if (bd.over80Bonus > 0) {
-      bonusRows.push(['ÜSTÜN KESİM', `+${bd.over80Bonus}`, 'gold']);
-    }
-    bonusRows.push(['KALKAN BONUSU', `+${bd.shieldBonus}`, 'cyan']);
-    if (bd.specialBonus > 0) {
-      bonusRows.push(['BOSS İMHA', `+${bd.specialBonus}`, 'gold']);
-    }
-    if (bd.firstCutMillionBonus > 0) {
-      bonusRows.push(['TEK ÇİZGİ', `+${bd.firstCutMillionBonus}`, 'gold']);
+    if (maxComboReached >= 2) {
+      bonusRows.splice(2, 0, ['MAKS KOMBO', `x${maxComboReached}`, 'gold']);
+    } else if (bd.over80Bonus > 0) {
+      bonusRows.splice(2, 0, ['ÜSTÜN HÂKİMİYET', `+${formatGroupedScore(bd.over80Bonus)}`, 'gold']);
     }
 
-    const rowStep = bonusRows.length <= 4 ? 50 : bonusRows.length === 5 ? 44 : 38;
-    let ry = 508;
+    let ry = 514;
     for (const [label, val, tone] of bonusRows) {
       drawPixelText(ctx, label, rowLeft, ry, { scale: 2.9, tone: 'silver', align: 'left' });
       drawPixelText(ctx, val, rowRight, ry, { scale: 3.0, tone, align: 'right' });
-      ry += rowStep;
+      ry += 50;
     }
 
-    // Next Stage Fixed Boss Preview Card!
-    const nextStageIdx = waveNumber % FIXED_CAMPAIGN_STAGES.length;
-    const nextSpec = FIXED_CAMPAIGN_STAGES[nextStageIdx]!;
+    const nextStageNum = waveNumber >= 30 ? 1 : waveNumber + 1;
+    const nextBoss = getStageBossNameTr(nextStageNum);
     ctx.save();
     ctx.fillStyle = '#091020';
-    ctx.fillRect(108, 770, 684, 96);
+    ctx.fillRect(108, 782, 684, 78);
     ctx.strokeStyle = '#48C8FF';
     ctx.lineWidth = 2.5;
-    ctx.strokeRect(108, 770, 684, 96);
+    ctx.strokeRect(108, 782, 684, 78);
     ctx.restore();
 
     drawPixelText(
       ctx,
-      `SIRADAKİ BÖLÜM ${waveNumber + 1}: ${nextSpec.bossNameTr}`,
+      `SIRADAKİ BÖLÜM ${nextStageNum}: ${nextBoss}`,
       CANVAS_WIDTH * 0.5,
-      798,
-      { scale: 2.45, tone: 'cyan', align: 'center' }
-    );
-    drawPixelText(
-      ctx,
-      nextSpec.bossMechanicHintTr.slice(0, 52),
-      CANVAS_WIDTH * 0.5,
-      838,
-      { scale: 1.75, tone: 'silver', align: 'center', letterGap: 0.35 }
+      821,
+      { scale: 2.65, tone: 'cyan', align: 'center', maxWidth: 650 }
     );
 
-    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 916, {
-      scale: 3.8,
+    drawPixelText(ctx, `SKOR ${formatScoreDigits(currentScore, 7)}`, CANVAS_WIDTH * 0.5, 912, {
+      scale: 3.9,
       tone: 'gold',
       align: 'center'
     });
 
     this.drawModalActionBtn(ctx, 'SONRAKİ BÖLÜM >', 974, 'goldRed', 'NEXT_SECTOR');
-    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 1090, 'navyBtn', 'QUIT_TO_MENU', 90);
+    this.drawModalActionBtn(ctx, 'ANA MENÜYE DÖN', 1090, 'navyBtn', 'QUIT_TO_MENU', 90);
   }
 
   private renderGameOverModal(
@@ -1619,13 +1877,16 @@ export class MenuRenderer {
     waveNumber: number,
     isNewRecord: boolean,
     canOfferRevive = false,
-    reviveAdLoading = false
+    reviveAdLoading = false,
+    mode: 'CAMPAIGN' | 'ENDLESS' = 'CAMPAIGN'
   ): void {
-    const stageIdx = (Math.max(1, waveNumber) - 1) % FIXED_CAMPAIGN_STAGES.length;
-    const stageSpec = FIXED_CAMPAIGN_STAGES[stageIdx]!;
+    const subLabel =
+      mode === 'ENDLESS'
+        ? `SONSUZ MOD • DALGA ${waveNumber}`
+        : `BÖLÜM ${String(waveNumber).padStart(2, '0')}: ${getStageBossNameTr(waveNumber)}`;
 
     if (canOfferRevive) {
-      this.drawPixelPanel(ctx, 72, 290, 756, 882, 'steel');
+      this.drawPixelPanel(ctx, 72, 290, 756, 860, 'steel');
 
       drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 368, {
         scale: 4.8,
@@ -1633,13 +1894,12 @@ export class MenuRenderer {
         align: 'center'
       });
 
-      drawPixelText(
-        ctx,
-        `BÖLÜM ${String(waveNumber).padStart(2, '0')}: ${stageSpec.bossNameTr}`,
-        CANVAS_WIDTH * 0.5,
-        446,
-        { scale: 3.0, tone: 'cyan', align: 'center' }
-      );
+      drawPixelText(ctx, subLabel, CANVAS_WIDTH * 0.5, 446, {
+        scale: 2.9,
+        tone: 'cyan',
+        align: 'center',
+        maxWidth: 690
+      });
 
       drawPixelText(
         ctx,
@@ -1657,10 +1917,9 @@ export class MenuRenderer {
         });
       }
 
-      // Single optional Rewarded Video Revive button (max once per stage — zero ad spam!)
       const btnW = 620;
       const btnX = Math.round((CANVAS_WIDTH - btnW) * 0.5);
-      const btnY = 620;
+      const btnY = 622;
       const btnH = 114;
       this.drawPixelPanel(
         ctx,
@@ -1678,47 +1937,33 @@ export class MenuRenderer {
         {
           scale: 3.15,
           tone: reviveAdLoading ? 'silver' : 'gold',
-          align: 'center'
+          align: 'center',
+          maxWidth: btnW - 36
         }
       );
       drawPixelText(
         ctx,
-        reviveAdLoading
-          ? 'LÜTFEN BEKLEYİN...'
-          : 'AYNI BOSS + 3 SN KALKANLA DEVAM ET',
+        reviveAdLoading ? 'LÜTFEN BEKLEYİN...' : 'AYNI BOSS + 3 SN KALKANLA DEVAM ET',
         CANVAS_WIDTH * 0.5,
         btnY + 84,
         {
-          scale: 2.0,
+          scale: 2.1,
           tone: 'white',
-          align: 'center'
+          align: 'center',
+          maxWidth: btnW - 36
         }
       );
       if (!reviveAdLoading) {
         this.addButton('ACCEPT_REVIVE', btnX, btnY, btnW, btnH);
       }
 
-      // Build 12 Rule: Retry directly from current fixed level (`BÖLÜM X`) with full lives!
-      this.drawModalActionBtn(
-        ctx,
-        `TEKRAR DENE (BÖLÜM ${waveNumber})`,
-        758,
-        'goldRed',
-        'RETRY_CURRENT_STAGE',
-        98
-      );
-      this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 876, 'navyBtn', 'QUIT_TO_MENU', 90);
-      this.drawModalActionBtn(ctx, 'TÜM 24 BÖLÜM LİSTESİ', 984, 'navyBtn', 'OPEN_STAGE_GRID', 84);
-
-      drawPixelText(ctx, 'İSTEĞE BAĞLI • BÖLÜM BAŞINA 1 KEZ', CANVAS_WIDTH * 0.5, 1118, {
-        scale: 1.9,
-        tone: 'silver',
-        align: 'center'
-      });
+      this.drawModalActionBtn(ctx, 'TEKRAR DENE', 764, 'goldRed', 'RETRY_CURRENT_STAGE', 98);
+      this.drawModalActionBtn(ctx, 'ANA MENÜYE DÖN', 884, 'navyBtn', 'QUIT_TO_MENU', 92);
+      this.drawModalActionBtn(ctx, 'TÜM BÖLÜMLER', 994, 'navyBtn', 'OPEN_STAGE_GRID', 84);
       return;
     }
 
-    this.drawPixelPanel(ctx, 72, 360, 756, 730, 'steel');
+    this.drawPixelPanel(ctx, 72, 360, 756, 720, 'steel');
 
     drawPixelText(ctx, 'OYUN BİTTİ', CANVAS_WIDTH * 0.5, 444, {
       scale: 4.8,
@@ -1726,13 +1971,12 @@ export class MenuRenderer {
       align: 'center'
     });
 
-    drawPixelText(
-      ctx,
-      `BÖLÜM ${String(waveNumber).padStart(2, '0')}: ${stageSpec.bossNameTr}`,
-      CANVAS_WIDTH * 0.5,
-      528,
-      { scale: 3.0, tone: 'cyan', align: 'center' }
-    );
+    drawPixelText(ctx, subLabel, CANVAS_WIDTH * 0.5, 528, {
+      scale: 2.9,
+      tone: 'cyan',
+      align: 'center',
+      maxWidth: 690
+    });
 
     drawPixelText(
       ctx,
@@ -1750,17 +1994,9 @@ export class MenuRenderer {
       });
     }
 
-    // Build 12 Rule: Retry directly from current fixed level (`BÖLÜM X`) with full lives!
-    this.drawModalActionBtn(
-      ctx,
-      `TEKRAR DENE (BÖLÜM ${waveNumber})`,
-      732,
-      'goldRed',
-      'RETRY_CURRENT_STAGE',
-      104
-    );
-    this.drawModalActionBtn(ctx, 'ANA MENÜ / BÖLÜM SEÇ', 858, 'navyBtn', 'QUIT_TO_MENU', 96);
-    this.drawModalActionBtn(ctx, 'TÜM 24 BÖLÜM LİSTESİ', 972, 'navyBtn', 'OPEN_STAGE_GRID', 86);
+    this.drawModalActionBtn(ctx, 'TEKRAR DENE', 732, 'goldRed', 'RETRY_CURRENT_STAGE', 104);
+    this.drawModalActionBtn(ctx, 'ANA MENÜYE DÖN', 858, 'navyBtn', 'QUIT_TO_MENU', 96);
+    this.drawModalActionBtn(ctx, 'TÜM BÖLÜMLER', 972, 'navyBtn', 'OPEN_STAGE_GRID', 86);
   }
 
   private drawModalActionBtn(
@@ -1771,13 +2007,14 @@ export class MenuRenderer {
     id: string,
     h = 98
   ): void {
-    const w = 584;
+    const w = 596;
     const x = Math.round((CANVAS_WIDTH - w) * 0.5);
     this.drawPixelPanel(ctx, x, y, w, h, style);
     drawPixelText(ctx, label, CANVAS_WIDTH * 0.5, y + h * 0.5, {
       scale: 3.5,
       tone: style === 'goldRed' ? 'gold' : 'white',
-      align: 'center'
+      align: 'center',
+      maxWidth: w - 40
     });
     this.addButton(id, x, y, w, h);
   }
@@ -1787,7 +2024,8 @@ export class MenuRenderer {
     drawPixelText(ctx, text, CANVAS_WIDTH * 0.5, 140, {
       scale: 3.0,
       tone: 'gold',
-      align: 'center'
+      align: 'center',
+      maxWidth: 676
     });
   }
 }

@@ -42,9 +42,39 @@ class NativeAdMobRewardedAdapter implements RewardedAdAdapter {
   private adLoaded = false;
   private preloadPromise: Promise<boolean> | null = null;
   private useNpa = true;
+  private retryAttempts = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastAdError = '';
 
   public isRewardedAdReady(): boolean {
     return this.adLoaded;
+  }
+
+  public getLastAdError(): string {
+    return this.lastAdError;
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private scheduleRetryPreload(): void {
+    if (!ADMOB_CONFIG.enabled || !Capacitor.isNativePlatform()) {
+      return;
+    }
+    if (this.adLoaded || this.retryAttempts >= 3 || this.retryTimer !== null) {
+      return;
+    }
+    const delaysMs = [4_000, 10_000, 22_000];
+    const delay = delaysMs[Math.min(delaysMs.length - 1, this.retryAttempts)]!;
+    this.retryAttempts += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.preloadRewardedReviveAd();
+    }, delay);
   }
 
   public async requestTrackingAuthorizationIfNeeded(): Promise<void> {
@@ -102,9 +132,11 @@ class NativeAdMobRewardedAdapter implements RewardedAdAdapter {
       });
 
       this.initialized = true;
+      this.retryAttempts = 0;
       void this.preloadRewardedReviveAd();
-    } catch {
+    } catch (err) {
       this.initialized = false;
+      this.lastAdError = err instanceof Error ? err.message : String(err ?? 'SDK_INIT_FAILED');
     }
   }
 
@@ -119,10 +151,12 @@ class NativeAdMobRewardedAdapter implements RewardedAdAdapter {
       return this.preloadPromise;
     }
 
+    this.clearRetryTimer();
     this.preloadPromise = (async () => {
       try {
         await this.requestTrackingAuthorizationIfNeeded();
         if (!this.initialized) {
+          this.scheduleRetryPreload();
           return false;
         }
         const adId = getRewardedAdUnitId(Capacitor.getPlatform(), ADMOB_CONFIG);
@@ -132,9 +166,13 @@ class NativeAdMobRewardedAdapter implements RewardedAdAdapter {
           npa: this.useNpa
         });
         this.adLoaded = true;
+        this.retryAttempts = 0;
+        this.lastAdError = '';
         return true;
-      } catch {
+      } catch (err) {
         this.adLoaded = false;
+        this.lastAdError = err instanceof Error ? err.message : String(err ?? 'AD_LOAD_FAILED');
+        this.scheduleRetryPreload();
         return false;
       } finally {
         this.preloadPromise = null;
@@ -151,13 +189,14 @@ class NativeAdMobRewardedAdapter implements RewardedAdAdapter {
 
     await this.requestTrackingAuthorizationIfNeeded();
     if (!this.initialized) {
-      return { outcome: 'UNAVAILABLE', errorMessage: 'SDK_NOT_INITIALIZED' };
+      return { outcome: 'UNAVAILABLE', errorMessage: this.lastAdError || 'SDK_NOT_INITIALIZED' };
     }
 
     if (!this.adLoaded) {
+      this.retryAttempts = 0;
       const loaded = await this.preloadRewardedReviveAd();
       if (!loaded) {
-        return { outcome: 'UNAVAILABLE', errorMessage: 'AD_LOAD_FAILED' };
+        return { outcome: 'UNAVAILABLE', errorMessage: this.lastAdError || 'AD_LOAD_FAILED' };
       }
     }
 

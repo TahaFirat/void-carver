@@ -2,6 +2,9 @@
 include ':capacitor-android'
 project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')
 
+include ':capacitor-community-admob'
+project(':capacitor-community-admob').projectDir = new File('../node_modules/@capacitor-community/admob/android')
+
 include ':capacitor-app'
 project(':capacitor-app').projectDir = new File('../node_modules/@capacitor/app/android')
 
@@ -19,3 +22,6 @@ project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacit
 
 include ':capawesome-capacitor-screen-orientation'
 project(':capawesome-capacitor-screen-orientation').projectDir = new File('../node_modules/@capawesome/capacitor-screen-orientation/android')
+
+include ':capgo-native-purchases'
+project(':capgo-native-purchases').projectDir = new File('../node_modules/@capgo/native-purchases/android')

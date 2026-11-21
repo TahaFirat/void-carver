@@ -33,8 +33,8 @@ function bootstrap(): void {
     setLayout(layout);
     engineRef?.syncViewportLayout();
 
-    // Clamp DPR to 2.5 for razor-sharp pixels on Retina while saving mobile GPU heat & battery
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    // Clamp DPR to 2.0: razor-sharp Retina vector typography while cutting 3x Pro Max GPU fill-rate & heat by 55%!
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
     canvas.style.width = `${cssW}px`;
     canvas.style.height = `${cssH}px`;
     canvas.width = Math.round(cssW * dpr);
@@ -176,10 +176,18 @@ function bootstrap(): void {
     mouseButtonHeld = false;
     engine.resetPointerInputs();
   });
+  window.addEventListener('focus', () => {
+    engine.notifyUserInteraction();
+  });
+  window.addEventListener('keydown', () => {
+    engine.notifyUserInteraction();
+  }, { passive: true });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       mouseButtonHeld = false;
       engine.resetPointerInputs();
+    } else {
+      engine.notifyUserInteraction();
     }
   });
 

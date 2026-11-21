@@ -23,6 +23,107 @@ import {
 import { getStageTerrainCanvas } from './VolfiedTerrains';
 
 const HUE_TERRAIN_CACHE = new Map<string, HTMLCanvasElement>();
+const TERRITORY_FILL_CACHE = new Map<string, HTMLCanvasElement>();
+
+export function getTerritoryFillOverlayCanvas(fillId: string): HTMLCanvasElement | null {
+  if (!fillId || fillId === 'FILL_DARK_GRID') return null;
+  const cached = TERRITORY_FILL_CACHE.get(fillId);
+  if (cached) return cached;
+
+  const w = 270;
+  const h = 360;
+  const s = createPixelSurface(w, h);
+
+  if (fillId === 'FILL_GOLD_HEX') {
+    const cBg = hexToU32('#14110C');
+    const cEdge = hexToU32('#CA8A04');
+    const cBright = hexToU32('#FACC15');
+    for (let y = 0; y < h; y++) {
+      const row = Math.floor(y / 14);
+      const yIn = y % 14;
+      for (let x = 0; x < w; x++) {
+        const xShift = (x + (row % 2 === 1 ? 12 : 0)) % 24;
+        const onHex =
+          (yIn === 0 && xShift >= 6 && xShift <= 17) ||
+          ((yIn === 1 || yIn === 13) && (xShift === 5 || xShift === 18)) ||
+          ((yIn === 2 || yIn === 12) && (xShift === 3 || xShift === 20)) ||
+          (yIn >= 3 && yIn <= 11 && (xShift === 1 || xShift === 22));
+        if (onHex) {
+          s.u32[y * w + x] = yIn <= 2 ? cBright : cEdge;
+        } else if ((x + y) % 2 === 0) {
+          s.u32[y * w + x] = cBg;
+        }
+      }
+    }
+  } else if (fillId === 'FILL_CYBER_CIRCUIT') {
+    const cBg = hexToU32('#03221A');
+    const cTrace = hexToU32('#059669');
+    const cNode = hexToU32('#34D399');
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if ((x + y) % 2 === 0) s.u32[y * w + x] = cBg;
+        const gx = x % 30;
+        const gy = y % 30;
+        const onTrace =
+          (gy === 8 && gx >= 4 && gx <= 22) ||
+          (gx === 22 && gy >= 8 && gy <= 24) ||
+          (gy === 24 && gx >= 12 && gx <= 26);
+        if (onTrace) s.u32[y * w + x] = cTrace;
+        if ((gx === 4 && gy === 8) || (gx === 22 && gy === 24)) {
+          fillRectPx(s, x - 1, y - 1, 3, 3, cNode);
+        }
+      }
+    }
+  } else if (fillId === 'FILL_CRYSTAL_MOSAIC') {
+    const cDark = hexToU32('#062838');
+    const cMid = hexToU32('#0E7490');
+    const cEdge = hexToU32('#22D3EE');
+    const cSpec = hexToU32('#CFFAFE');
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const d1 = (x + y) % 26;
+        const d2 = (x - y + 720) % 26;
+        if (d1 === 0 || d2 === 0) {
+          s.u32[y * w + x] = d1 === 0 && d2 === 0 ? cSpec : cEdge;
+        } else {
+          s.u32[y * w + x] = ((Math.floor((x + y) / 26) + Math.floor((x - y + 720) / 26)) & 1) === 0 ? cDark : cMid;
+        }
+      }
+    }
+  } else if (fillId === 'FILL_CRIMSON_CARBON') {
+    const cA = hexToU32('#1C070D');
+    const cB = hexToU32('#3B0A18');
+    const cRim = hexToU32('#E11D48');
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const cell = ((Math.floor(x / 6) + Math.floor(y / 6)) & 1) === 0;
+        const seam = x % 18 === 0 || y % 18 === 0;
+        s.u32[y * w + x] = seam ? cRim : cell ? cA : cB;
+      }
+    }
+  } else if (fillId === 'FILL_DEEP_NEBULA') {
+    const cDeep = hexToU32('#120B2E');
+    const cNeb1 = hexToU32('#2E1065');
+    const cNeb2 = hexToU32('#581C87');
+    const cStar = hexToU32('#F5D0FE');
+    const cWhite = hexToU32('#FFFFFF');
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const wave = Math.sin(x * 0.055 + y * 0.03) + Math.cos(x * 0.025 - y * 0.05);
+        s.u32[y * w + x] = wave > 0.75 ? cNeb2 : wave > -0.1 ? cNeb1 : cDeep;
+        const hash = ((x * 7919 + y * 6151) ^ (x * y)) & 0x3ff;
+        if (hash === 1) s.u32[y * w + x] = cWhite;
+        else if (hash === 7 || hash === 19) s.u32[y * w + x] = cStar;
+      }
+    }
+  } else {
+    return null;
+  }
+
+  const out = commitPixelSurface(s);
+  TERRITORY_FILL_CACHE.set(fillId, out);
+  return out;
+}
 
 /**
  * Pixel-exact hue rotation (CSS `hue-rotate` matrix applied per pixel, no smoothing) so the
@@ -188,7 +289,9 @@ export class LayerRenderer {
     ctx: CanvasRenderingContext2D,
     shakeX: number,
     shakeY: number,
-    freezeRemaining = 0
+    freezeRemaining = 0,
+    equippedFillId = 'FILL_DARK_GRID',
+    timeSeconds = 0
   ): void {
     ctx.save();
     disableSmoothing(ctx);
@@ -203,6 +306,25 @@ export class LayerRenderer {
       }
       ctx.drawImage(this.underStageCanvas, vx, vy, ARENA_VIEW_WIDTH, ARENA_VIEW_HEIGHT);
       ctx.filter = 'none';
+    }
+
+    const customFill = getTerritoryFillOverlayCanvas(equippedFillId);
+    if (customFill) {
+      ctx.save();
+      ctx.globalAlpha = equippedFillId === 'FILL_DEEP_NEBULA' ? 0.92 : 0.78;
+      ctx.drawImage(customFill, vx, vy, ARENA_VIEW_WIDTH, ARENA_VIEW_HEIGHT);
+      if (equippedFillId === 'FILL_DEEP_NEBULA') {
+        ctx.globalAlpha = 0.75;
+        for (let i = 0; i < 18; i++) {
+          const sx = vx + ((i * 137 + 41) % (ARENA_VIEW_WIDTH - 16)) + 8;
+          const sy = vy + ((i * 193 + 67) % (ARENA_VIEW_HEIGHT - 16)) + 8;
+          if (Math.sin(timeSeconds * 4 + i * 1.3) > 0.35) {
+            ctx.fillStyle = i % 2 === 0 ? '#FFFFFF' : '#E879F9';
+            ctx.fillRect(sx, sy, 4, 4);
+          }
+        }
+      }
+      ctx.restore();
     }
 
     if (this.goldFrameCanvas) {

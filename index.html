@@ -9,11 +9,24 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#05070D" />
+    <meta name="theme-color" content="#04060E" />
     <meta name="format-detection" content="telephone=no" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' capacitor: ionic: data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss: capacitor: ionic: data: blob:; object-src 'none'; base-uri 'self';"
+    />
     <title>VOID CARVER</title>
     <style>
       :root {
+        --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        --bg-deep: #04060E;
+        --bg-card: #131A26;
+        --border-subtle: rgba(255, 255, 255, 0.12);
+        --text-primary: #F8FAFC;
+        --text-secondary: #94A3B8;
+        --accent-easy: #10B981;
+        --accent-medium: #F59E0B;
+        --accent-hard: #EF4444;
         --sat: env(safe-area-inset-top, 0px);
         --sab: env(safe-area-inset-bottom, 0px);
         --sal: env(safe-area-inset-left, 0px);
@@ -34,19 +47,29 @@
       }
 
       html,
-      body {
+      body,
+      button,
+      input,
+      .ui-layer {
         width: 100%;
         height: 100%;
         overflow: hidden;
-        background-color: #05070D;
-        color: #F4F7FF;
-        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background-color: var(--bg-deep);
+        color: var(--text-primary);
+        font-family: var(--font-ui) !important;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
         font-variant-numeric: tabular-nums;
+        letter-spacing: -0.01em;
         overscroll-behavior: none;
         touch-action: none;
         -webkit-touch-callout: none !important;
         -webkit-user-select: none !important;
         user-select: none !important;
+      }
+
+      html,
+      body {
         position: fixed;
         inset: 0;
       }
@@ -56,12 +79,11 @@
         inset: 0;
         width: 100%;
         height: 100%;
-        background: #05070D;
+        background: var(--bg-deep);
         touch-action: none;
         overflow: hidden;
       }
 
-      /* V5 universal responsive canvas: always fills 100dvw x 100dvh (safe areas handled in JS) */
       #game-canvas {
         position: absolute;
         left: 0;
@@ -70,11 +92,8 @@
         width: 100%;
         height: 100%;
         touch-action: none;
-        image-rendering: pixelated;
-        image-rendering: crisp-edges;
       }
 
-      /* Hidden probe used by engine to measure exact safe-area insets */
       #safe-area-probe {
         position: fixed;
         top: env(safe-area-inset-top, 0px);
